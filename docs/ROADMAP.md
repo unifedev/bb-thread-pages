@@ -72,9 +72,25 @@ service. Deferred as unused; the contract is there when it is wanted.
 ## Release
 
 1. `npm ci && bb plugin types --check . && npm test && npm run typecheck && npm run build`
-2. Tag `vX.Y.Z`. bb records the tag with the commit it pointed at and refuses a
-   moved tag, so publish fixes as new versions rather than retagging.
-3. Verify `bb plugin install git:<url>@^X.Y.0` on a clean install, then update and
-   rollback.
-4. Submit to the marketplace with the `submit-a-plugin` skill, which reads the
+2. Tag `vX.Y.Z` and push. bb records the tag with the commit it pointed at and
+   **refuses a tag that later moves** — so publish a fix as a new version rather
+   than retagging. If a tag has to move, everyone on it must remove and reinstall.
+3. Verify `bb plugin install git:<url>@^X.Y.0` on a clean machine.
+4. Publish to npm (see below).
+5. Submit to the marketplace with the `submit-a-plugin` skill, which reads the
    current contract from `github.com/get-bb/marketplace` rather than assuming one.
+
+### Publishing to npm
+
+The scope has to exist and you have to be logged in as a member:
+
+```sh
+npm login                       # as the account that owns @unifedev
+npm publish --access public
+```
+
+`dist/` is committed and also packed, so neither a git nor an npm install needs a
+build step. `package-lock.json` is committed for the git path — npm strips it from
+tarballs by design, which is fine because npm resolves `parse5` itself.
+
+Verify afterwards with `bb plugin install npm:@unifedev/thread-pages@^0.3.0`.

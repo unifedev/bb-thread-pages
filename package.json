@@ -50,5 +50,17 @@
   },
   "dependencies": {
     "parse5": "^8.0.1"
-  }
+  },
+  "files": [
+    "*.ts",
+    "!*.test.ts",
+    "dist/server.js",
+    "dist/server.meta.json",
+    "docs/",
+    "ARCHITECTURE.md",
+    "PLUGIN_OVERVIEW.md",
+    "README.md",
+    "tsconfig.json",
+    "package-lock.json"
+  ]
 }
