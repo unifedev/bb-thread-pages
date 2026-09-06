@@ -1,0 +1,54 @@
+{
+  "name": "@unifedev/thread-pages",
+  "version": "0.3.0",
+  "description": "Thread Pages for bb: every agent session gets one directly editable HTML page you can answer from, on any device.",
+  "license": "MIT",
+  "author": "Bartosz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/unifedev/bb-thread-pages.git"
+  },
+  "homepage": "https://github.com/unifedev/bb-thread-pages",
+  "bugs": {
+    "url": "https://github.com/unifedev/bb-thread-pages/issues"
+  },
+  "keywords": [
+    "bb",
+    "bb-plugin",
+    "unife",
+    "thread-pages",
+    "agents",
+    "html"
+  ],
+  "type": "module",
+  "private": false,
+  "engines": {
+    "bb": ">=0.40",
+    "bbPluginSdk": ">=0.4.21"
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.47",
+    "@types/node": "^22.10.0",
+    "bb-app": "0.40.0",
+    "cron-parser": "^5.5.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  },
+  "bb": {
+    "name": "Thread Pages",
+    "description": "Host one directly editable HTML mini-app for each thread.",
+    "branding": {
+      "icon": "FileText"
+    },
+    "server": "./server.ts",
+    "skills": []
+  },
+  "dependencies": {
+    "parse5": "^8.0.1"
+  }
+}
