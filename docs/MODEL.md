@@ -183,6 +183,46 @@ Home is an ordinary Thread Page: it calls `threads.snapshot`, `projects.list` an
 `providers.list` and renders what it likes. You can ask the owning agent to
 redesign it like any other page.
 
+## Updating, and why old pages keep working
+
+```sh
+bb plugin update thread-pages          # shows what would change
+bb plugin update thread-pages --yes    # applies it
+```
+
+Settings survive an update. Pages survive an update. Nothing migrates.
+
+That is a property of the storage model rather than a promise: a page is a plain
+HTML file that already contains everything it needs to render — its own markup,
+its own copy of the stylesheet, and its own script. The plugin only wraps it. So
+an update can change the wrapper without touching a single page.
+
+What an update *can* change safely:
+
+- **The chrome** — title bar, Sessions link, working indicator. Every existing
+  page gets improvements here for free, because the shell is plugin-owned.
+- **The kernel** — form wiring, label derivation, the bridge client. Also injected
+  at view time, so fixes reach every page ever written.
+- **New capabilities** — a page that never calls a new method is unaffected; one
+  that wants it just calls it. `context.get` reports the current roster, so a page
+  can check rather than assume.
+- **The seed and the instruction** — they only affect pages created afterwards.
+
+What an update deliberately does *not* change:
+
+- **An existing page's own HTML, CSS, or script.** A plugin that rewrote pages on
+  update could break work you had already read and answered. It never does.
+
+The cost of that guarantee: design-system improvements only reach new pages,
+because each page carries its own stylesheet. If that becomes annoying the answer
+is a command that re-splices the current stylesheet into a page on request — an
+explicit act, not a silent one.
+
+One sharp edge, from bb rather than this plugin: **bb records the commit a git tag
+pointed at and refuses to re-resolve a tag that later moved.** Publish a fix as a
+new version. If a tag ever has to move, anyone on it must `bb plugin remove` and
+reinstall — `update` will correctly refuse.
+
 ## The working indicator
 
 While the owning thread is mid-turn, the page header shows a pulsing dot and

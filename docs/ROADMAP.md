@@ -41,6 +41,41 @@ demonstrate the self-frame navigation limitation rather than leave it as prose.
 Recording happens in trusted chrome and transcription goes through bb's own voice
 service. Deferred as unused; the contract is there when it is wanted.
 
+### Known bugs
+
+All three share one cause: the page frame is `sandbox="allow-scripts allow-forms"`,
+so every browser-level affordance a page might reach for — popups, top navigation,
+modal dialogs — is silently unavailable. Nothing errors; it just does nothing,
+which is the worst failure mode. Each needs a plugin-owned path through the
+trusted shell instead.
+
+1. **`threads.openPage` / `threads.openBb` are blocked on mobile, and open a new
+   tab on desktop.** The shell calls `window.open`, which mobile browsers block
+   as an unrequested popup. It should navigate the *top* window in place instead,
+   so the browser back button returns to the hub. That is also better on desktop:
+   a hub you navigate from and back to beats a spray of tabs. The shell can do
+   this with `location.assign` on its own window, since it is trusted code and the
+   destination is built from a validated thread id.
+
+2. **Links inside a page do nothing.** An authored `<a href>` cannot navigate: the
+   frame has no `allow-top-navigation`, and following the link inside the frame
+   would replace the page with an unrelated document. The kernel should intercept
+   clicks on anchors and route them: same-page fragments handled locally, and
+   http(s) destinations through `navigation.openExternal`, which already exists
+   and already confirms. Authors then write ordinary links and they work, which is
+   the whole promise of "write plain HTML".
+
+3. **The home page's Prompt button does nothing.** It uses `window.prompt`, and
+   sandboxed frames without `allow-modals` return immediately with no value and no
+   error. The page must supply its own inline field rather than a browser modal.
+   Granting `allow-modals` is the wrong fix: it would let any generated page block
+   the UI thread with `alert` loops.
+
+The general lesson for the guide: a page cannot use `window.open`,
+`window.prompt`, `alert`, `confirm`, or top-level navigation. Anything that needs
+the browser itself must go through a capability. The guide should say so, because
+an agent will reach for these by habit.
+
 ### Worth doing
 
 - **Asset and upload cleanup.** Neither directory is ever pruned. A page that

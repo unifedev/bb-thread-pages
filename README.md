@@ -20,6 +20,12 @@ host, never the design.
 ## Install
 
 ```sh
+bb plugin install npm:@unifedev/thread-pages@^0.3.0
+```
+
+or from source:
+
+```sh
 bb plugin install git:https://github.com/unifedev/bb-thread-pages.git
 ```
 
@@ -53,6 +59,19 @@ bb thread-page home      # make this thread's page the home page
 live status, and per-row open, prompt, stop and archive. Every other page then
 shows a **← Sessions** link back to it. Home is an ordinary page afterwards: ask
 the agent that owns it to regroup or restyle it.
+
+## Updating
+
+```sh
+bb plugin update thread-pages --yes
+```
+
+Settings and existing pages both survive. Nothing migrates: a page is a plain
+HTML file that already contains its own markup, stylesheet and script, so an
+update changes only the wrapper around it. Chrome and kernel fixes reach every
+page ever written; new capabilities are there when a page asks for them; and no
+update ever rewrites a page you have already read. See
+[docs/MODEL.md](./docs/MODEL.md) for the detail.
 
 ## Documentation
 
