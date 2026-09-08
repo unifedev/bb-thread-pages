@@ -5,417 +5,3529 @@ const require = __createRequire(import.meta.url);
 var __filename = __fileURLToPath(import.meta.url);
 var __dirname = __pathDirname(__filename);
 
-// server.ts
-import { randomBytes } from "node:crypto";
+// src/domain/eligibility.ts
+function ineligibleReason(facts) {
+  if (facts.deleted) return "deleted";
+  if (facts.archived) return "archived";
+  if (facts.visibility !== "visible") return "hidden";
+  if (facts.parentId !== null) return "child";
+  if (facts.forkOfId !== null) return "fork";
+  return null;
+}
+function describeIneligible(reason) {
+  switch (reason) {
+    case "hidden":
+      return "this session is a hidden helper";
+    case "child":
+      return "this session is a child of another session";
+    case "fork":
+      return "this session is a fork of another session";
+    case "archived":
+      return "this session is archived";
+    case "deleted":
+      return "this session is deleted";
+  }
+}
 
-// home.ts
-var DEFAULT_HOME_BODY = String.raw`  <header class="brief-head">
-    <h1>Sessions</h1>
-    <p class="brief-meta">
-      <span data-count>Loading…</span>
-      <span data-updated></span>
-    </p>
-  </header>
+// src/domain/limits.ts
+var LIMITS = Object.freeze({
+  /** Entry document (`index.html`); refused above, never truncated. R1.7 */
+  entryDocumentBytes: 5 * 1024 * 1024,
+  /** One uploaded file. R4.23 */
+  uploadFileBytes: 24 * 1024 * 1024,
+  /** Files per form submission; extras are ignored visibly. R4.23 */
+  uploadsPerForm: 8,
+  /** Submission JSON body, excluding uploaded bytes. */
+  submissionBodyBytes: 64 * 1024,
+  /** Answers per submission, and characters per answer value. */
+  answersPerSubmission: 64,
+  answerValueChars: 8e3,
+  answerListItems: 64,
+  /** Capability request and response, serialised. R5.2 */
+  capabilityPayloadBytes: 64 * 1024,
+  capabilityJsonDepth: 16,
+  capabilityJsonNodes: 1e4,
+  /** `sessions.start` and `sessions.send` prompts. */
+  promptChars: 32 * 1024,
+  /** `session.reply` result, serialised. */
+  resultTextBytes: 64 * 1024,
+  /** Titles, names and labels shown to a reader. */
+  titleChars: 240,
+  /** One `storage` value, serialised. R5.19 */
+  storageValueBytes: 32 * 1024,
+  storageKeyChars: 128,
+  /** `sessions.snapshot` page size. R5.11 */
+  snapshotDefault: 100,
+  snapshotMax: 200,
+  /** `session.activity` items. */
+  activityDefault: 8,
+  activityMax: 20,
+  /** Action token lifetime. R2.9 */
+  actionTokenMs: 2 * 60 * 60 * 1e3,
+  /** Confirmation challenge lifetime. R3.19 */
+  confirmationMs: 2 * 60 * 1e3,
+  /** Folder-picker selection token lifetime; single use. R5.36 */
+  selectionTokenMs: 10 * 60 * 1e3,
+  selectionTokens: 32,
+  /** Submission and reply idempotency records. R2.34 */
+  idempotencyRecords: 512,
+  idempotencyMs: 5 * 60 * 1e3,
+  /**
+   * Effectful requests per page. RW-8: 120/min and 8 concurrent rather than
+   * the spec's 30/4, so a page that lists sessions and refreshes cannot
+   * exhaust its own budget (R2.40). The shell's revision poll is not counted.
+   */
+  ratePerMinute: 120,
+  rateConcurrent: 8,
+  /** Shell revision poll while the tab is visible. R2.17 */
+  shellPollMs: 1e4,
+  /** `watch` interval default and clamp. R4.30 */
+  watchDefaultMs: 8e3,
+  watchMinMs: 2e3,
+  watchMaxMs: 5 * 60 * 1e3,
+  /** Offline copy of the entry document kept in the host's key-value store. R2.30 */
+  offlineCopyBytes: 200 * 1024,
+  offlineCacheEntries: 32,
+  offlineCacheBytes: 8 * 1024 * 1024,
+  /** Bridge envelope identifiers. */
+  requestIdChars: 96,
+  methodNameChars: 96,
+  tokenChars: 4096,
+  errorMessageChars: 512,
+  summaryChars: 512,
+  /** Sizes of lists a capability may return. */
+  projectsMax: 200,
+  providersMax: 64,
+  modelsPerProvider: 64
+});
+function mebibytes(bytes) {
+  return `${Math.round(bytes / (1024 * 1024) * 100) / 100} MiB`;
+}
+function kibibytes(bytes) {
+  return `${Math.round(bytes / 1024)} KiB`;
+}
 
-  <main>
-    <div class="toolbar">
-      <input type="search" data-filter placeholder="Filter sessions…" aria-label="Filter sessions">
-      <label class="inline"><input type="checkbox" data-show-idle checked> Show idle</label>
-      <label class="inline"><input type="checkbox" data-show-archived> Show archived</label>
-      <button type="button" data-refresh>Refresh</button>
-    </div>
+// src/domain/errors.ts
+var BRIDGE_ERROR_CODES = [
+  "invalid_json",
+  "invalid_request",
+  "invalid_params",
+  "invalid_response",
+  "request_too_large",
+  "response_too_large",
+  "unsupported_version",
+  "unknown_method",
+  "stale_page",
+  "confirmation_required",
+  "confirmation_invalid",
+  "cancelled",
+  "not_found",
+  "conflict",
+  "unavailable",
+  "rate_limited",
+  "handler_error",
+  "invalid_result"
+];
+var BRIDGE_ERROR_CODE_SET = new Set(BRIDGE_ERROR_CODES);
+function isBridgeErrorCode(value) {
+  return typeof value === "string" && BRIDGE_ERROR_CODE_SET.has(value);
+}
+var STATUS_BY_CODE = {
+  invalid_json: 400,
+  invalid_request: 400,
+  invalid_params: 400,
+  invalid_response: 502,
+  request_too_large: 413,
+  response_too_large: 500,
+  unsupported_version: 400,
+  unknown_method: 404,
+  stale_page: 409,
+  confirmation_required: 401,
+  confirmation_invalid: 403,
+  cancelled: 400,
+  not_found: 404,
+  conflict: 409,
+  unavailable: 503,
+  rate_limited: 429,
+  handler_error: 500,
+  invalid_result: 500,
+  forbidden: 403,
+  ineligible: 404,
+  invalid_session: 400,
+  no_page: 404,
+  page_too_large: 413
+};
+var PageError = class _PageError extends Error {
+  code;
+  status;
+  cause;
+  constructor(code, publicMessage, options) {
+    super(boundedMessage(publicMessage));
+    this.name = "PageError";
+    this.code = code;
+    this.status = options?.status ?? STATUS_BY_CODE[code];
+    this.cause = options?.cause;
+  }
+  static is(value) {
+    return value instanceof _PageError;
+  }
+};
+function boundedMessage(message) {
+  const normalized = message.replace(/\s+/g, " ").trim() || "Request failed";
+  return normalized.length <= LIMITS.errorMessageChars ? normalized : `${normalized.slice(0, LIMITS.errorMessageChars - 1)}\u2026`;
+}
+function errorText(error) {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+var PUBLIC_MESSAGES = Object.freeze({
+  noPage: "This session has no page yet. Run `bb thread-page init` in the session first.",
+  ineligible: "Only visible root sessions have pages.",
+  pageTooLarge: `The page's entry document is larger than ${LIMITS.entryDocumentBytes / (1024 * 1024)} MiB and was not served.`,
+  unavailable: "The page's source is unreachable. Reconnect its host and try again.",
+  staleCopy: "The source host is offline; this cached page is read-only.",
+  stalePage: "This page changed; reload it before responding.",
+  handler: "Could not execute the page action.",
+  rateLimited: "Too many requests from this page; try again shortly.",
+  invalidSession: "A valid session id is required.",
+  tokenInvalid: "This page session is invalid or expired; reload the page."
+});
 
-    <p data-error class="error" hidden></p>
-    <div data-groups></div>
-  </main>
-`;
-var DEFAULT_HOME_STYLE = String.raw`@scope (main) {
-  .toolbar {
-    display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center;
-  }
-  .toolbar input[type="search"] {
-    flex: 1 1 14rem; min-width: 0; margin: 0; padding: 0.45rem 0.65rem;
-    font: inherit; font-size: 0.9rem; color: var(--ink); background: var(--surface);
-    border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * 0.7);
-  }
-  .toolbar .inline {
-    display: inline-flex; align-items: center; gap: 0.4rem;
-    font-size: 0.85rem; font-weight: 400; color: var(--ink-2); white-space: nowrap;
-  }
-  .toolbar .inline input { margin: 0; accent-color: var(--accent); }
-  .toolbar button {
-    font: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer;
-    color: var(--accent); background: transparent;
-    border: var(--rule-w) solid var(--rule);
-    border-radius: calc(var(--radius) * 0.7); padding: 0.4rem 0.8rem;
-  }
-  .toolbar button:hover { border-color: var(--accent); }
+// src/domain/ids.ts
+var SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
+var REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
+var METHOD_NAME = /^[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
+var REVISION = /^[a-f0-9]{64}$/;
+function isSessionId(value) {
+  return typeof value === "string" && SESSION_ID.test(value);
+}
+function isRequestId(value) {
+  return typeof value === "string" && REQUEST_ID.test(value);
+}
+function isMethodName(value) {
+  return typeof value === "string" && value.length <= 96 && METHOD_NAME.test(value);
+}
+function isRevision(value) {
+  return typeof value === "string" && REVISION.test(value);
+}
 
-  .error {
-    margin-top: 1rem; padding: 0.7rem 0.9rem; color: var(--flag);
-    border: var(--rule-w) solid var(--flag); border-radius: calc(var(--radius) * 0.7);
+// src/pages/layout.ts
+var ENTRY_FILE = "index.html";
+var UPLOAD_DIR = "uploads";
+var LEGACY_ENTRY_FILE = "thread-page.html";
+var UPLOAD_NAME = /^[0-9]{8}-[0-9]{6}-[a-f0-9]{6}-[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+function joinPath(root, ...segments) {
+  const base = root.replace(/[\\/]+$/, "");
+  return [base, ...segments].join("/");
+}
+function entryPath(root) {
+  return joinPath(root, ENTRY_FILE);
+}
+function legacyEntryPath(root) {
+  return joinPath(root, LEGACY_ENTRY_FILE);
+}
+function sanitizeUploadSuffix(raw) {
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    decoded = raw;
+  }
+  const base = decoded.split(/[\\/]/).pop() ?? "";
+  const cleaned = base.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^[._-]+/, "");
+  return cleaned.slice(0, 80) || "upload";
+}
+function uploadFileName(originalName, now, randomHex) {
+  const stamp = new Date(now).toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
+  const name = `${stamp}-${randomHex.slice(0, 6)}-${sanitizeUploadSuffix(originalName)}`;
+  if (!isSafeUploadName(name)) throw new Error("Generated upload name is invalid");
+  return name;
+}
+function isSafeUploadName(name) {
+  return UPLOAD_NAME.test(name) && !name.includes("..");
+}
+
+// src/serving/context.ts
+function pageUrl(routeBase, session) {
+  return `${routeBase}/page?session=${encodeURIComponent(session)}`;
+}
+function homeUrl(routeBase) {
+  return `${routeBase}/home`;
+}
+
+// src/domain/html/escape.ts
+function escapeHtml(value) {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+}
+
+// src/agent/seed/theme-css.ts
+var THEME_CSS = String.raw`
+  :root {
+    --bg:        #fbfbfa;
+    --surface:   #ffffff;
+    --ink:       #16181d;
+    --ink-2:     #4a5058;
+    --ink-3:     #767d87;
+    --rule:      #e3e4e6;
+    --rule-soft: #eeeff0;
+    --accent:    #2f5cc7;
+    --flag:      #a8410f;
+    --ok:        #1f6b45;
+    --code-bg:   #f2f3f4;
+    --measure:   34rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #121316;
+      --surface:   #191b1f;
+      --ink:       #e9eaec;
+      --ink-2:     #b0b5bc;
+      --ink-3:     #838a93;
+      --rule:      #2c2f35;
+      --rule-soft: #232227;
+      --accent:    #8aa9f0;
+      --flag:      #e8a37a;
+      --ok:        #79c69d;
+      --code-bg:   #22242a;
+    }
   }
 
-  /* A group carries its own data-world, so every token below re-resolves. */
-  .group {
-    margin-top: 1.6rem; padding: 1.1rem 1.2rem 1.2rem;
-    background: var(--surface); color: var(--ink);
-    border: var(--rule-w) solid var(--rule); border-radius: var(--radius);
-    box-shadow: var(--shadow);
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 16.5px/1.6 ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
+    font-feature-settings: "kern", "liga";
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
   }
-  .group > summary {
-    cursor: pointer; list-style: none; display: flex; flex-wrap: wrap;
-    align-items: baseline; gap: 0.6rem;
+
+  .wrap {
+    max-width: calc(var(--measure) + 6rem);
+    margin: 0 auto;
+    padding: 4.5rem 3rem 8rem;
   }
-  .group > summary::-webkit-details-marker { display: none; }
-  .group > summary::before {
-    content: "▸"; color: var(--ink-3); font-size: 0.8em;
-    transition: transform var(--dur) var(--ease);
+  @media (max-width: 640px) { .wrap { padding: 2.5rem 1.25rem 5rem; } }
+
+  /* ---- header ---- */
+
+  header.brief-head {
+    padding-bottom: 1.75rem;
+    margin-bottom: 3rem;
+    border-bottom: 1px solid var(--rule);
   }
-  .group[open] > summary::before { transform: rotate(90deg); }
-  .group h2 {
-    margin: 0; font-family: var(--font-head); font-size: 1.08rem;
-    font-weight: var(--head-weight); letter-spacing: var(--head-track);
+  header.brief-head h1 {
+    margin: 0;
+    font-size: 1.9rem;
+    line-height: 1.2;
+    font-weight: 640;
+    letter-spacing: -0.021em;
+    text-wrap: balance;
+  }
+  .brief-meta {
+    margin: 0.85rem 0 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 1.15rem;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- rhythm ---- */
+
+  main > * + * { margin-top: 1.05rem; }
+
+  h2 {
+    margin: 3rem 0 0;
+    font-size: 1.16rem;
+    line-height: 1.3;
+    font-weight: 620;
+    letter-spacing: -0.012em;
+  }
+  h2 + * { margin-top: 0.85rem; }
+
+  h3 {
+    margin: 2rem 0 0;
+    font-size: 0.94rem;
+    line-height: 1.35;
+    font-weight: 640;
+    letter-spacing: 0.005em;
+    color: var(--ink-2);
+  }
+  h3 + * { margin-top: 0.6rem; }
+
+  p, li { max-width: var(--measure); color: var(--ink-2); }
+  p { margin: 0; }
+  main > p:first-child { font-size: 1.06rem; color: var(--ink); }
+
+  ul, ol { margin: 0; padding-left: 1.3rem; }
+  li + li { margin-top: 0.42rem; }
+  li::marker { color: var(--ink-3); }
+
+  strong { font-weight: 620; color: var(--ink); }
+  em { font-style: italic; }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:hover { text-decoration-thickness: 2px; }
+
+  code {
+    font: 0.85em/1.5 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    background: var(--code-bg);
+    padding: 0.13em 0.36em;
+    border-radius: 4px;
+  }
+  pre {
+    margin: 0;
+    background: var(--code-bg);
+    border: 1px solid var(--rule-soft);
+    border-radius: 8px;
+    padding: 0.9rem 1.05rem;
+    overflow-x: auto;
+    font: 0.83rem/1.6 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  pre code { background: none; padding: 0; }
+
+  hr {
+    margin: 3rem 0;
+    border: 0;
+    border-top: 1px solid var(--rule);
+  }
+
+  /* ---- callouts: use sparingly ---- */
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 1.15rem 1.3rem;
+  }
+  .card > * + * { margin-top: 0.7rem; }
+  .card > h3:first-child { margin-top: 0; }
+
+  .needs-you {
+    border-left: 3px solid var(--flag);
+    padding: 0.15rem 0 0.15rem 1.05rem;
+  }
+  .needs-you > * + * { margin-top: 0.55rem; }
+
+  .label {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 660;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--flag);
+  }
+  .label.done { color: var(--ok); }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.9rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.55rem 0.9rem 0.55rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+  th {
+    font-weight: 620;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  td { color: var(--ink-2); }
+
+  /* ---- forms ----------------------------------------------------------
+     Styled off semantic structure, not classes, so a page only ever needs
+     plain HTML: fieldset/legend for a group, a wrapping label for a single
+     control, small for a hint, button for an action. ------------------- */
+
+  form {
+    margin-top: 1.75rem;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 1.4rem 1.45rem 1.3rem;
+  }
+  form > * + * { margin-top: 1.25rem; }
+
+  /* 'margin: 0' here used to beat 'form > * + *' on specificity, so two groups
+     of choices in a row ran together with no gap between them. */
+  form fieldset { padding: 0; border: 0; min-width: 0; }
+  form > fieldset { margin: 0; }
+  form > fieldset + fieldset,
+  form > * + fieldset,
+  form > fieldset + * { margin-top: 1.25rem; }
+  form legend,
+  form > label,
+  .field > label {
+    display: block;
+    padding: 0;
+    font-size: 0.82rem;
+    font-weight: 620;
+    letter-spacing: 0.005em;
     color: var(--ink);
   }
-  .group .meta {
-    margin-left: auto; font-size: 0.75rem; color: var(--ink-3);
-    font-variant-numeric: tabular-nums; text-transform: var(--label-case);
-    letter-spacing: var(--caps-track);
+  form legend { margin-bottom: 0.5rem; }
+
+  form small, .field .hint {
+    display: block;
+    margin-top: 0.35rem;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    color: var(--ink-3);
   }
 
-  .rows { margin-top: 1rem; display: grid; gap: 0.5rem; }
-  .row {
-    display: grid; grid-template-columns: 1fr auto; gap: 0.5rem 0.9rem;
-    align-items: center; padding: 0.6rem 0.75rem;
-    border: var(--rule-w) solid var(--rule-soft);
-    border-radius: calc(var(--radius) * 0.8); background: var(--bg);
+  form input[type="file"] {
+    display: block; margin-top: 0.45rem; font: inherit; font-size: 0.85rem;
+    color: var(--ink-2); max-width: 100%;
   }
-  .row .name { font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
-  .row .sub {
-    margin-top: 0.15rem; font-size: 0.76rem; color: var(--ink-3);
-    display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
-  }
-  .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--ink-3); flex: none; }
-  .dot[data-state="active"] { background: var(--ok); }
-  .dot[data-state="failed"] { background: var(--flag); }
-  .dot[data-state="waiting"] { background: var(--accent); }
-  @media (prefers-reduced-motion: no-preference) {
-    .dot[data-state="active"] { animation: home-pulse 1.4s ease-in-out infinite; }
-  }
-  @keyframes home-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }
-
-  .acts { display: flex; flex-wrap: wrap; gap: 0.35rem; justify-content: flex-end; }
-  .acts button {
-    font: inherit; font-size: 0.78rem; font-weight: 600; cursor: pointer;
+  form input[type="file"]::file-selector-button {
+    font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer;
     color: var(--accent); background: transparent;
-    border: var(--rule-w) solid var(--rule);
-    border-radius: calc(var(--radius) * 0.6); padding: 0.28rem 0.6rem;
+    border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * 0.6);
+    padding: 0.35rem 0.75rem; margin-right: 0.6rem;
   }
-  .acts button:hover:not(:disabled) { border-color: var(--accent); }
-  .acts button:disabled { opacity: 0.5; cursor: default; }
-  .acts button[data-danger]:hover:not(:disabled) { color: var(--flag); border-color: var(--flag); }
+  form input[type="text"], form input[type="number"], form input[type="url"],
+  form input[type="email"], form input[type="date"], form textarea, form select {
+    display: block;
+    width: 100%;
+    margin-top: 0.45rem;
+    font: inherit;
+    font-size: 0.92rem;
+    color: var(--ink);
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 7px;
+    padding: 0.5rem 0.65rem;
+  }
+  form textarea { resize: vertical; min-height: 4.5rem; line-height: 1.55; }
+  form :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+  }
 
-  .empty { margin-top: 0.9rem; font-size: 0.85rem; color: var(--ink-3); }
+  /* One option row: a label wrapping a radio or checkbox. */
+  form label:has(> input[type="radio"]),
+  form label:has(> input[type="checkbox"]),
+  .choice {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    font-size: 0.9rem;
+    font-weight: 400;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  form label:has(> input[type="radio"]) + label,
+  form label:has(> input[type="checkbox"]) + label,
+  .choice + .choice { margin-top: 0.4rem; }
+  form input[type="radio"], form input[type="checkbox"] {
+    margin: 0.3rem 0 0;
+    flex: none;
+    accent-color: var(--accent);
+  }
 
-  .starter { margin-top: 1rem; }
-  .starter summary {
-    cursor: pointer; font-size: 0.82rem; font-weight: 600; color: var(--accent);
+  form label:has(> input[type="range"]) {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    font-size: 0.9rem;
+    font-weight: 400;
+    color: var(--ink-2);
   }
-  .starter .fields { margin-top: 0.7rem; display: grid; gap: 0.6rem; }
-  .starter textarea, .starter select {
-    width: 100%; margin: 0; padding: 0.5rem 0.65rem; font: inherit; font-size: 0.9rem;
-    color: var(--ink); background: var(--bg);
-    border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * 0.7);
+  form input[type="range"] { flex: 1; min-width: 8rem; accent-color: var(--accent); }
+  [data-thread-page-range] {
+    flex: none;
+    min-width: 2.2rem;
+    text-align: right;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
   }
-  .starter textarea { min-height: 4rem; resize: vertical; line-height: 1.5; }
-  .starter .go {
-    justify-self: start; font: inherit; font-size: 0.85rem; font-weight: 640;
-    cursor: pointer; color: var(--bg); background: var(--accent);
+
+  [data-thread-page-status] {
+    margin-top: 0.9rem;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--ink-3);
+  }
+  [data-thread-page-status][data-state="error"] { color: var(--flag); }
+  [data-thread-page-status][data-state="sent"] { color: var(--ok); }
+
+  @media print {
+    body { background: #fff; color: #000; }
+    .wrap { padding: 0; max-width: none; }
+    form { display: none; }
+  }
+  /* ====================================================================
+     FIVE WORLDS
+
+     A theme here is not a palette. It is a palette, a typeface, a shape
+     language, a way a screen arrives, an atmosphere, and — the part that
+     matters most — its own idea of what an interactive thing looks like.
+     Picking one changes how you choose and how you commit, not just what
+     it costs to look at.
+
+     Each theme declares both palettes at once as --l-* and --d-*; one
+     resolver below maps the live half onto the tokens the base stylesheet
+     already uses. The same declarations carry [data-world="x"], which is how
+     a card on screen 1 renders a fragment of a page in a world you have not
+     entered yet.
+     ==================================================================== */
+
+  /* ---- 1. paper — quiet document. Nothing to notice. ---- */
+  [data-theme="paper"], [data-world="paper"] {
+    --l-bg:#fbfbfa; --l-surface:#ffffff; --l-ink:#16181d; --l-ink-2:#4a5058;
+    --l-ink-3:#6c737c; --l-rule:#e3e4e6; --l-rule-soft:#eeeff0; --l-code:#f2f3f4;
+    --l-ah:222; --l-as:62; --l-al:48; --l-flag:#a8410f; --l-ok:#1f6b45;
+    --d-bg:#121316; --d-surface:#191b1f; --d-ink:#e9eaec; --d-ink-2:#b0b5bc;
+    --d-ink-3:#838a93; --d-rule:#2c2f35; --d-rule-soft:#232227; --d-code:#22242a;
+    --d-ah:222; --d-as:70; --d-al:74; --d-flag:#e8a37a; --d-ok:#79c69d;
+    --font-body: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
+    --font-head: var(--font-body);
+    --radius:10px; --rule-w:1px; --head-weight:640; --head-track:-0.021em;
+    --measure:34rem; --shadow:none; --label-case:uppercase; --caps-track:0.07em;
+    --h1-size:1.9rem; --h1-lh:1.2;
+  }
+
+  /* ---- 2. terminal — console. Everything on a grid, nothing rounded. ---- */
+  [data-theme="terminal"], [data-world="terminal"] {
+    --l-bg:#f6f6f2; --l-surface:#ffffff; --l-ink:#15201a; --l-ink-2:#3c4a42;
+    --l-ink-3:#646f69; --l-rule:#c9d2cb; --l-rule-soft:#e2e7e2; --l-code:#eaeee9;
+    --l-ah:150; --l-as:88; --l-al:26; --l-flag:#a33a10; --l-ok:#14663c;
+    --d-bg:#080b09; --d-surface:#0d120e; --d-ink:#cfe6d5; --d-ink-2:#94b39d;
+    --d-ink-3:#6b8573; --d-rule:#20301e; --d-rule-soft:#161f16; --d-code:#111811;
+    --d-ah:150; --d-as:64; --d-al:62; --d-flag:#e0a44f; --d-ok:#63d18e;
+    --font-body: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --font-head: var(--font-body);
+    --radius:0px; --rule-w:1px; --head-weight:700; --head-track:0em;
+    --measure:33rem; --shadow:none; --label-case:uppercase; --caps-track:0.14em;
+    --h1-size:1.6rem; --h1-lh:1.25;
+  }
+
+  /* ---- 3. atrium — daylight on paper. Warm, serif, things have weight. ---- */
+  [data-theme="atrium"], [data-world="atrium"] {
+    --l-bg:#f6f2e9; --l-surface:#fffdf8; --l-ink:#1e1a14; --l-ink-2:#4b4337;
+    --l-ink-3:#726958; --l-rule:#ddd5c4; --l-rule-soft:#ebe5d8; --l-code:#efe9db;
+    --l-ah:142; --l-as:34; --l-al:30; --l-flag:#8a4b18; --l-ok:#2c5f3f;
+    --d-bg:#16150f; --d-surface:#1f1d15; --d-ink:#f1ebdc; --d-ink-2:#c2b9a3;
+    --d-ink-3:#8f8672; --d-rule:#33301f; --d-rule-soft:#262418; --d-code:#242216;
+    --d-ah:130; --d-as:32; --d-al:66; --d-flag:#d99a5e; --d-ok:#8fc2a0;
+    --font-body: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+    --font-head: var(--font-body);
+    --radius:14px; --rule-w:1px; --head-weight:600; --head-track:-0.008em;
+    --measure:38rem;
+    --shadow: 0 1px 2px rgba(40,30,10,.06), 0 10px 30px -14px rgba(40,30,10,.28);
+    --label-case:none; --caps-track:0.02em;
+    --h1-size:2.15rem; --h1-lh:1.15;
+  }
+
+  /* ---- 4. volume — depth. A lit scene with the page standing in it. ---- */
+  [data-theme="volume"], [data-world="volume"] {
+    --l-bg:#eef1f6; --l-surface:#ffffff; --l-ink:#0d1424; --l-ink-2:#3a4658;
+    --l-ink-3:#5e687b; --l-rule:#ccd4e2; --l-rule-soft:#e0e6ef; --l-code:#e6ebf3;
+    --l-ah:196; --l-as:78; --l-al:32; --l-flag:#9c4415; --l-ok:#136b58;
+    --d-bg:#080b12; --d-surface:#111823; --d-ink:#dfe8f5; --d-ink-2:#a3b2c8;
+    --d-ink-3:#74849b; --d-rule:#1e2a3c; --d-rule-soft:#151d2a; --d-code:#131b27;
+    --d-ah:190; --d-as:82; --d-al:62; --d-flag:#e2a06b; --d-ok:#4fc7ad;
+    --font-body: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
+    --font-head: var(--font-body);
+    --radius:6px; --rule-w:1px; --head-weight:700; --head-track:-0.03em;
+    --measure:34rem;
+    --shadow: 0 2px 4px rgba(0,0,0,.18), 0 22px 40px -20px rgba(0,0,0,.45);
+    --label-case:uppercase; --caps-track:0.11em;
+    --h1-size:2.1rem; --h1-lh:1.1;
+  }
+
+  /* ---- 5. bloom — shapes and colour. Big type, soft mass, round everything. ---- */
+  [data-theme="bloom"], [data-world="bloom"] {
+    --l-bg:#fdf7f4; --l-surface:#ffffff; --l-ink:#1d1226; --l-ink-2:#4c3a59;
+    --l-ink-3:#75647f; --l-rule:#ecdfe6; --l-rule-soft:#f5eef1; --l-code:#f6eef4;
+    --l-ah:330; --l-as:62; --l-al:42; --l-flag:#b03d24; --l-ok:#2f6b58;
+    --d-bg:#150e1c; --d-surface:#211729; --d-ink:#f4ecf6; --d-ink-2:#c0aecb;
+    --d-ink-3:#95839f; --d-rule:#33243d; --d-rule-soft:#261a2e; --d-code:#281c32;
+    --d-ah:326; --d-as:76; --d-al:72; --d-flag:#f0a184; --d-ok:#7fd0b4;
+    --font-body: "Avenir Next", Avenir, "Futura", ui-rounded, ui-sans-serif, -apple-system, system-ui, sans-serif;
+    --font-head: var(--font-body);
+    --radius:22px; --rule-w:1.5px; --head-weight:700; --head-track:-0.035em;
+    --measure:32rem;
+    --shadow: 0 2px 6px rgba(60,20,60,.06), 0 18px 40px -18px rgba(60,20,60,.22);
+    --label-case:none; --caps-track:0.03em;
+    --h1-size:2.6rem; --h1-lh:1.02;
+  }
+
+  /* ---- the resolver: which half of a palette is live ---- */
+
+  :root, [data-world] {
+    --bg:var(--l-bg); --surface:var(--l-surface); --ink:var(--l-ink);
+    --ink-2:var(--l-ink-2); --ink-3:var(--l-ink-3); --rule:var(--l-rule);
+    --rule-soft:var(--l-rule-soft); --code-bg:var(--l-code);
+    --ah:var(--l-ah); --as:var(--l-as); --al:var(--l-al);
+    --flag:var(--l-flag); --ok:var(--l-ok);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root[data-mode="system"], :root[data-mode="system"] [data-world] {
+      --bg:var(--d-bg); --surface:var(--d-surface); --ink:var(--d-ink);
+      --ink-2:var(--d-ink-2); --ink-3:var(--d-ink-3); --rule:var(--d-rule);
+      --rule-soft:var(--d-rule-soft); --code-bg:var(--d-code);
+      --ah:var(--d-ah); --as:var(--d-as); --al:var(--d-al);
+      --flag:var(--d-flag); --ok:var(--d-ok);
+    }
+  }
+  :root[data-mode="dark"], :root[data-mode="dark"] [data-world] {
+    --bg:var(--d-bg); --surface:var(--d-surface); --ink:var(--d-ink);
+    --ink-2:var(--d-ink-2); --ink-3:var(--d-ink-3); --rule:var(--d-rule);
+    --rule-soft:var(--d-rule-soft); --code-bg:var(--d-code);
+    --ah:var(--d-ah); --as:var(--d-as); --al:var(--d-al);
+    --flag:var(--d-flag); --ok:var(--d-ok);
+  }
+
+  /* Accent is composed, so the hue slider moves one number and saturation and
+     lightness stay where the theme put them — which is what stops a dragged
+     hue quietly failing contrast. */
+  :root, [data-world] {
+    --accent: hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 1%));
+    --accent-soft: hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 1%) / 0.12);
+    --accent-line: hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 1%) / 0.42);
+  }
+
+  /* ---- motion, declared at its reduced value ----
+     Stillness is the default and movement is the enhancement, so a reader who
+     asked for less and a reader who said nothing get the same page. */
+  :root { --dur: 0ms; --slow: 0ms; --ease: cubic-bezier(.2,.75,.25,1); }
+  @media (prefers-reduced-motion: no-preference) {
+    :root { --dur: 220ms; --slow: 620ms; }
+  }
+
+  /* ---- density: two numbers the reader drags ---- */
+  :root { --space: 1; --size: 16.5px; }
+
+  body { font-family: var(--font-body); font-size: var(--size); }
+  h1, h2, h3, legend, .h { font-family: var(--font-head); }
+  /* The base sheet sizes the h1 through 'header.brief-head h1', which outranks a
+     bare 'h1' — so the world's own display scale has to be stated there too. */
+  header.brief-head h1, h1 {
+    font-size: var(--h1-size); line-height: var(--h1-lh);
+    font-weight: var(--head-weight); letter-spacing: var(--head-track);
+  }
+  h2 { font-weight: var(--head-weight); letter-spacing: var(--head-track); }
+  p, li { max-width: var(--measure); }
+
+  /* Prose stays inside --measure through 'p, li'; the page itself is wider so a
+     picker is not forced into one column. */
+  .wrap { max-width: calc(var(--measure) + 12rem);
+          padding: calc(3rem * var(--space)) 3rem calc(5rem * var(--space)); }
+  /* This rule sits after the base sheet's own narrow-screen padding and so
+     replaced it. On a 320 px screen that was 48 px of gutter each side — a
+     third of the width — until it was measured. */
+  @media (max-width: 40rem) {
+    .wrap { padding: calc(2.2rem * var(--space)) 1.15rem calc(4rem * var(--space)); }
+  }
+  main > * + * { margin-top: calc(1.05rem * var(--space)); }
+  h2 { margin-top: calc(2.4rem * var(--space)); }
+  h2 + * { margin-top: calc(0.8rem * var(--space)); }
+  .card { border-radius: var(--radius); box-shadow: var(--shadow);
+          padding: calc(1.1rem * var(--space)) 1.25rem; }
+  form { border-radius: var(--radius); box-shadow: var(--shadow); }
+  pre, code { border-radius: calc(var(--radius) * 0.35); }
+  th, .label { text-transform: var(--label-case); letter-spacing: var(--caps-track); }
+  hr, header.brief-head { border-color: var(--rule); }
+  header.brief-head { border-bottom-width: var(--rule-w); }
+
+  body { transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+
+  /* ---- atmosphere -----------------------------------------------------
+     Every peak colour below is opaque and sits a few percent from its own
+     --bg, so the composite between them is bounded by two colours that can
+     both be measured. That is what makes an atmosphere layer checkable
+     rather than hoped about, and the page is complete with it off. */
+
+  [data-theme="paper"],    [data-world="paper"]    { --l-atmos-1:#fbfbfa; --l-atmos-2:#fbfbfa; --d-atmos-1:#121316; --d-atmos-2:#121316; }
+  [data-theme="terminal"], [data-world="terminal"] { --l-atmos-1:#f0f2ec; --l-atmos-2:#f2f4ef; --d-atmos-1:#0b110c; --d-atmos-2:#091009; }
+  [data-theme="atrium"],   [data-world="atrium"]   { --l-atmos-1:#fdf8ec; --l-atmos-2:#f2ecdf; --d-atmos-1:#1e1c13; --d-atmos-2:#100f0a; }
+  [data-theme="volume"],   [data-world="volume"]   { --l-atmos-1:#ffffff; --l-atmos-2:#e4e9f1; --d-atmos-1:#101927; --d-atmos-2:#04060a; }
+  [data-theme="bloom"],    [data-world="bloom"]    { --l-atmos-1:#fbe9f1; --l-atmos-2:#ebf1fd; --d-atmos-1:#241430; --d-atmos-2:#10182c; }
+
+  :root, [data-world] { --atmos-1:var(--l-atmos-1); --atmos-2:var(--l-atmos-2); }
+  @media (prefers-color-scheme: dark) {
+    :root[data-mode="system"], :root[data-mode="system"] [data-world] {
+      --atmos-1:var(--d-atmos-1); --atmos-2:var(--d-atmos-2);
+    }
+  }
+  :root[data-mode="dark"], :root[data-mode="dark"] [data-world] {
+    --atmos-1:var(--d-atmos-1); --atmos-2:var(--d-atmos-2);
+  }
+
+  html { background: var(--bg); }
+  body { background: none; }
+
+  .atmosphere { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
+  :root[data-atmos="off"] .atmosphere { display: none; }
+
+  :root[data-theme="paper"] .atmosphere { display: none; }
+
+  /* terminal: a faint character grid, because that is what it is made of */
+  :root[data-theme="terminal"] .atmosphere {
+    background-image:
+      linear-gradient(to right, var(--atmos-1) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--atmos-1) 1px, transparent 1px);
+    background-size: 1.1rem 1.65rem;
+  }
+  /* atrium: light from the upper left, and the floor falling away */
+  :root[data-theme="atrium"] .atmosphere {
+    background:
+      radial-gradient(70rem 42rem at 12% -12%, var(--atmos-1), transparent 68%),
+      linear-gradient(to bottom, transparent 55%, var(--atmos-2));
+  }
+  /* volume: one light source and a hard vignette, so the page reads as an object */
+  :root[data-theme="volume"] .atmosphere {
+    background:
+      radial-gradient(46rem 34rem at 50% -8%, var(--atmos-1), transparent 62%),
+      radial-gradient(90rem 70rem at 50% 120%, var(--atmos-2), transparent 70%);
+  }
+  /* bloom: mass and colour, nothing representational */
+  :root[data-theme="bloom"] .atmosphere {
+    background:
+      radial-gradient(32rem 32rem at 8% 4%, var(--atmos-1), transparent 62%),
+      radial-gradient(28rem 28rem at 96% 22%, var(--atmos-2), transparent 60%),
+      radial-gradient(38rem 26rem at 40% 108%, var(--atmos-1), transparent 66%);
+  }
+
+
+  /* ====================================================================
+     THE WORLD, APPLIED TO A PAGE
+
+     Above this line is the design system: five worlds, one resolver. Below
+     it is how a page written in plain semantic HTML picks the current world
+     up — no class names, because the authoring rule is that a page is plain
+     HTML and the conventions live here.
+
+     To change the whole system's look, change one attribute on <html>:
+         data-theme="paper | terminal | atrium | volume | bloom"
+     ==================================================================== */
+
+  /* ---- choosing: how a picked option reads, per world ---------------- */
+
+  form label:has(> input[type="radio"]),
+  form label:has(> input[type="checkbox"]) {
+    flex-wrap: wrap;
+    padding: 0.28rem 0.5rem;
+    margin-left: -0.5rem;
+    border-radius: calc(var(--radius) * 0.6);
+    transition: transform var(--dur) var(--ease), background-color var(--dur) var(--ease),
+                box-shadow var(--dur) var(--ease), color var(--dur) var(--ease);
+  }
+  /* A hint belongs under the option it qualifies, not squeezed beside it. */
+  form label:has(> input[type="radio"]) > small,
+  form label:has(> input[type="checkbox"]) > small {
+    flex: 0 0 100%; margin-left: 1.35rem; margin-top: 0.2rem;
+  }
+  form label:has(input:checked) { color: var(--ink); }
+
+  :root[data-theme="paper"] form label:has(input:checked) {
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+
+  /* terminal draws its own control, because a native radio is not made of
+     characters and everything else in this world is */
+  :root[data-theme="terminal"] form input[type="radio"],
+  :root[data-theme="terminal"] form input[type="checkbox"] { position: absolute; opacity: 0; }
+  :root[data-theme="terminal"] form label:has(> input[type="radio"])::before,
+  :root[data-theme="terminal"] form label:has(> input[type="checkbox"])::before {
+    content: "[ ]"; flex: none; color: var(--ink-3); letter-spacing: -0.05em;
+  }
+  :root[data-theme="terminal"] form label:has(input:checked)::before {
+    content: "[\2588]"; color: var(--accent);
+  }
+  :root[data-theme="terminal"] form label:has(input:checked) { background: var(--rule-soft); }
+  :root[data-theme="terminal"] form label:has(> input[type="radio"]) > small,
+  :root[data-theme="terminal"] form label:has(> input[type="checkbox"]) > small { margin-left: 2.1rem; }
+
+  :root[data-theme="atrium"] form label:has(input:checked) {
+    background: var(--surface); transform: translateY(-2px); box-shadow: var(--shadow);
+  }
+
+  :root[data-theme="volume"] form fieldset { perspective: 900px; }
+  :root[data-theme="volume"] form label:has(input:checked) {
+    background: var(--surface); box-shadow: var(--shadow);
+    border-left: 2px solid var(--accent);
+    transform: rotateY(-2.2deg) translateZ(16px);
+  }
+
+  :root[data-theme="bloom"] form label:has(> input[type="radio"]),
+  :root[data-theme="bloom"] form label:has(> input[type="checkbox"]) {
+    border-radius: 99px; margin-left: 0; padding: 0.34rem 0.85rem;
+  }
+  :root[data-theme="bloom"] form label:has(input:checked) {
+    background: var(--accent); color: var(--bg);
+  }
+
+  /* ---- committing: the primary action in the world's own material -----
+     Scoped to a form's own children so the dictation button, which lives
+     inside a .voice-field, keeps its own shape. */
+
+  form > button, form > p > button {
+    font: inherit; font-size: 0.9rem; font-weight: 640; cursor: pointer;
+    color: var(--bg); background: var(--accent);
     border: var(--rule-w) solid var(--accent);
-    border-radius: calc(var(--radius) * 0.7); padding: 0.45rem 1rem;
+    border-radius: calc(var(--radius) * 0.7);
+    padding: 0.55rem 1.15rem;
+    transition: transform var(--dur) var(--ease), filter var(--dur) var(--ease),
+                box-shadow var(--dur) var(--ease);
   }
-  .say { min-height: 1.3em; font-size: 0.78rem; color: var(--ink-3); }
-  .say[data-tone="bad"] { color: var(--flag); }
-  .say[data-tone="good"] { color: var(--ok); }
-
-  @media (max-width: 34rem) {
-    .row { grid-template-columns: 1fr; }
-    .acts { justify-content: flex-start; }
+  form > button + button, form > p > button + button { margin-left: 0.45rem; }
+  form > button:first-of-type, form > p > button:first-of-type {
+    color: var(--bg); background: var(--accent); border-color: var(--accent);
   }
-}`;
-var DEFAULT_HOME_SCRIPT = String.raw`(() => {
-  "use strict";
-  const tp = window.threadPage;
-  const $ = (sel, root = document) => root.querySelector(sel);
-  const groupsEl = $("[data-groups]");
-  const errEl = $("[data-error]");
-  const countEl = $("[data-count]");
-  const updatedEl = $("[data-updated]");
-  const filterEl = $("[data-filter]");
-  const idleEl = $("[data-show-idle]");
-  const archEl = $("[data-show-archived]");
-
-  /* Five looks, assigned round-robin so adjacent projects never collide. A
-     stored group can name its own. */
-  const WORLDS = ["volume", "atrium", "terminal", "bloom", "paper"];
-  const STORE_KEY = "home.groups";
-
-  let projects = [];
-  let threads = [];
-  let groups = null;
-  let open = {};
-
-  function fail(message) {
-    errEl.hidden = false;
-    errEl.textContent = message;
+  /* A second button is the alternative, not a rival. */
+  form > button:not(:first-of-type), form > p > button:not(:first-of-type) {
+    color: var(--accent); background: transparent; border-color: var(--rule);
   }
+  form > button:hover:not(:disabled), form > p > button:hover:not(:disabled) { filter: brightness(1.08); }
+  form > button:disabled, form > p > button:disabled { opacity: 0.5; cursor: default; filter: none; }
 
-  function ago(ms) {
-    if (!ms) return "";
-    const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-    if (s < 60) return s + "s ago";
-    if (s < 3600) return Math.round(s / 60) + "m ago";
-    if (s < 86400) return Math.round(s / 3600) + "h ago";
-    return Math.round(s / 86400) + "d ago";
+  :root[data-theme="terminal"] form > button:first-of-type,
+  :root[data-theme="terminal"] form > p > button:first-of-type {
+    background: var(--surface); color: var(--accent); border-color: var(--rule);
+  }
+  :root[data-theme="terminal"] form > button:hover:not(:disabled),
+  :root[data-theme="terminal"] form > p > button:hover:not(:disabled) { border-color: var(--accent); }
+
+  :root[data-theme="atrium"] form > button:first-of-type,
+  :root[data-theme="atrium"] form > p > button:first-of-type { border-radius: 99px; box-shadow: var(--shadow); }
+
+  /* volume commits by pressing an object, so the button is one: a lit face
+     over a darker edge that the press pushes into the surface */
+  :root[data-theme="volume"] form > button:first-of-type,
+  :root[data-theme="volume"] form > p > button:first-of-type {
+    box-shadow: 0 2px 0 hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 0.6%)),
+                0 8px 16px -8px rgba(0, 0, 0, 0.55);
+  }
+  :root[data-theme="volume"] form > button:active:not(:disabled),
+  :root[data-theme="volume"] form > p > button:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow: 0 0 0 hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 0.6%));
   }
 
-  function defaultGroups() {
-    const used = projects.filter((p) => threads.some((t) => t.projectId === p.id));
-    const rest = projects.filter((p) => !used.includes(p));
-    return used.concat(rest).map((project, index) => ({
-      id: project.id,
-      label: project.name,
-      world: WORLDS[index % WORLDS.length],
-      projectIds: [project.id],
-    }));
+  :root[data-theme="bloom"] form > button:first-of-type,
+  :root[data-theme="bloom"] form > p > button:first-of-type {
+    border-radius: 99px; padding: 0.6rem 1.35rem; font-weight: 700;
   }
+`;
 
-  function visible(thread) {
-    if (!archEl.checked && thread.archived) return false;
-    if (!idleEl.checked && thread.status === "idle" && !thread.archived) return false;
-    const needle = filterEl.value.trim().toLowerCase();
-    if (needle && !thread.title.toLowerCase().includes(needle)) return false;
-    return true;
-  }
+// src/agent/seed/seed.ts
+var DEFAULT_PAGE_SEED = `<!doctype html>
+<html lang="en" data-theme="volume" data-mode="system" data-atmos="on">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>{{TITLE}}</title>
+  <style>${THEME_CSS}</style>
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <div class="wrap">
 
-  function el(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined) node.textContent = text;
-    return node;
-  }
+  <header class="brief-head">
+    <h1>{{TITLE}}</h1>
+    <p class="brief-meta"><span>{{DATE}}</span></p>
+  </header>
 
-  function actionButton(label, danger, run) {
-    const button = el("button", null, label);
-    button.type = "button";
-    if (danger) button.dataset.danger = "";
-    button.addEventListener("click", async () => {
-      const original = button.textContent;
-      button.disabled = true;
+  <!--
+    Write inside <main>. Plain semantic HTML is already styled: h2, p, ul,
+    table, form, fieldset/legend, a wrapping label, small, details. Three
+    class names exist: .card boxes an aside, .needs-you flags a block that is
+    blocked on the reader, .label is a small uppercase tag.
+
+    Every <form> answers this session automatically unless it carries
+    data-thread-page-manual. Blank answers are valid. A <form method="dialog">
+    you only meant as a local confirm still sends a message unless it opts out.
+
+    Files you put beside this index.html are served relatively: <img
+    src="chart.png">, <link href="page.css">, <script src="app.js">, nested
+    paths included. Ordinary <a href="https://\u2026"> links work.
+
+    data-theme: paper | terminal | atrium | volume | bloom.
+    data-mode: system | light | dark. data-atmos: on | off.
+    Extra CSS goes in one more <style>, everything inside @scope (main),
+    colour and shape from var(--token) only.
+
+    Never use window.prompt, alert, confirm or window.open: the sandbox
+    silences them. For anything more \u2014 charts, files, live session state,
+    starting sessions, links \u2014 run: bb thread-page guide
+  -->
+  <main>
+    <p>Replace this with what changed and what you need from the reader.</p>
+
+    <form data-title="{{TITLE}}">
+      <label>Reply
+        <textarea name="reply" rows="4"></textarea>
+      </label>
+      <button name="action" value="Reply">Reply</button>
+    </form>
+  </main>
+
+  </div>
+</body>
+</html>
+`;
+function renderSeed(template, title2, now = /* @__PURE__ */ new Date()) {
+  const date = now.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+  return template.replaceAll("{{TITLE}}", escapeHtml(title2)).replaceAll("{{DATE}}", escapeHtml(date));
+}
+
+// src/agent/cli.ts
+function registerCli(bb, deps) {
+  bb.cli.register({
+    name: "thread-page",
+    summary: "The page this session writes for its reader: create it, print the authoring guide, make it home",
+    commands: [
+      { name: "init", summary: "Create this session's page if absent; print its path and link", usage: "bb thread-page init" },
+      { name: "guide", summary: "Print the authoring guide (forms, files, capabilities, limits)", usage: "bb thread-page guide" },
+      { name: "home", summary: "Make this session's page the home page every page links back to", usage: "bb thread-page home [--clear]" },
+      { name: "status", summary: "Show settings, the instruction new sessions get, and this session's page", usage: "bb thread-page status" }
+    ],
+    async run(argv, context) {
+      const [command, ...rest] = argv;
       try {
-        button.textContent = await run();
-      } catch (error) {
-        /* A declined confirmation is a normal outcome, not a failure. */
-        button.textContent = error && error.code === "cancelled" ? original : "failed";
-        if (error && error.code !== "cancelled") {
-          fail((error.code || "error") + ": " + (error.message || ""));
+        switch (command) {
+          case "init":
+            return rest.length === 0 ? await init(deps, context) : usage();
+          case "guide":
+            return rest.length === 0 ? { exitCode: 0, stdout: `${deps.guide}
+` } : usage();
+          case "home":
+            if (rest.length === 0) return await home(deps, context);
+            if (rest.length === 1 && rest[0] === "--clear") return await clearHome(deps);
+            return usage("bb thread-page home [--clear]");
+          case "status":
+            return rest.length === 0 ? await status(deps, context) : usage();
+          default:
+            return usage();
         }
-      } finally {
-        window.setTimeout(() => {
-          button.disabled = false;
-          button.textContent = original;
-        }, 1600);
-      }
-    });
-    return button;
-  }
-
-  function renderRow(thread) {
-    const row = el("div", "row");
-    const left = el("div");
-    left.append(el("div", "name", thread.title || "Untitled"));
-    const sub = el("div", "sub");
-    const dot = el("span", "dot");
-    dot.dataset.state = thread.status;
-    sub.append(dot, el("span", null, thread.status));
-    if (thread.archived) sub.append(el("span", null, "· archived"));
-    if (thread.page.available) sub.append(el("span", null, "· has page"));
-    sub.append(el("span", null, "· " + ago(thread.updatedAtMs)));
-    left.append(sub);
-
-    const acts = el("div", "acts");
-    if (thread.page.available) {
-      acts.append(actionButton("Page", false, async () => {
-        await tp.invoke("threads.openPage", { threadId: thread.id });
-        return "opened";
-      }));
-    }
-    acts.append(actionButton("bb", false, async () => {
-      await tp.invoke("threads.openBb", { threadId: thread.id });
-      return "opened";
-    }));
-    acts.append(actionButton("Prompt", false, async () => {
-      const prompt = window.prompt("Send to “" + thread.title + "”:");
-      if (!prompt) return "Prompt";
-      const result = await tp.invoke("threads.continue", {
-        threadId: thread.id,
-        prompt,
-      });
-      return result.delivery;
-    }));
-    if (thread.status === "active") {
-      acts.append(actionButton("Stop", true, async () => {
-        await tp.invoke("threads.stop", { threadId: thread.id });
-        return "stopped";
-      }));
-    }
-    if (!thread.archived) {
-      acts.append(actionButton("Archive", true, async () => {
-        await tp.invoke("threads.archive", { threadId: thread.id });
-        await load();
-        return "archived";
-      }));
-    }
-    row.append(left, acts);
-    return row;
-  }
-
-  function renderStarter(group) {
-    const box = el("details", "starter");
-    box.append(el("summary", null, "Start a session here"));
-    const fields = el("div", "fields");
-
-    const ids = group.projectIds.filter((id) => projects.some((p) => p.id === id));
-    let projectId = ids[0];
-    if (ids.length > 1) {
-      const select = document.createElement("select");
-      for (const id of ids) {
-        const project = projects.find((p) => p.id === id);
-        const option = document.createElement("option");
-        option.value = id;
-        option.textContent = project ? project.name : id;
-        select.append(option);
-      }
-      select.addEventListener("change", () => { projectId = select.value; });
-      fields.append(select);
-    }
-
-    const text = document.createElement("textarea");
-    text.placeholder = "What should the new session do?";
-    const go = el("button", "go", "Start");
-    go.type = "button";
-    const say = el("p", "say");
-
-    go.addEventListener("click", async () => {
-      const prompt = text.value.trim();
-      if (!prompt) { say.dataset.tone = "bad"; say.textContent = "Say what it should do."; return; }
-      if (!projectId) { say.dataset.tone = "bad"; say.textContent = "This group has no project."; return; }
-      go.disabled = true;
-      say.dataset.tone = "";
-      say.textContent = "Waiting for confirmation…";
-      try {
-        await tp.invoke("threads.spawn", { projectId, prompt });
-        say.dataset.tone = "good";
-        say.textContent = "Started.";
-        text.value = "";
-        await load();
       } catch (error) {
-        if (error && error.code === "cancelled") {
-          say.dataset.tone = "";
-          say.textContent = "Cancelled.";
-        } else {
-          say.dataset.tone = "bad";
-          say.textContent = (error && error.message) || "Could not start it.";
-        }
-      } finally {
-        go.disabled = false;
+        deps.serving.host.log.warn(`cli ${command ?? ""}: ${errorText(PageError.is(error) ? error.cause ?? error : error)}`);
+        return { exitCode: 1, stderr: `Could not run thread-page ${command ?? ""}: ${errorText(error)}
+` };
       }
-    });
-
-    fields.append(text, go, say);
-    box.append(fields);
-    return box;
-  }
-
-  function render() {
-    groupsEl.textContent = "";
-    const list = groups || defaultGroups();
-    let shown = 0;
-
-    for (const group of list) {
-      const mine = threads
-        .filter((t) => group.projectIds.includes(t.projectId))
-        .filter(visible)
-        .sort((a, b) => b.updatedAtMs - a.updatedAtMs);
-      const active = mine.filter((t) => t.status === "active").length;
-
-      const box = document.createElement("details");
-      box.className = "group";
-      /* This is what gives each group its own look. */
-      if (group.world) box.dataset.world = group.world;
-      box.open = open[group.id] !== undefined ? open[group.id] : mine.length > 0;
-      box.addEventListener("toggle", () => { open[group.id] = box.open; });
-
-      const summary = document.createElement("summary");
-      summary.append(el("h2", null, group.label));
-      summary.append(
-        el("span", "meta", mine.length + (active ? " · " + active + " active" : "")),
-      );
-      box.append(summary);
-
-      if (mine.length) {
-        const rows = el("div", "rows");
-        for (const thread of mine) rows.append(renderRow(thread));
-        box.append(rows);
-      } else {
-        box.append(el("p", "empty", "Nothing here right now."));
-      }
-      box.append(renderStarter(group));
-      groupsEl.append(box);
-      shown += mine.length;
     }
-
-    countEl.textContent =
-      shown + " of " + threads.length + " session" + (threads.length === 1 ? "" : "s");
-    updatedEl.textContent = "updated " + new Date().toLocaleTimeString();
-  }
-
-  async function load() {
+  });
+}
+function usage(text = "bb thread-page <init|guide|home [--clear]|status>") {
+  return { exitCode: 2, stderr: `Usage: ${text}
+` };
+}
+async function currentSession(deps, context) {
+  if (!context.threadId) return { skip: "no current session" };
+  const session = await deps.serving.host.sessions.get(context.threadId);
+  if (!session) return { skip: "the current session does not exist" };
+  const reason = ineligibleReason(session);
+  if (reason) return { skip: describeIneligible(reason) };
+  return { id: session.id, session };
+}
+function skipLine(reason) {
+  return { exitCode: 0, stdout: `state: SKIP \u2014 ${reason}; this session has no page. Answer normally in chat and do not create one.
+` };
+}
+async function link(deps, path) {
+  const origin = await deps.serving.host.origin.public();
+  return origin ? `${origin}${path}` : path;
+}
+async function ensurePage(deps, id, title2) {
+  const { serving } = deps;
+  const location = await serving.host.sessions.storage(id);
+  const seed = renderSeed(serving.settings.current().pageSeedHtml, title2);
+  const outcome = await serving.host.files.write(location, ENTRY_FILE, Buffer.from(seed, "utf8"), { onlyIfAbsent: true });
+  const state = outcome === "written" ? "created" : "existing";
+  let problem = null;
+  if (state === "created") {
+    await serving.pages.remember(id, seed);
+  } else {
     try {
-      errEl.hidden = true;
-      const [projectList, snapshot, stored] = await Promise.all([
-        tp.invoke("projects.list", {}),
-        tp.invoke("threads.snapshot", { limit: 200, includeArchived: true }),
-        tp.invoke("storage.get", { key: STORE_KEY }).catch(() => ({ found: false })),
-      ]);
-      projects = projectList.projects;
-      threads = snapshot.threads;
-      groups = stored && stored.found && Array.isArray(stored.value) ? stored.value : null;
-      render();
+      await serving.pages.load(id);
     } catch (error) {
-      fail((error && error.message) || "Could not load sessions.");
+      problem = PageError.is(error) ? error.message : errorText(error);
     }
   }
-
-  for (const control of [filterEl, idleEl, archEl]) {
-    control.addEventListener("input", () => { if (threads.length) render(); });
+  const legacy = await serving.host.files.exist(location.hostId, [legacyEntryPath(location.rootPath)]).then((existence) => existence[legacyEntryPath(location.rootPath)] === true).catch(() => false);
+  return { absolutePath: entryPath(location.rootPath), state, legacy, problem };
+}
+async function init(deps, context) {
+  const current = await currentSession(deps, context);
+  if ("skip" in current) return skipLine(current.skip);
+  const { absolutePath, state, legacy, problem } = await ensurePage(deps, current.id, current.session.title);
+  const url = await link(deps, pageUrl(deps.serving.routeBase, current.id));
+  const lines = [
+    `page: ${absolutePath}`,
+    `link: [Open the Thread Page](${url})`,
+    state === "created" ? "state: NEW \u2014 seeded; make this page fit the task, keep a way to answer, then reply in chat with the link and one line." : "state: EXISTING \u2014 read it before editing; update it this turn, keep a way to answer, then reply in chat with the link and one line.",
+    `site: files beside ${ENTRY_FILE} are served relatively (nested paths included); ${UPLOAD_DIR}/ holds what the reader attaches.`,
+    "guide: bb thread-page guide  (files, charts, live session state, starting sessions, links, limits)"
+  ];
+  if (problem) lines.push(`warning: the existing page cannot be served \u2014 ${problem}`);
+  if (legacy) lines.push(`note: a ${LEGACY_ENTRY_FILE} from the previous plugin version is beside it; it is not served. Move what you want from it into ${ENTRY_FILE}.`);
+  return { exitCode: 0, stdout: `${lines.join("\n")}
+` };
+}
+async function home(deps, context) {
+  const current = await currentSession(deps, context);
+  if ("skip" in current) return { exitCode: 2, stderr: `Cannot make this session home: ${current.skip}. Run it from a visible root session.
+` };
+  const { serving } = deps;
+  const previous = serving.settings.current().homeSessionId;
+  const lines = [];
+  if (isSessionId(previous) && previous !== current.id) {
+    const other = await serving.host.sessions.get(previous).catch(() => null);
+    lines.push(`warning: home was ${other ? `\u201C${other.title}\u201D (${previous})` : previous}; it now points here instead.`);
   }
-  $("[data-refresh]").addEventListener("click", () => { void load(); });
+  const { state } = await ensurePage(deps, current.id, current.session.title);
+  await serving.settings.set({ homeSessionId: current.id });
+  const url = await link(deps, homeUrl(serving.routeBase));
+  lines.push(
+    `home: ${current.id}`,
+    `link: [Sessions](${url})`,
+    "Every other page now shows a \u201C\u2190 Sessions\u201D link back to this one.",
+    state === "created" ? "state: NEW \u2014 a plain seed was created for this session; build the hub yourself (sessions.snapshot, projects.list, pages.open, sessions.start). See bb thread-page guide \xA7The home page." : "state: EXISTING \u2014 this session's page was left untouched."
+  );
+  return { exitCode: 0, stdout: `${lines.join("\n")}
+` };
+}
+async function clearHome(deps) {
+  await deps.serving.settings.set({ homeSessionId: null });
+  return { exitCode: 0, stdout: "home: cleared \u2014 pages no longer show a Sessions link.\n" };
+}
+async function status(deps, context) {
+  const { serving } = deps;
+  const settings = serving.settings.current();
+  const instruction = deps.effectiveInstruction();
+  const lines = [
+    "# Thread Pages status",
+    "",
+    `agentInstructions: ${settings.agentInstructions ? "on" : "off"}`,
+    `workingLabel: ${settings.workingLabel ? JSON.stringify(settings.workingLabel) : "(blank \u2014 indicator hidden)"}`,
+    `homeSessionId: ${settings.homeSessionId || "(none \u2014 pages show no Sessions link)"}`,
+    `site strategy: ${serving.site.name}`,
+    `limits: entry ${LIMITS.entryDocumentBytes / (1024 * 1024)} MiB, upload ${LIMITS.uploadFileBytes / (1024 * 1024)} MiB \xD7 ${LIMITS.uploadsPerForm}, rate ${LIMITS.ratePerMinute}/min`,
+    "",
+    "## Instruction a new eligible session receives now",
+    "",
+    instruction ?? "(none \u2014 agentInstructions is off)"
+  ];
+  const current = await currentSession(deps, context);
+  lines.push("", "## This session");
+  if ("skip" in current) {
+    lines.push(`no page: ${current.skip}`);
+  } else {
+    const location = await serving.host.sessions.storage(current.id);
+    lines.push(`page: ${joinPath(location.rootPath, ENTRY_FILE)}`, `link: ${await link(deps, pageUrl(serving.routeBase, current.id))}`);
+    try {
+      const page = await serving.pages.load(current.id);
+      lines.push(`revision: ${page.revision}${page.stale ? " (offline copy)" : ""}`);
+    } catch (error) {
+      lines.push(`revision: ${PageError.is(error) ? error.message : errorText(error)}`);
+    }
+  }
+  return { exitCode: 0, stdout: `${lines.join("\n")}
+` };
+}
 
+// src/agent/guide.ts
+function buildGuide(registry, site) {
+  return [
+    intro(),
+    plainHtml(),
+    forms(),
+    uploads(),
+    ownFiles(site),
+    runtimeApi(),
+    capabilities(registry),
+    startingSessions(),
+    network(),
+    unavailable(),
+    composition(),
+    home2(),
+    accessibility(),
+    limits(),
+    limitations(site)
+  ].join("\n\n");
+}
+var intro = () => `# Thread Pages \u2014 authoring guide
 
-  void load();
-  /* Cheap and visible-only: the shell already reloads the page when the agent
-     saves, so this only keeps statuses fresh while you are looking. */
-  tp.watch("thread.activity", { limit: 1 }, () => { void load(); }, { intervalMs: 15000 });
-})();`;
+A page is a complete HTML document you edit directly; saving publishes it. It
+runs in a sandboxed frame on an opaque origin with no host credentials, and
+talks to the host only through captured forms and \`window.threadPage\`. Use
+the smallest shape that makes the task easier: plain semantic HTML first, a
+mini-app only when the shape of the thing is not prose.
 
-// page.ts
-import {
-  createHash,
-  createHmac,
-  timingSafeEqual
-} from "node:crypto";
+Your page root is your session's storage directory (\`$BB_THREAD_STORAGE\`):
+
+    ${ENTRY_FILE}       the entry document \u2014 the page
+    <any files>      served beside it, nested directories included
+    ${UPLOAD_DIR}/         files the reader attached, named by the host`;
+var plainHtml = () => `## What plain HTML already gives you
+
+The seed carries its own stylesheet, so semantic HTML is already styled.
+
+    h2, p, ul, table      the page's type scale and rhythm
+    form                  a panel wired to your session, with a status line
+    fieldset + legend     a named group; the legend becomes the question
+    label wrapping one    the label becomes that answer's name
+    small inside a label  a hint (never part of the answer's name)
+    input type=range      a slider with a live value readout
+    input type=file       uploaded on submit, path sent to you
+    details/summary       detail on demand; add name="x" for an accordion
+    div.card              a boxed aside
+    p.needs-you           a flagged block, for what is blocked on the reader
+    span.label            a small uppercase tag
+
+Three class names; everything else keys off what the element is. The look is
+three attributes on <html>: data-theme (paper | terminal | atrium | volume |
+bloom), data-mode (system | light | dark), data-atmos (on | off). Extra CSS
+goes in one more <style>, everything inside @scope (main), colour and shape
+from var(--token) only \u2014 that is what keeps a bespoke chart right in every
+world and in dark mode. You may replace the stylesheet entirely; the page is
+yours.`;
+var forms = () => `## Forms
+
+Every <form> in the document is captured and delivered to your session as a
+message \u2014 no JavaScript needed. Add data-thread-page-manual to a form your
+own script owns; the host then leaves it entirely alone.
+
+- Nothing is required and blank is a real answer: native validation is
+  suppressed, and a blank field arrives as "(left blank)".
+- Answer names come from, in order: data-label on the control, the enclosing
+  fieldset's legend, aria-label, the wrapping label's text, a <label for>,
+  the field name. Hints, options and nested controls are excluded.
+- Groups collapse: one checkbox is Yes/No; several checkboxes with one name
+  are a list of the checked values; radios are the one checked value or
+  blank; a multiple <select> is a list.
+- The submit button's value leads the message as **Action**, so several
+  <button name="action" value="\u2026"> give one-click answers.
+- Each form has its own pending, dirty and status state. While a submission
+  is in flight its controls are disabled; afterwards the status line says
+  "Sent (queued)" or why it failed.
+- Typing into a captured form marks the page dirty, so a new version of the
+  page does not reload under the reader. Custom state the host cannot see:
+  window.threadPage.setDirty(true|false).
+
+The message you receive looks like:
+
+    The user answered the form on your Thread Page \u2014 <form's data-title or the h1>.
+
+    **Action**
+    Approve
+
+    **Which approach**
+    second
+
+    **Anything else**
+    (left blank)
+
+### The dialog trap
+
+A <form method="dialog"> inside a <dialog> is a form, so it is captured too.
+If you write one as a purely local confirm and forget the opt-out attribute,
+pressing its button **sends a real message you did not intend**, and because
+its buttons carry control-flow values, you receive a plausible fabricated
+decision:
+
+    The user answered the form on your Thread Page \u2014 <the page's heading>.
+
+    **Action**
+    confirm
+
+Nothing marks it as accidental, and if a turn is running it arrives on the
+next one, detached from what caused it. Put data-thread-page-manual on every
+dialog form that is not meant to answer you.`;
+var uploads = () => `## Files the reader sends you
+
+A captured form may contain <input type="file"> (multiple is fine). On submit
+the files are uploaded first, then the submission is delivered naming them:
+
+    **Attached files**
+    - \`$BB_THREAD_STORAGE/${UPLOAD_DIR}/20260908-161200-3f9a1c-report.pdf\` (\u2026, 48213 bytes)
+
+Read them from there with your normal tools. Limits: ${mebibytes(LIMITS.uploadFileBytes)} per file,
+${LIMITS.uploadsPerForm} files per form (extras are dropped visibly). Names are generated by
+the host; the reader's filename is only a suffix. An upload that fails shows
+in the form's status line and no submission claims the missing file.`;
+var ownFiles = (site) => `## Files you show the reader
+
+Put them beside ${ENTRY_FILE} and reference them relatively \u2014 nested paths,
+spaces and punctuation in names are all fine:
+
+    <link rel="stylesheet" href="style.css">
+    <script src="app.js"></script>
+    <img src="figures/chart.png" alt="\u2026">
+
+No permission, no declaration, no API: writing a file into your page root is
+enough. Keep everything inside your own page root; another agent's page is
+not yours to write.${site.name === "core-storage" ? `
+
+**One limitation on this host:** \`fetch("data.json")\` of your own file from
+page script is refused (403) \u2014 the host's file route rejects the sandbox's
+\`Origin: null\`. Subresources (<script>, <link>, <img>) load normally, so
+load data with <script src="data.js"> or inline it in the document. Remote
+fetches work (see Network).` : `
+
+Page script may also fetch its own files as data: \`await fetch("data.json")\`.`}`;
+var runtimeApi = () => `## window.threadPage
+
+The complete page-facing API; it is frozen and cannot be replaced.
+
+    window.threadPage.version               // 1
+    await window.threadPage.invoke(method, params)
+    const stop = window.threadPage.watch(method, params, (value, error) => {\u2026}, { intervalMs })
+    window.threadPage.setDirty(true | false)
+
+- \`invoke\` resolves with the capability's result and rejects with an Error
+  whose \`code\` is one of: invalid_json, invalid_request, invalid_params,
+  invalid_response, request_too_large, response_too_large,
+  unsupported_version, unknown_method, stale_page, confirmation_required,
+  confirmation_invalid, cancelled, not_found, conflict, unavailable,
+  rate_limited, handler_error, invalid_result. Calls made before the page is
+  connected are queued, never lost.
+- \`watch\` polls a read capability: default every ${LIMITS.watchDefaultMs / 1e3} s, clamped to
+  ${LIMITS.watchMinMs / 1e3} s\u2013${LIMITS.watchMaxMs / 6e4} min, paused while the tab is hidden. Errors go to the
+  listener's second argument. Call the returned function to stop; a page that
+  never calls watch causes no polling.
+- \`stale_page\` means the page changed under the call: the shell offers a
+  reload. \`cancelled\` means the reader declined a confirmation \u2014 a normal
+  outcome every page calling a confirmed capability must handle, not an error.
+
+Check what is enabled rather than assume: \`(await invoke("context.get")).capabilities\`.`;
+function capabilities(registry) {
+  const rows = registry.list().map((spec2) => {
+    const status2 = spec2.implemented ? spec2.confirmed ? "confirmed in trusted chrome" : "no confirmation" : "not implemented on this host: unknown_method";
+    const lines = [`### \`${spec2.method}\` \u2014 ${spec2.effect} \xB7 ${status2}`, "", spec2.description, "", `Parameters: ${spec2.doc.params}`, "", `Result: ${spec2.doc.result}`];
+    if (spec2.doc.notes) lines.push("", spec2.doc.notes);
+    return lines.join("\n");
+  });
+  return `## Capabilities
+
+Every way a page can affect anything outside itself. Effects: read;
+own-session-write; cross-session-write, destructive and device (always
+confirmed); navigation (confirmed when it leaves this host). A confirmed
+capability shows a dialog in trusted chrome with the host's own wording; you
+do not build it and cannot word it. Every capability validates its
+parameters exactly \u2014 unknown keys are refused \u2014 and returns only the fields
+listed here.
+
+${rows.join("\n\n")}`;
+}
+var startingSessions = () => `## Starting work from a page
+
+\`sessions.start\` is how a page that should stay put comes to exist: its
+buttons start fresh sessions instead of messaging you, so nothing asks you to
+rewrite it. It succeeds with only a project and a prompt:
+
+    await window.threadPage.invoke("sessions.start", {
+      projectId, prompt: "Run the test suite. Report failures only; change nothing."
+    });
+
+What you get when you say nothing, and how to say otherwise:
+
+- environment: the project's default. Otherwise \`environment: { sameAs: sessionId }\`
+  runs in the same environment as that session.
+- provider, model, reasoningLevel: the project's defaults. Otherwise name ids
+  from \`providers.list\`.
+- title: the host's own. Otherwise \`title\`.
+- The session is a visible root owned by the reader, never a child of yours.
+
+The confirmation names the project and the prompt. Handle \`cancelled\`:
+
+    try { await invoke("sessions.start", {\u2026}); say("Started."); }
+    catch (e) { say(e.code === "cancelled" ? "Nothing started." : e.message); }
+
+\`sessions.send\` steers an existing session the same way; it refuses your own
+session \u2014 use \`session.reply\` for that.`;
+var network = () => `## Network
+
+Pages have internet access: fetch any origin, load remote fonts, scripts,
+stylesheets, images and media, open WebSockets. The page still holds no host
+credential \u2014 reaching a URL and acting as the host are different things.
+
+Two consequences to know: page script runs in the reader's browser, so it can
+reach what that device can reach, including its own network; and script can
+navigate its own frame with data in the URL. Both are accepted, documented
+properties of the model, not bugs to work around.`;
+var unavailable = () => `## What the sandbox silences
+
+These do nothing, silently \u2014 the worst failure mode \u2014 so never rely on them:
+
+- \`window.open\` \u2014 use \`pages.open\` for another page, \`sessions.openHost\`
+  for the host application, and a plain <a href="https://\u2026"> or
+  \`navigation.openExternal\` for the web.
+- \`window.prompt\`, \`alert\`, \`confirm\` \u2014 build the input or the question into
+  the page (an <input>, a <dialog> with data-thread-page-manual, a second
+  form), or use a confirmed capability, which renders its own dialog.
+- top-level navigation \u2014 \`pages.open\` and \`sessions.openHost\` navigate the
+  reader's view in place through trusted chrome; the back button returns.
+
+An ordinary <a href="https://\u2026"> works: the host intercepts the click and
+routes it through \`navigation.openExternal\`, which confirms and names the
+destination. Same-document fragments (#section) work natively. The trust
+boundary is not configurable: no setting widens the sandbox.`;
+var composition = () => `## One agent, one page
+
+Your page is yours alone. You never read or write another agent's page, and
+the host provides no mechanism to. If the reader wants a dashboard, a console
+or a second view, start a session with instructions to build it; that agent
+writes its own page. Link to it with \`pages.open\`, or suggest making it home.
+If you want another agent's page changed, send that agent a message with
+\`sessions.send\` rather than editing its file. Do not create a session merely
+to hold a page: a page that stays put is owned by a real agent that built it
+and then stopped.`;
+var home2 = () => `## The home page
+
+One page is home; every other page shows a "\u2190 Sessions" link back to it in
+chrome you never write. \`bb thread-page home\` sets the pointer for the
+current session (\`--clear\` removes it) and creates the plain seed if the
+session has no page yet; it never touches an existing page. Home is an
+ordinary page \u2014 a session hub is one an agent builds:
+
+    const { sessions } = await invoke("sessions.snapshot", { limit: 100, includeArchived: false });
+    const { projects } = await invoke("projects.list");
+    // group by projectId, render rows, then per row:
+    //   pages.open { sessionId }      sessions.openHost { sessionId }
+    //   sessions.send { sessionId, prompt }   sessions.stop / sessions.archive
+    // and per project: sessions.start { projectId, prompt }
+    // keep grouping in storage.set { key: "home.groups", value }
+
+Refresh the list with \`watch("session.activity", { limit: 1 }, \u2026)\` or on a
+button, not on a tight timer: the page shares a rate budget of
+${LIMITS.ratePerMinute} requests a minute with its own forms.`;
+var accessibility = () => `## Before you save
+
+- Read it once at 320px wide, once in dark mode, once with reduced motion.
+- Every action reachable by keyboard; nothing pointer-only.
+- Inline SVG for diagrams and charts, with var(--accent) inside it; a zero
+  gets a visible stub or the eye reads missing data.
+- grep -o '#[0-9a-fA-F]\\{3,8\\}' ${ENTRY_FILE} inside your <style> should be empty.`;
+var limits = () => `## Limits
+
+| Limit | Value |
+| --- | --- |
+| Entry document | ${mebibytes(LIMITS.entryDocumentBytes)}, refused above, never truncated |
+| Other files in the page root | ${mebibytes(25 * 1024 * 1024)} per file (${mebibytes(10 * 1024 * 1024)} for images), the host's read limit |
+| Upload per file | ${mebibytes(LIMITS.uploadFileBytes)} |
+| Uploads per form | ${LIMITS.uploadsPerForm} |
+| Submission body | ${kibibytes(LIMITS.submissionBodyBytes)} excluding uploaded bytes; ${LIMITS.answersPerSubmission} answers; ${LIMITS.answerValueChars} characters per answer |
+| Capability payload | ${kibibytes(LIMITS.capabilityPayloadBytes)} request and response, depth ${LIMITS.capabilityJsonDepth}, ${LIMITS.capabilityJsonNodes} nodes |
+| Prompt | ${kibibytes(LIMITS.promptChars)} characters (sessions.start, sessions.send) |
+| session.reply result | ${kibibytes(LIMITS.resultTextBytes)} |
+| Title | ${LIMITS.titleChars} characters |
+| storage value | ${kibibytes(LIMITS.storageValueBytes)} per key; keys ${LIMITS.storageKeyChars} characters |
+| sessions.snapshot | ${LIMITS.snapshotDefault} default, ${LIMITS.snapshotMax} maximum per call |
+| session.activity | ${LIMITS.activityDefault} default, ${LIMITS.activityMax} maximum |
+| Page session (action token) | ${LIMITS.actionTokenMs / 36e5} hours, then the shell reloads or asks |
+| Confirmation | ${LIMITS.confirmationMs / 6e4} minutes to answer the dialog |
+| Folder selection | ${LIMITS.selectionTokenMs / 6e4} minutes, single use |
+| Submission idempotency | ${LIMITS.idempotencyRecords} records, ${LIMITS.idempotencyMs / 6e4} minutes |
+| Rate limit | ${LIMITS.ratePerMinute} accepted requests a minute and ${LIMITS.rateConcurrent} in flight, per page; refused with rate_limited |
+| Shell revision poll | every ${LIMITS.shellPollMs / 1e3} s while visible |
+| watch interval | ${LIMITS.watchDefaultMs / 1e3} s default, ${LIMITS.watchMinMs / 1e3} s\u2013${LIMITS.watchMaxMs / 6e4} min |
+| Offline copy | entry documents up to ${kibibytes(LIMITS.offlineCopyBytes)} are kept so the page opens read-only when its host is unreachable |`;
+var limitations = (site) => `## Known limitations
+
+- A page served from the offline copy is read-only: captured forms are
+  disabled and effectful capabilities answer unavailable.
+- A confirmed capability that fails on the host answers handler_error with a
+  generic message; the cause is in the plugin log (\`bb plugin logs thread-pages\`).
+- Embedding another page or site in an <iframe> is blocked (frame-src 'none').
+- \`voice.captureAndTranscribe\` is not implemented: unknown_method.${site.name === "core-storage" ? `
+- fetch() of your own files from page script is refused on this host (see Files you show the reader).` : ""}`;
+
+// src/bb/activity.ts
+function sessionStateOf(thread, hasPendingInteraction) {
+  const runtime = asRecord(thread.runtime);
+  const display = typeof runtime?.displayStatus === "string" ? runtime.displayStatus : typeof thread.status === "string" ? thread.status : "idle";
+  if (["active", "starting", "provisioning", "stopping"].includes(display)) return "working";
+  if (display === "error") return "failed";
+  if (hasPendingInteraction) return "waiting";
+  return "idle";
+}
+var FALLBACK_LABELS = {
+  agentMessage: ["Writing", "Wrote"],
+  reasoning: ["Thinking", "Thought"]
+};
+function activityItemsOf(events, limit) {
+  const out = [];
+  for (const raw of events) {
+    const event = asRecord(raw);
+    if (!event) continue;
+    if (event.type !== "item/started" && event.type !== "item/completed") continue;
+    const done = event.type === "item/completed";
+    const data = asRecord(event.data);
+    const item = asRecord(data?.item) ?? data;
+    if (!item || typeof item.type !== "string") continue;
+    const presentation = asRecord(item.presentation);
+    const labels = asRecord(presentation?.label);
+    const presented = labels?.[done ? "completed" : "pending"];
+    const fallback = FALLBACK_LABELS[item.type];
+    const label = typeof presented === "string" ? presented : fallback ? fallback[done ? 1 : 0] : null;
+    if (!label) continue;
+    const detail = presentation?.title ?? item.command ?? item.text ?? item.name ?? "";
+    const atMs = typeof event.createdAt === "number" && Number.isFinite(event.createdAt) ? Math.max(0, Math.trunc(event.createdAt)) : 0;
+    out.push({
+      kind: item.type.slice(0, 80),
+      done,
+      atMs,
+      label: label.trim().slice(0, 80) || (done ? "Completed" : "Working"),
+      text: String(detail).replace(/\s+/g, " ").trim().slice(0, 200)
+    });
+  }
+  out.reverse();
+  return out.slice(-limit);
+}
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+// src/bb/public-origin.ts
+function createPublicOrigin(bb, cacheMs = 3e4) {
+  let cached = null;
+  return async () => {
+    const now = Date.now();
+    if (cached && now - cached.at < cacheMs) return cached.origin;
+    const origin = await connectOrigin(bb) ?? configuredOrigin(bb);
+    cached = origin ? { at: now, origin } : null;
+    return origin;
+  };
+}
+async function connectOrigin(bb) {
+  try {
+    const status2 = await bb.sdk.plugins.callRpc({
+      pluginId: "connect",
+      method: "status",
+      input: null,
+      // Connect validates its own output; we read two fields.
+      outputSchema: { parse: (value) => value }
+    });
+    if (status2 && status2.state === "connected" && typeof status2.url === "string") {
+      return new URL(status2.url).origin;
+    }
+  } catch {
+  }
+  return null;
+}
+function configuredOrigin(bb) {
+  try {
+    const url = bb.server.experimental_appUrl;
+    return url ? new URL(url).origin : null;
+  } catch {
+    return null;
+  }
+}
+
+// src/bb/bb-host.ts
+function createBbHost(bb) {
+  const publicOrigin = createPublicOrigin(bb);
+  async function pendingInteraction(threadId) {
+    try {
+      const listed = await bb.sdk.threads.interactions.list({ threadId });
+      const record = asRecord(listed);
+      const interactions = Array.isArray(listed) ? listed : Array.isArray(record?.interactions) ? record.interactions : [];
+      return interactions.length > 0;
+    } catch {
+      return false;
+    }
+  }
+  function projectThread(thread, hasPendingInteraction) {
+    return {
+      id: String(thread.id),
+      title: typeof thread.title === "string" && thread.title || typeof thread.titleFallback === "string" && thread.titleFallback || "Untitled",
+      projectId: typeof thread.projectId === "string" ? thread.projectId : null,
+      state: sessionStateOf(thread, hasPendingInteraction),
+      visibility: thread.visibility === "hidden" ? "hidden" : "visible",
+      parentId: typeof thread.parentThreadId === "string" ? thread.parentThreadId : null,
+      forkOfId: typeof thread.sourceThreadId === "string" ? thread.sourceThreadId : null,
+      archived: thread.archivedAt !== null && thread.archivedAt !== void 0,
+      deleted: thread.deletedAt !== null && thread.deletedAt !== void 0,
+      updatedAtMs: typeof thread.updatedAt === "number" ? Math.max(0, Math.trunc(thread.updatedAt)) : 0,
+      environmentId: typeof thread.environmentId === "string" ? thread.environmentId : null
+    };
+  }
+  async function getThread(id) {
+    try {
+      const thread = await bb.sdk.threads.get({ threadId: id });
+      return asRecord(thread);
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw hostUnavailable(error);
+    }
+  }
+  const host = {
+    sessions: {
+      async get(id) {
+        const thread = await getThread(id);
+        if (!thread) return null;
+        const idle = sessionStateOf(thread, false) === "idle";
+        return projectThread(thread, idle ? await pendingInteraction(id) : false);
+      },
+      async list(query) {
+        const rows = await bb.sdk.threads.list({
+          ...query.projectId ? { projectId: query.projectId } : {},
+          ...query.archived ? { archived: true } : {},
+          limit: query.limit,
+          offset: query.offset
+        });
+        if (!Array.isArray(rows)) return [];
+        return rows.map((row) => asRecord(row)).filter((row) => row !== null).map((row) => projectThread(row, row.hasPendingInteraction === true));
+      },
+      async send(id, text, mode) {
+        const before = await getThread(id);
+        const wasWorking = before ? sessionStateOf(before, false) === "working" : false;
+        const sent = await bb.sdk.threads.send({
+          threadId: id,
+          mode: mode === "steer" ? "steer-if-active" : "queue-if-active",
+          input: [{ type: "text", text, mentions: [] }]
+        });
+        if (sent.delivery === "queued") return { delivery: "queued" };
+        return { delivery: mode === "steer" && wasWorking ? "steered" : "started" };
+      },
+      async start(args) {
+        const spawned = await bb.sdk.threads.spawn({
+          projectId: args.projectId,
+          prompt: args.prompt,
+          ...args.title ? { title: args.title } : {},
+          ...args.providerId ? { providerId: args.providerId } : {},
+          ...args.model ? { model: args.model } : {},
+          ...args.reasoningLevel ? { reasoningLevel: args.reasoningLevel } : {},
+          environment: args.environment.kind === "reuse" ? { type: "reuse", environmentId: args.environment.environmentId } : { type: "project-default" },
+          // The reader started this work: a visible root, never a hidden helper.
+          visibility: "visible"
+        });
+        return { id: spawned.id };
+      },
+      async stop(id) {
+        await bb.sdk.threads.stop({ threadId: id });
+      },
+      async archive(id) {
+        await bb.sdk.threads.archive({ threadId: id });
+      },
+      async activity(id, limit) {
+        const events = await bb.sdk.threads.events.list({
+          threadId: id,
+          order: "desc",
+          limit: "80",
+          types: ["item/started", "item/completed"]
+        });
+        return activityItemsOf(Array.isArray(events) ? events : [], limit);
+      },
+      async storage(id) {
+        try {
+          const location = await bb.sdk.threads.storageLocation({ threadId: id });
+          return { hostId: location.hostId, rootPath: location.storageRootPath };
+        } catch (error) {
+          if (isNotFound(error)) throw new PageError("not_found", "That session is not available", { cause: error });
+          throw hostUnavailable(error);
+        }
+      }
+    },
+    projects: {
+      async list() {
+        const projects = await bb.sdk.projects.list({ includePersonal: true });
+        if (!Array.isArray(projects)) return [];
+        return projects.map((raw) => asRecord(raw)).filter((project) => project !== null && typeof project.id === "string").map((project) => ({
+          id: String(project.id),
+          name: typeof project.name === "string" ? project.name : "Untitled",
+          kind: project.kind === "personal" ? "personal" : "standard",
+          hostId: defaultHostId(project.sources)
+        }));
+      },
+      async browse(hostId) {
+        const picked = await bb.sdk.hosts.pickFolder({ hostId, clientHostId: hostId });
+        if (!picked.path) return null;
+        const hostRecord = await bb.sdk.hosts.get({ hostId }).catch(() => null);
+        return { path: picked.path, hostName: hostRecord?.name ?? "this device" };
+      },
+      async create(args) {
+        const created = await bb.sdk.projects.create({ name: args.name, source: { type: "local_path", hostId: args.hostId, path: args.path } });
+        return { id: created.id, name: created.name, kind: created.kind === "personal" ? "personal" : "standard", hostId: args.hostId };
+      }
+    },
+    providers: {
+      async list() {
+        let providers;
+        try {
+          providers = await bb.sdk.providers.list();
+        } catch (error) {
+          throw new PageError("unavailable", "Providers cannot be listed right now", { cause: error });
+        }
+        if (!Array.isArray(providers)) throw new PageError("unavailable", "Providers cannot be listed right now");
+        const choices = await Promise.all(
+          providers.map((raw) => asRecord(raw)).filter((provider) => provider !== null && typeof provider.id === "string").map(async (provider) => {
+            const id = String(provider.id);
+            const catalog = await bb.sdk.providers.models({ providerId: id }).catch(() => null);
+            const models = asRecord(catalog)?.models;
+            return {
+              id,
+              displayName: typeof provider.displayName === "string" ? provider.displayName : id,
+              available: provider.available !== false,
+              models: (Array.isArray(models) ? models : []).map((raw) => asRecord(raw)).filter((model) => model !== null && typeof model.id === "string").map((model) => ({
+                id: String(model.id),
+                displayName: typeof model.displayName === "string" ? model.displayName : String(model.id),
+                isDefault: model.isDefault === true,
+                reasoningLevels: (Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : []).map((effort) => asRecord(effort)?.reasoningEffort).filter((level) => typeof level === "string")
+              }))
+            };
+          })
+        );
+        return choices;
+      }
+    },
+    files: {
+      async read(location, relativePath) {
+        try {
+          const file = await bb.sdk.files.read({ hostId: location.hostId, path: joinPath(location.rootPath, relativePath), rootPath: location.rootPath });
+          const bytes = file.contentEncoding === "base64" ? Buffer.from(file.content, "base64") : Buffer.from(file.content, "utf8");
+          return { bytes, sha256: file.sha256, modifiedAtMs: typeof file.modifiedAtMs === "number" ? file.modifiedAtMs : null };
+        } catch (error) {
+          if (isNotFound(error)) return null;
+          throw hostUnavailable(error);
+        }
+      },
+      async write(location, relativePath, bytes, options) {
+        try {
+          const written = await bb.sdk.files.write({
+            hostId: location.hostId,
+            path: joinPath(location.rootPath, relativePath),
+            rootPath: location.rootPath,
+            content: Buffer.from(bytes).toString("base64"),
+            contentEncoding: "base64",
+            createParents: true,
+            ...options.onlyIfAbsent ? { expectedSha256: null } : {},
+            mode: 420
+          });
+          return written.outcome === "written" ? "written" : "exists";
+        } catch (error) {
+          if (options.onlyIfAbsent && isConflict(error)) return "exists";
+          throw hostUnavailable(error);
+        }
+      },
+      async exist(hostId, absolutePaths) {
+        if (absolutePaths.length === 0) return {};
+        try {
+          const result2 = await bb.sdk.hosts.pathsExist({ hostId, paths: [...absolutePaths] });
+          return Object.fromEntries(absolutePaths.map((path) => [path, result2.existence[path] === true]));
+        } catch {
+          return Object.fromEntries(absolutePaths.map((path) => [path, false]));
+        }
+      }
+    },
+    kv: {
+      get: (key) => bb.storage.kv.get(key),
+      set: (key, value) => bb.storage.kv.set(key, value),
+      delete: (key) => bb.storage.kv.delete(key)
+    },
+    origin: { public: publicOrigin },
+    log: bb.log
+  };
+  return host;
+}
+function defaultHostId(sources) {
+  if (!Array.isArray(sources)) return null;
+  const records = sources.map((raw) => asRecord(raw)).filter((source) => source !== null);
+  const chosen = records.find((source) => source.isDefault === true) ?? records[0];
+  return chosen && typeof chosen.hostId === "string" ? chosen.hostId : null;
+}
+function isNotFound(error) {
+  const record = asRecord(error);
+  if (record) {
+    if (record.code === "ENOENT" || record.status === 404) return true;
+    const body = asRecord(record.body);
+    if (body?.code === "ENOENT" || body?.code === "not_found") return true;
+  }
+  return /\b(enoent|not found|does not exist|no such file)\b/i.test(errorText(error));
+}
+function isConflict(error) {
+  const record = asRecord(error);
+  return record?.status === 409 || /\b(conflict|already exists|exists)\b/i.test(errorText(error));
+}
+function hostUnavailable(error) {
+  return PageError.is(error) ? error : new PageError("unavailable", PUBLIC_MESSAGES.unavailable, { cause: error });
+}
+
+// src/agent/instruction.ts
+var DEFAULT_AGENT_INSTRUCTION = `# The page is the conversation
+
+The reader does not read chat. Every turn you write or update one HTML page;
+they read it and answer from inside it, and the answer arrives as your next
+message. Chat carries the link and one line. A page they cannot answer from is
+a dead end.
+
+Start every turn with \`bb thread-page init\`. It prints the page path and the
+link. Read an existing page before editing it; saving publishes it at once and
+an open page reloads itself. If init says SKIP, this session is a helper:
+answer in chat and stay off the page.
+
+## Every page ends with a way to answer
+
+Any <form> is wired automatically; nothing is required and blank is a real
+answer. Plain semantic HTML is already styled: <fieldset><legend> names a
+group, a wrapping <label> names one control, <small> is a hint, several
+<button name value> give one-click answers.
+
+Asking well is most of the work: buttons and radios for decisions, checkboxes
+for multi-select, free text only where the answer is genuinely open. A scale
+needs a meaning at both ends, never a bare 1-to-5. Always leave one open field
+for what you failed to anticipate: a form that permits only the answers you
+expect takes the decision away from the reader.
+
+## What belongs on the page
+
+What you did, at the level they could explain to someone else; decisions that
+are theirs, with the options and your recommendation; what only they can
+supply; anything a wrong assumption of yours would make costly. Report
+failures, skipped steps and your own mistakes plainly. Conclusion first.
+
+## One agent, one page
+
+Your page is yours alone: you never read or write another agent's page. To
+create another interface \u2014 a dashboard, a console, a second view \u2014 start a
+session with instructions to build it; that agent writes its own page. Link to
+it, or suggest making it home. A page that should stay put is one whose forms
+start fresh sessions instead of messaging you: nothing then asks you to
+rewrite it. If you want another agent's page changed, talk to that agent.
+
+## More
+
+A page that needs more than prose and a form \u2014 files beside it, a chart, live
+session state, starting or steering sessions, links \u2014 runs
+\`bb thread-page guide\` first.`;
+
+// src/config/settings.ts
+var DEFAULT_WORKING_LABEL = "Working \u2014 this is the last saved version";
+async function defineSettings(bb) {
+  const handle = bb.settings.define({
+    agentInstructions: {
+      type: "boolean",
+      label: "Agent instructions",
+      description: "Inject the standing Thread Pages instruction into every eligible new session.",
+      default: false
+    },
+    agentInstructionText: {
+      type: "string",
+      label: "Agent instruction text",
+      description: "What eligible new sessions receive when Agent instructions is on. Changing it affects future sessions only.",
+      experimental_multiline: true,
+      default: DEFAULT_AGENT_INSTRUCTION
+    },
+    pageSeedHtml: {
+      type: "string",
+      label: "New-page seed",
+      description: "The complete HTML a new page starts from. {{TITLE}} is replaced, escaped. Existing pages are never rewritten.",
+      experimental_multiline: true,
+      default: DEFAULT_PAGE_SEED
+    },
+    workingLabel: {
+      type: "string",
+      label: "Working indicator text",
+      description: "Shown in the page header while the owning session is mid-turn. Blank hides the indicator.",
+      default: DEFAULT_WORKING_LABEL
+    },
+    homeSessionId: {
+      type: "string",
+      label: "Home page session",
+      description: "The session whose page is home; every other page links back to it. Set with `bb thread-page home`.",
+      default: ""
+    }
+  });
+  let current = normalize(await handle.get());
+  handle.onChange((next) => {
+    current = normalize(next);
+  });
+  return {
+    current: () => current,
+    async set(values) {
+      current = normalize(await handle.experimental_set(values));
+      return current;
+    }
+  };
+}
+function normalize(values) {
+  return {
+    agentInstructions: values.agentInstructions === true,
+    agentInstructionText: values.agentInstructionText,
+    pageSeedHtml: values.pageSeedHtml,
+    workingLabel: values.workingLabel.trim(),
+    homeSessionId: values.homeSessionId.trim()
+  };
+}
+
+// src/domain/capabilities/contract.ts
+var EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device"];
+var CONFIRMED_EFFECTS = /* @__PURE__ */ new Set(["cross-session-write", "destructive", "device"]);
+
+// src/domain/capabilities/registry.ts
+function createRegistry(specs) {
+  const byMethod = /* @__PURE__ */ new Map();
+  for (const spec2 of specs) {
+    if (!isMethodName(spec2.method)) throw new TypeError(`Invalid capability name: ${spec2.method}`);
+    if (byMethod.has(spec2.method)) throw new TypeError(`Duplicate capability: ${spec2.method}`);
+    if (!EFFECT_CLASSES.includes(spec2.effect)) throw new TypeError(`Invalid effect for ${spec2.method}`);
+    if (CONFIRMED_EFFECTS.has(spec2.effect) && !spec2.confirmed) {
+      throw new TypeError(`${spec2.method} has a ${spec2.effect} effect and must be confirmed`);
+    }
+    if ((spec2.effect === "read" || spec2.effect === "own-session-write") && spec2.confirmed) {
+      throw new TypeError(`${spec2.method} is a ${spec2.effect} and must not be confirmed`);
+    }
+    if (typeof spec2.description !== "string" || spec2.description.trim().length === 0 || spec2.description.length > 240) {
+      throw new TypeError(`Invalid description for ${spec2.method}`);
+    }
+    byMethod.set(spec2.method, Object.freeze({ ...spec2 }));
+  }
+  const list = Object.freeze([...byMethod.values()]);
+  const descriptors = Object.freeze(
+    list.filter((spec2) => spec2.implemented).map((spec2) => ({
+      method: spec2.method,
+      effect: spec2.effect,
+      confirmation: spec2.confirmed ? "required" : "none"
+    }))
+  );
+  return Object.freeze({
+    get: (method) => byMethod.get(method),
+    list: () => list,
+    descriptors: () => descriptors
+  });
+}
+
+// src/domain/json/strict-json.ts
+function valid(value) {
+  return { ok: true, value };
+}
+function invalid(path, message, code = "invalid_value") {
+  return { ok: false, issues: [{ code, path, message }] };
+}
+var UNSAFE_KEYS = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
+function pathForKey(parent, key) {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? `${parent}.${key}` : `${parent}[${JSON.stringify(key)}]`;
+}
+function utf8Bytes(value) {
+  return new TextEncoder().encode(value).byteLength;
+}
+function validateJson(input, limits2 = {}) {
+  const maxBytes = limits2.maxBytes ?? LIMITS.capabilityPayloadBytes;
+  const maxDepth = limits2.maxDepth ?? LIMITS.capabilityJsonDepth;
+  const maxNodes = limits2.maxNodes ?? LIMITS.capabilityJsonNodes;
+  const ancestors = /* @__PURE__ */ new Set();
+  let nodes = 0;
+  function visit(value, path, depth) {
+    nodes += 1;
+    if (nodes > maxNodes) return { code: "too_large", path, message: `JSON exceeds ${maxNodes} nodes` };
+    if (depth > maxDepth) return { code: "too_deep", path, message: `JSON exceeds depth ${maxDepth}` };
+    if (value === null || typeof value === "string" || typeof value === "boolean") return null;
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? null : { code: "not_json_safe", path, message: "Numbers must be finite" };
+    }
+    if (typeof value !== "object") {
+      return { code: "not_json_safe", path, message: `Unsupported value type: ${typeof value}` };
+    }
+    if (ancestors.has(value)) return { code: "not_json_safe", path, message: "Cyclic values are not JSON-safe" };
+    ancestors.add(value);
+    try {
+      if (Array.isArray(value)) {
+        for (const key of Reflect.ownKeys(value)) {
+          if (typeof key === "symbol") return { code: "not_json_safe", path, message: "Symbol properties are not JSON-safe" };
+          if (key !== "length" && !isCanonicalIndex(key, value.length)) {
+            return { code: "not_json_safe", path: pathForKey(path, key), message: "Arrays may not carry extra properties" };
+          }
+        }
+        for (let index = 0; index < value.length; index += 1) {
+          const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+          if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+            return { code: "not_json_safe", path: `${path}[${index}]`, message: "Sparse arrays and accessors are not JSON-safe" };
+          }
+          const issue2 = visit(descriptor.value, `${path}[${index}]`, depth + 1);
+          if (issue2) return issue2;
+        }
+        return null;
+      }
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        return { code: "not_json_safe", path, message: "Only plain objects are JSON-safe" };
+      }
+      for (const key of Reflect.ownKeys(value)) {
+        if (typeof key === "symbol") return { code: "not_json_safe", path, message: "Symbol properties are not JSON-safe" };
+        if (UNSAFE_KEYS.has(key)) return { code: "not_json_safe", path: pathForKey(path, key), message: "Unsafe object key" };
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+          return { code: "not_json_safe", path: pathForKey(path, key), message: "Entries must be enumerable data properties" };
+        }
+        const issue2 = visit(descriptor.value, pathForKey(path, key), depth + 1);
+        if (issue2) return issue2;
+      }
+      return null;
+    } catch {
+      return { code: "not_json_safe", path, message: "Value could not be inspected" };
+    } finally {
+      ancestors.delete(value);
+    }
+  }
+  const issue = visit(input, "$", 0);
+  if (issue) return { ok: false, issues: [issue] };
+  let serialized;
+  try {
+    serialized = JSON.stringify(input);
+  } catch {
+    return invalid("$", "Value could not be serialised", "not_json_safe");
+  }
+  if (utf8Bytes(serialized) > maxBytes) {
+    return invalid("$", `Serialised JSON exceeds ${maxBytes} bytes`, "too_large");
+  }
+  return valid(JSON.parse(serialized));
+}
+function isCanonicalIndex(key, length) {
+  if (!/^(0|[1-9][0-9]*)$/.test(key)) return false;
+  const index = Number(key);
+  return Number.isSafeInteger(index) && index >= 0 && index < length;
+}
+function isJsonObject(value) {
+  return value !== void 0 && value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// src/domain/capabilities/schema.ts
+function issues(list) {
+  return { ok: false, issues: list };
+}
+function string(options) {
+  const label = options.label ?? "String";
+  return {
+    parse(value, path) {
+      if (typeof value !== "string") return invalid(path, `${label}: expected a string`, "invalid_type");
+      const min = options.min ?? 0;
+      if (value.length < min || value.length > options.max) {
+        return invalid(path, `${label}: length must be ${min}\u2013${options.max}`, "too_large");
+      }
+      if (options.pattern && !options.pattern.test(value)) return invalid(path, `${label}: invalid format`);
+      return valid(value);
+    }
+  };
+}
+function integer(min, max, label = "Integer") {
+  return {
+    parse(value, path) {
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) {
+        return invalid(path, `${label}: expected an integer from ${min} to ${max}`);
+      }
+      return valid(value);
+    }
+  };
+}
+function boolean(label = "Boolean") {
+  return {
+    parse(value, path) {
+      return typeof value === "boolean" ? valid(value) : invalid(path, `${label}: expected a boolean`, "invalid_type");
+    }
+  };
+}
+function literal(values, label = "Value") {
+  return {
+    parse(value, path) {
+      return values.includes(value) ? valid(value) : invalid(path, `${label}: expected one of ${values.map((item) => JSON.stringify(item)).join(", ")}`);
+    }
+  };
+}
+function nullable(schema) {
+  return {
+    parse(value, path) {
+      return value === null ? valid(null) : schema.parse(value, path);
+    }
+  };
+}
+function optional(schema) {
+  return { isOptional: true, parse: (value, path) => schema.parse(value, path) };
+}
+function withDefault(schema, fallback) {
+  return {
+    isOptional: true,
+    hasDefault: true,
+    parse(value, path) {
+      return value === void 0 ? valid(fallback) : schema.parse(value, path);
+    }
+  };
+}
+function array(item, max, label = "List") {
+  return {
+    parse(value, path) {
+      if (!Array.isArray(value)) return invalid(path, `${label}: expected a list`, "invalid_type");
+      if (value.length > max) return invalid(path, `${label}: at most ${max} items`, "too_large");
+      const out = [];
+      for (let index = 0; index < value.length; index += 1) {
+        const parsed = item.parse(value[index], `${path}[${index}]`);
+        if (!parsed.ok) return issues(parsed.issues);
+        out.push(parsed.value);
+      }
+      return valid(out);
+    }
+  };
+}
+function object(shape, label = "Object") {
+  const keys = Object.keys(shape);
+  const known = new Set(keys);
+  return {
+    parse(value, path) {
+      if (!isJsonObject(value)) return invalid(path, `${label}: expected an object`, "invalid_type");
+      for (const key of Object.keys(value)) {
+        if (!known.has(key)) return invalid(pathForKey(path, key), "Unknown key", "unknown_key");
+      }
+      const out = {};
+      for (const key of keys) {
+        const schema = shape[key];
+        const present = Object.prototype.hasOwnProperty.call(value, key);
+        if (!present) {
+          if (schema.isOptional) {
+            const parsed2 = schema.parse(void 0, pathForKey(path, key));
+            if (parsed2.ok && parsed2.value !== void 0) out[key] = parsed2.value;
+            continue;
+          }
+          return invalid(pathForKey(path, key), "Missing required key", "missing_key");
+        }
+        const parsed = schema.parse(value[key], pathForKey(path, key));
+        if (!parsed.ok) return issues(parsed.issues);
+        out[key] = parsed.value;
+      }
+      return valid(out);
+    }
+  };
+}
+function noParams() {
+  return {
+    parse(value, path) {
+      if (value === void 0 || value === null) return valid(null);
+      if (isJsonObject(value) && Object.keys(value).length === 0) return valid(null);
+      return invalid(path, "This capability takes no parameters", "unknown_key");
+    }
+  };
+}
+function json(limits2 = {}, label = "Value") {
+  return {
+    parse(value, path) {
+      if (value === void 0) return invalid(path, `${label}: missing`, "missing_key");
+      const checked = validateJson(value, limits2);
+      if (!checked.ok) {
+        const first = checked.issues[0];
+        return first ? invalid(path === "$" ? first.path : `${path}${first.path.slice(1)}`, first.message, first.code) : checked;
+      }
+      return checked;
+    }
+  };
+}
+function union(first, second, label = "Value") {
+  return {
+    parse(value, path) {
+      const a = first.parse(value, path);
+      if (a.ok) return a;
+      const b = second.parse(value, path);
+      if (b.ok) return b;
+      return invalid(path, `${label}: did not match any accepted shape`);
+    }
+  };
+}
+function refine(schema, check) {
+  return {
+    parse(value, path) {
+      const parsed = schema.parse(value, path);
+      if (!parsed.ok) return parsed;
+      const problem = check(parsed.value);
+      return problem ? invalid(path, problem) : parsed;
+    }
+  };
+}
+
+// src/domain/capabilities/specs.ts
+var ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+var entityId = (label) => string({ min: 1, max: 128, pattern: ENTITY_ID, label });
+var title = (label = "Title") => string({ max: LIMITS.titleChars, label });
+var prompt = string({ min: 1, max: LIMITS.promptChars, label: "Prompt" });
+var safeName = (label, max = 160) => string({ min: 1, max, pattern: /^[^\u0000-\u001f\u007f]+$/, label });
+var timestamp = integer(0, Number.MAX_SAFE_INTEGER, "Timestamp");
+var SESSION_STATES = ["working", "idle", "waiting", "failed", "stopped"];
+var sessionState = literal(SESSION_STATES, "State");
+var deliveryResult = object({
+  delivery: literal(["started", "queued", "steered"], "Delivery"),
+  duplicate: boolean()
+});
+var projectChoice = object({
+  id: entityId("Project id"),
+  name: title("Project name"),
+  kind: literal(["standard", "personal"], "Project kind")
+});
+function spec(definition) {
+  return Object.freeze(definition);
+}
+function params(schema) {
+  return (value) => schema.parse(value, "$");
+}
+function result(schema) {
+  return (value) => schema.parse(value, "$");
+}
+var contextGet = spec({
+  method: "context.get",
+  description: "Read this page's identity and the capability roster.",
+  effect: "read",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(noParams()),
+  validateResult: result(
+    object({
+      protocolVersion: literal([1]),
+      session: object({ id: entityId("Session id"), title: title(), projectId: nullable(entityId("Project id")) }),
+      page: object({ revision: string({ min: 64, max: 64, pattern: /^[a-f0-9]{64}$/, label: "Revision" }), readOnly: boolean() }),
+      capabilities: array(
+        object({
+          method: string({ min: 3, max: LIMITS.methodNameChars, label: "Method" }),
+          effect: literal(["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device"]),
+          confirmation: literal(["none", "required"])
+        }),
+        64
+      )
+    })
+  ),
+  doc: {
+    params: "None.",
+    result: "`{ protocolVersion: 1, session: { id, title, projectId }, page: { revision, readOnly }, capabilities: [{ method, effect, confirmation }] }`.",
+    notes: "The roster lists what is actually enabled; check it rather than assume."
+  }
+});
+var sessionActivity = spec({
+  method: "session.activity",
+  description: "Read this session's state and recent activity.",
+  effect: "read",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(object({ limit: withDefault(integer(1, LIMITS.activityMax, "Limit"), LIMITS.activityDefault) })),
+  validateResult: result(
+    object({
+      state: sessionState,
+      updatedAtMs: timestamp,
+      items: array(
+        object({
+          kind: string({ min: 1, max: 80, label: "Kind" }),
+          done: boolean(),
+          atMs: timestamp,
+          label: string({ min: 1, max: 80, label: "Label" }),
+          text: string({ max: 200, label: "Text" })
+        }),
+        LIMITS.activityMax
+      )
+    })
+  ),
+  doc: {
+    params: `\`{ limit? }\` \u2014 1 to ${LIMITS.activityMax}, default ${LIMITS.activityDefault}. It never takes a session id: it is always this page's own session.`,
+    result: "`{ state, updatedAtMs, items: [{ kind, done, atMs, label, text }] }` where `state` is one of `working`, `idle`, `waiting`, `failed`, `stopped`."
+  }
+});
+var snapshotParams = object({
+  projectId: optional(nullable(entityId("Project id"))),
+  includeArchived: withDefault(boolean(), false),
+  limit: withDefault(integer(1, LIMITS.snapshotMax, "Limit"), LIMITS.snapshotDefault),
+  cursor: optional(nullable(string({ min: 1, max: 512, pattern: /^[A-Za-z0-9._~:-]+$/, label: "Cursor" })))
+});
+var sessionSummary = object({
+  id: entityId("Session id"),
+  title: title(),
+  projectId: nullable(entityId("Project id")),
+  parentSessionId: nullable(entityId("Session id")),
+  status: sessionState,
+  archived: boolean(),
+  page: object({ available: boolean(), revision: nullable(string({ min: 64, max: 64, pattern: /^[a-f0-9]{64}$/ })) }),
+  updatedAtMs: timestamp
+});
+var sessionsSnapshot = spec({
+  method: "sessions.snapshot",
+  description: "Read a bounded, projected list of sessions.",
+  effect: "read",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(snapshotParams),
+  validateResult: result(
+    object({
+      sessions: array(sessionSummary, LIMITS.snapshotMax),
+      nextCursor: nullable(string({ min: 1, max: 512 })),
+      generatedAtMs: timestamp
+    })
+  ),
+  doc: {
+    params: `\`{ projectId?, includeArchived?, limit?, cursor? }\` \u2014 \`limit\` 1 to ${LIMITS.snapshotMax}, default ${LIMITS.snapshotDefault}; pass the previous result's \`nextCursor\` to continue.`,
+    result: "`{ sessions: [{ id, title, projectId, parentSessionId, status, archived, page: { available, revision }, updatedAtMs }], nextCursor, generatedAtMs }`. `page.revision` is known for pages this host has served recently and `null` otherwise.",
+    notes: "No message bodies or agent output are included."
+  }
+});
+var projectsList = spec({
+  method: "projects.list",
+  description: "Read project choices without paths or host details.",
+  effect: "read",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(noParams()),
+  validateResult: result(object({ projects: array(projectChoice, LIMITS.projectsMax) })),
+  doc: { params: "None.", result: "`{ projects: [{ id, name, kind }] }` where `kind` is `standard` or `personal`." }
+});
+var providersList = spec({
+  method: "providers.list",
+  description: "Read the provider and model choices a page may pass to sessions.start.",
+  effect: "read",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(noParams()),
+  validateResult: result(
+    object({
+      providers: array(
+        object({
+          id: entityId("Provider id"),
+          displayName: title("Provider name"),
+          available: boolean(),
+          models: array(
+            object({
+              id: safeName("Model id"),
+              displayName: title("Model name"),
+              isDefault: boolean(),
+              reasoningLevels: array(safeName("Reasoning level", 32), 16)
+            }),
+            LIMITS.modelsPerProvider
+          )
+        }),
+        LIMITS.providersMax
+      )
+    })
+  ),
+  doc: {
+    params: "None.",
+    result: "`{ providers: [{ id, displayName, available, models: [{ id, displayName, isDefault, reasoningLevels }] }] }`.",
+    notes: "Fails with `unavailable` when the host cannot enumerate providers; it never returns an empty list to mean that."
+  }
+});
+var storageKey = string({ min: 1, max: LIMITS.storageKeyChars, pattern: /^[A-Za-z0-9][A-Za-z0-9._:-]*$/, label: "Storage key" });
+var storageValue = json({ maxBytes: LIMITS.storageValueBytes, maxDepth: 12 }, "Stored value");
+var storageGet = spec({
+  method: "storage.get",
+  description: "Read a small JSON value stored for this page.",
+  effect: "read",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(object({ key: storageKey })),
+  validateResult: result(
+    union(
+      object({ found: literal([false]) }),
+      object({ found: literal([true]), value: storageValue }),
+      "Storage result"
+    )
+  ),
+  doc: { params: "`{ key }`.", result: "`{ found: false }` or `{ found: true, value }`." }
+});
+var sessionReply = spec({
+  method: "session.reply",
+  description: "Send a structured result to this page's owning session.",
+  effect: "own-session-write",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(
+    object({
+      title: optional(title()),
+      mode: withDefault(literal(["queue", "steer"], "Mode"), "queue"),
+      result: json({ maxBytes: LIMITS.resultTextBytes }, "Result"),
+      idempotencyKey: optional(string({ min: 1, max: LIMITS.requestIdChars, pattern: /^[A-Za-z0-9][A-Za-z0-9._:-]*$/, label: "Idempotency key" }))
+    })
+  ),
+  validateResult: result(deliveryResult),
+  doc: {
+    params: "`{ result, title?, mode?, idempotencyKey? }` \u2014 `mode` is `queue` (default: waits for the current turn) or `steer` (interrupts it).",
+    result: "`{ delivery: 'started' | 'queued' | 'steered', duplicate }`.",
+    notes: "With an `idempotencyKey`, a repeat with the same content delivers once and reports `duplicate: true`; a repeat with different content is a `conflict`."
+  }
+});
+var storageSet = spec({
+  method: "storage.set",
+  description: "Store a small JSON value for this page.",
+  effect: "own-session-write",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(object({ key: storageKey, value: storageValue })),
+  validateResult: result(object({ stored: literal([true]) })),
+  doc: { params: `\`{ key, value }\` \u2014 the value serialised must be at most ${LIMITS.storageValueBytes / 1024} KiB.`, result: "`{ stored: true }`.", notes: "Namespaced per session: no page can read another page's keys." }
+});
+var sessionTarget = object({ sessionId: entityId("Session id") });
+var sessionsSendParams = object({
+  sessionId: entityId("Session id"),
+  prompt,
+  mode: withDefault(literal(["queue", "steer"], "Mode"), "queue")
+});
+var sessionsSend = spec({
+  method: "sessions.send",
+  description: "Send a prompt to another existing session.",
+  effect: "cross-session-write",
+  confirmed: true,
+  implemented: true,
+  validateParams: params(sessionsSendParams),
+  validateResult: result(object({ sessionId: entityId("Session id"), delivery: literal(["started", "queued", "steered"]), duplicate: boolean() })),
+  doc: {
+    params: "`{ sessionId, prompt, mode? }` \u2014 `mode` `queue` (default) or `steer`.",
+    result: "`{ sessionId, delivery, duplicate }`.",
+    notes: "Refuses this page's own session with `invalid_params`; use `session.reply` for that."
+  }
+});
+var sessionsStartParams = object({
+  projectId: entityId("Project id"),
+  prompt,
+  title: optional(title()),
+  providerId: optional(entityId("Provider id")),
+  model: optional(safeName("Model id")),
+  reasoningLevel: optional(literal(["none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"], "Reasoning level")),
+  environment: withDefault(
+    union(literal(["project-default"]), object({ sameAs: entityId("Session id") }), "Environment"),
+    "project-default"
+  )
+});
+var sessionsStart = spec({
+  method: "sessions.start",
+  description: "Start a new visible root session in a project.",
+  effect: "cross-session-write",
+  confirmed: true,
+  implemented: true,
+  validateParams: params(sessionsStartParams),
+  validateResult: result(object({ sessionId: entityId("Session id") })),
+  doc: {
+    params: "`{ projectId, prompt, title?, providerId?, model?, reasoningLevel?, environment? }`.",
+    result: "`{ sessionId }`.",
+    notes: "Defaults when you say nothing: the project's default environment, the project's default provider, model and reasoning level. Say otherwise with `providerId`/`model`/`reasoningLevel` from `providers.list`, or `environment: { sameAs: sessionId }` to run in the same environment as another session. The started session is a visible root owned by the reader, never a child of this page's session."
+  }
+});
+var sessionsStop = spec({
+  method: "sessions.stop",
+  description: "Stop a session's running turn.",
+  effect: "destructive",
+  confirmed: true,
+  implemented: true,
+  validateParams: params(sessionTarget),
+  validateResult: result(object({ stopped: boolean() })),
+  doc: { params: "`{ sessionId }`.", result: "`{ stopped }`.", notes: "Refuses this page's own session outright, before any dialog." }
+});
+var sessionsArchive = spec({
+  method: "sessions.archive",
+  description: "Archive a session.",
+  effect: "destructive",
+  confirmed: true,
+  implemented: true,
+  validateParams: params(sessionTarget),
+  validateResult: result(object({ archived: boolean() })),
+  doc: { params: "`{ sessionId }`.", result: "`{ archived }`." }
+});
+var openedResult = result(object({ opened: boolean() }));
+var pagesOpen = spec({
+  method: "pages.open",
+  description: "Open another session's page in place.",
+  effect: "navigation",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(sessionTarget),
+  validateResult: openedResult,
+  doc: { params: "`{ sessionId }`.", result: "`{ opened: true }`, after which the reader's view navigates in place; the back button returns here." }
+});
+var sessionsOpenHost = spec({
+  method: "sessions.openHost",
+  description: "Open a session in the host application.",
+  effect: "navigation",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(sessionTarget),
+  validateResult: openedResult,
+  doc: { params: "`{ sessionId }`.", result: "`{ opened: true }`; navigates the reader's view in place to the session's conversation." }
+});
+var openExternalParams = object({
+  url: refine(string({ min: 1, max: 2048, pattern: /^[^\u0000-\u0020\u007f]+$/, label: "URL" }), (value) => {
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      return "Expected an absolute http or https URL";
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password) {
+      return "Expected an absolute http or https URL without credentials";
+    }
+    return null;
+  }),
+  label: optional(string({ min: 1, max: 160, label: "Label" }))
+});
+var navigationOpenExternal = spec({
+  method: "navigation.openExternal",
+  description: "Open an external http(s) URL through trusted chrome.",
+  effect: "navigation",
+  confirmed: true,
+  implemented: true,
+  validateParams: params(openExternalParams),
+  validateResult: openedResult,
+  doc: {
+    params: "`{ url, label? }` \u2014 http or https only.",
+    result: '`{ opened: true }`. The confirmation names the destination origin. An ordinary `<a href="https://\u2026">` in your page goes through this automatically.'
+  }
+});
+var projectsBrowse = spec({
+  method: "projects.browse",
+  description: "Open the host's folder picker and return an opaque selection token.",
+  effect: "device",
+  confirmed: true,
+  implemented: true,
+  validateParams: params(noParams()),
+  validateResult: result(
+    object({
+      selection: nullable(
+        object({
+          token: string({ min: 1, max: 512, pattern: /^[A-Za-z0-9][A-Za-z0-9._~:-]*$/, label: "Selection token" }),
+          displayPath: string({ min: 1, max: 1024, label: "Display path" }),
+          hostName: title("Host name")
+        })
+      )
+    })
+  ),
+  doc: {
+    params: "None.",
+    result: `\`{ selection: null }\` when the reader cancels, else \`{ selection: { token, displayPath, hostName } }\`. The token is single use, valid for ${LIMITS.selectionTokenMs / 6e4} minutes and only for this page; the page never sees a filesystem path.`
+  }
+});
+var projectsCreate = spec({
+  method: "projects.create",
+  description: "Create a project from a folder-picker selection.",
+  effect: "cross-session-write",
+  confirmed: true,
+  implemented: true,
+  validateParams: params(object({ selectionToken: string({ min: 1, max: 512, pattern: /^[A-Za-z0-9][A-Za-z0-9._~:-]*$/, label: "Selection token" }), name: optional(title("Name")) })),
+  validateResult: result(object({ project: projectChoice })),
+  doc: { params: "`{ selectionToken, name? }`.", result: "`{ project: { id, name, kind } }`.", notes: "An expired, reused or foreign token fails with `not_found`." }
+});
+var voiceCaptureAndTranscribe = spec({
+  method: "voice.captureAndTranscribe",
+  description: "Record and transcribe the reader's voice through trusted chrome.",
+  effect: "device",
+  confirmed: true,
+  implemented: false,
+  validateParams: params(
+    object({
+      language: optional(string({ min: 2, max: 64, pattern: /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/, label: "Language" })),
+      prompt: optional(string({ max: 1e3, label: "Prompt" })),
+      maxDurationSeconds: withDefault(integer(1, 120, "Duration"), 120)
+    })
+  ),
+  validateResult: result(object({ text: string({ max: LIMITS.resultTextBytes, label: "Transcript" }) })),
+  doc: { params: "`{ language?, prompt?, maxDurationSeconds? }`.", result: "`{ text }`.", notes: "Deferred: the contract exists, the host reports `unknown_method`." }
+});
+var ALL_CAPABILITIES = Object.freeze([
+  contextGet,
+  sessionActivity,
+  sessionsSnapshot,
+  projectsList,
+  providersList,
+  storageGet,
+  sessionReply,
+  storageSet,
+  pagesOpen,
+  sessionsOpenHost,
+  sessionsSend,
+  sessionsStart,
+  projectsCreate,
+  sessionsStop,
+  sessionsArchive,
+  navigationOpenExternal,
+  projectsBrowse,
+  voiceCaptureAndTranscribe
+]);
+
+// src/domain/capabilities/protocol.ts
+var BRIDGE_PROTOCOL_VERSION = 1;
+function decodeBridgeRequest(input) {
+  const checked = validateJson(input);
+  if (!checked.ok) {
+    const tooLarge = checked.issues.some((issue) => issue.code === "too_large");
+    throw new PageError(tooLarge ? "request_too_large" : "invalid_request", tooLarge ? "Bridge request is too large" : "Bridge request is not strict JSON");
+  }
+  const value = checked.value;
+  if (!isJsonObject(value)) throw new PageError("invalid_request", "Bridge request must be an object");
+  const keys = Object.keys(value).sort().join(",");
+  if (keys !== "id,method,pageRevision,params,v") throw new PageError("invalid_request", "Bridge request has the wrong shape");
+  if (value.v !== BRIDGE_PROTOCOL_VERSION) throw new PageError("unsupported_version", "Unsupported bridge protocol version");
+  if (!isRequestId(value.id)) throw new PageError("invalid_request", "Invalid request id");
+  if (!isMethodName(value.method)) throw new PageError("invalid_request", "Invalid method name");
+  if (!isRevision(value.pageRevision)) throw new PageError("invalid_request", "Invalid page revision");
+  return { v: 1, id: value.id, method: value.method, params: value.params, pageRevision: value.pageRevision };
+}
+function safeRequestId(value) {
+  return isRequestId(value) ? value : "invalid";
+}
+function failure(id, code, message) {
+  return { v: 1, id: safeRequestId(id), ok: false, error: { code, message: boundedMessage(message) } };
+}
+function failureFromError(id, error) {
+  if (PageError.is(error) && isBridgeErrorCode(error.code)) return failure(id, error.code, error.message);
+  return failure(id, "handler_error", "Could not execute the page action.");
+}
+function resolveInvocation(request, registry, currentRevision) {
+  if (request.pageRevision !== currentRevision) throw new PageError("stale_page", "This page changed; reload it before responding.");
+  const spec2 = registry.get(request.method);
+  if (!spec2 || !spec2.implemented) throw new PageError("unknown_method", `Unknown capability: ${request.method}`);
+  const params2 = spec2.validateParams(request.params);
+  if (!params2.ok) {
+    const first = params2.issues[0];
+    throw new PageError("invalid_params", `Invalid parameters for ${spec2.method}${first ? ` at ${first.path}: ${first.message}` : ""}`);
+  }
+  return { request, spec: spec2, params: params2.value };
+}
+function completeInvocation(invocation, result2) {
+  const projected = invocation.spec.validateResult(result2);
+  if (!projected.ok) return failure(invocation.request.id, "invalid_result", `Invalid result for ${invocation.spec.method}`);
+  const json2 = validateJson(projected.value);
+  if (!json2.ok) return failure(invocation.request.id, "invalid_result", `Result for ${invocation.spec.method} is not strict JSON`);
+  const response = { v: 1, id: invocation.request.id, ok: true, result: json2.value };
+  if (Buffer.byteLength(JSON.stringify(response), "utf8") > LIMITS.capabilityPayloadBytes) {
+    return failure(invocation.request.id, "response_too_large", "Bridge response is too large");
+  }
+  return response;
+}
+
+// src/domain/capabilities/index.ts
+var capabilityRegistry = createRegistry(ALL_CAPABILITIES);
+
+// src/domain/rate-limit.ts
+function createRateLimiter(budget = { perMinute: LIMITS.ratePerMinute, concurrent: LIMITS.rateConcurrent }) {
+  const buckets = /* @__PURE__ */ new Map();
+  function prune(now) {
+    for (const [key, bucket] of buckets) {
+      if (bucket.inFlight === 0 && now - bucket.touchedAt > 5 * 6e4) buckets.delete(key);
+    }
+  }
+  return {
+    acquire(key, now) {
+      prune(now);
+      const bucket = buckets.get(key) ?? { windowStartedAt: now, accepted: 0, inFlight: 0, touchedAt: now };
+      if (now - bucket.windowStartedAt >= 6e4) {
+        bucket.windowStartedAt = now;
+        bucket.accepted = 0;
+      }
+      if (bucket.inFlight >= budget.concurrent || bucket.accepted >= budget.perMinute) {
+        buckets.set(key, bucket);
+        return null;
+      }
+      bucket.accepted += 1;
+      bucket.inFlight += 1;
+      bucket.touchedAt = now;
+      buckets.set(key, bucket);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        bucket.inFlight = Math.max(0, bucket.inFlight - 1);
+        bucket.touchedAt = Date.now();
+      };
+    },
+    snapshot(key) {
+      const bucket = buckets.get(key);
+      return bucket ? { accepted: bucket.accepted, inFlight: bucket.inFlight } : null;
+    }
+  };
+}
+
+// src/domain/submissions/idempotency.ts
+function createOutcomeMemory(options = {}) {
+  const maxRecords = options.maxRecords ?? LIMITS.idempotencyRecords;
+  const ttlMs = options.ttlMs ?? LIMITS.idempotencyMs;
+  const records = /* @__PURE__ */ new Map();
+  function prune(now) {
+    for (const [key, record] of records) {
+      if (record.expiresAt <= now) records.delete(key);
+    }
+    while (records.size >= maxRecords) {
+      const oldest = records.keys().next().value;
+      if (oldest === void 0) break;
+      records.delete(oldest);
+    }
+  }
+  return {
+    remember(key, fingerprint2, produce, now) {
+      prune(now);
+      const existing = records.get(key);
+      if (existing) {
+        if (existing.fingerprint !== fingerprint2) return { kind: "conflict" };
+        return { kind: "replay", outcome: existing.outcome };
+      }
+      const outcome = produce();
+      const record = { expiresAt: now + ttlMs, fingerprint: fingerprint2, outcome };
+      records.set(key, record);
+      outcome.catch(() => {
+        if (records.get(key) === record) records.delete(key);
+      });
+      return { kind: "fresh", outcome };
+    },
+    size: () => records.size
+  };
+}
+
+// src/domain/revision.ts
+import { createHash } from "node:crypto";
+function revisionOf(content) {
+  const hash = createHash("sha256");
+  if (typeof content === "string") hash.update(content, "utf8");
+  else hash.update(content);
+  return hash.digest("hex");
+}
+function sha256Hex(content) {
+  return revisionOf(content);
+}
+function etagFor(revision) {
+  return `"${revision}"`;
+}
+function ifNoneMatchMatches(header, etag) {
+  if (!header) return false;
+  return header.split(",").map((candidate) => candidate.trim().replace(/^W\//, "")).some((candidate) => candidate === etag || candidate === "*");
+}
+
+// src/pages/page-store.ts
+var KV_PREFIX = "cache:";
+function createPageStore(host) {
+  const memory = /* @__PURE__ */ new Map();
+  let memoryBytes = 0;
+  function cost(page) {
+    return Buffer.byteLength(page.html, "utf8") + 128;
+  }
+  function retain(session, page) {
+    const previous = memory.get(session);
+    if (previous) {
+      memoryBytes -= cost(previous);
+      memory.delete(session);
+    }
+    memory.set(session, page);
+    memoryBytes += cost(page);
+    while (memory.size > LIMITS.offlineCacheEntries || memoryBytes > LIMITS.offlineCacheBytes) {
+      const oldest = memory.keys().next().value;
+      if (oldest === void 0) break;
+      const evicted = memory.get(oldest);
+      memory.delete(oldest);
+      if (evicted) memoryBytes -= cost(evicted);
+    }
+  }
+  async function persist(session, page, previousRevision) {
+    if (previousRevision === page.revision) return;
+    const key = KV_PREFIX + session;
+    if (Buffer.byteLength(page.html, "utf8") > LIMITS.offlineCopyBytes) {
+      await host.kv.delete(key).catch((error) => host.log.warn(`offline copy: could not clear ${session}: ${errorText(error)}`));
+      return;
+    }
+    await host.kv.set(key, { html: page.html, revision: page.revision, updatedAtMs: page.updatedAtMs }).catch((error) => {
+      host.log.warn(`offline copy: could not store ${session}: ${errorText(error)}`);
+    });
+  }
+  async function cached(session) {
+    const resident = memory.get(session);
+    if (resident) return resident;
+    try {
+      const stored = await host.kv.get(KV_PREFIX + session);
+      if (!isCachedPage(stored)) return null;
+      retain(session, stored);
+      return stored;
+    } catch (error) {
+      host.log.warn(`offline copy: could not read ${session}: ${errorText(error)}`);
+      return null;
+    }
+  }
+  async function remember(session, html, updatedAtMs = Date.now()) {
+    const page = { html, revision: revisionOf(html), updatedAtMs };
+    const previous = memory.get(session)?.revision;
+    retain(session, page);
+    await persist(session, page, previous);
+    return page;
+  }
+  return {
+    async load(session) {
+      let content;
+      try {
+        const location = await host.sessions.storage(session);
+        content = await host.files.read(location, ENTRY_FILE);
+      } catch (error) {
+        const fallback = await cached(session);
+        if (fallback) return { ...fallback, stale: true };
+        throw PageError.is(error) ? error : new PageError("unavailable", PUBLIC_MESSAGES.unavailable, { cause: error });
+      }
+      if (!content) throw new PageError("no_page", PUBLIC_MESSAGES.noPage);
+      if (content.bytes.byteLength > LIMITS.entryDocumentBytes) {
+        throw new PageError("page_too_large", PUBLIC_MESSAGES.pageTooLarge);
+      }
+      const html = Buffer.from(content.bytes).toString("utf8");
+      const page = { html, revision: revisionOf(content.bytes), updatedAtMs: content.modifiedAtMs ?? Date.now() };
+      const previous = memory.get(session)?.revision;
+      retain(session, page);
+      await persist(session, page, previous);
+      return { ...page, stale: false };
+    },
+    remember,
+    knownRevision(session) {
+      return memory.get(session)?.revision ?? null;
+    }
+  };
+}
+function isCachedPage(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entry = value;
+  return typeof entry.html === "string" && Buffer.byteLength(entry.html, "utf8") <= LIMITS.offlineCopyBytes && isRevision(entry.revision) && revisionOf(entry.html) === entry.revision && typeof entry.updatedAtMs === "number" && Number.isFinite(entry.updatedAtMs);
+}
+
+// src/pages/site.ts
+function createCoreStorageSite(routeBase, storageFilesBase) {
+  return {
+    name: "core-storage",
+    documentUrl: (session) => `${routeBase}/document?session=${encodeURIComponent(session)}`,
+    baseHref: (session) => storageFilesBase(session)
+  };
+}
+
+// src/serving/bridge/selection-store.ts
+import { randomBytes } from "node:crypto";
+function createSelectionStore() {
+  const selections = /* @__PURE__ */ new Map();
+  function prune(now) {
+    for (const [token, selection] of selections) {
+      if (selection.expiresAt <= now) selections.delete(token);
+    }
+    while (selections.size > LIMITS.selectionTokens) {
+      const oldest = selections.keys().next().value;
+      if (oldest === void 0) break;
+      selections.delete(oldest);
+    }
+  }
+  return {
+    issue(selection, now) {
+      prune(now);
+      const token = `sel.${randomBytes(18).toString("base64url")}`;
+      selections.set(token, { ...selection, expiresAt: now + LIMITS.selectionTokenMs });
+      return token;
+    },
+    peek(token, session, now) {
+      prune(now);
+      const selection = selections.get(token);
+      return selection && selection.session === session ? selection : null;
+    },
+    redeem(token, session, now) {
+      prune(now);
+      const selection = selections.get(token);
+      if (!selection || selection.session !== session) return null;
+      selections.delete(token);
+      return selection;
+    }
+  };
+}
+
+// src/domain/json/canonical.ts
+import { createHash as createHash2 } from "node:crypto";
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+}
+function fingerprint(value) {
+  return createHash2("sha256").update(canonicalJson(value), "utf8").digest("hex");
+}
+
+// src/domain/tokens/mac.ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+function signPayload(payload, key) {
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  return `${encoded}.${signature(encoded, key)}`;
+}
+function openToken(token, key) {
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [encoded, supplied] = parts;
+  if (!encoded || !supplied) return null;
+  try {
+    const expected = Buffer.from(signature(encoded, key), "ascii");
+    const given = Buffer.from(supplied, "ascii");
+    if (given.byteLength !== expected.byteLength) return null;
+    if (!timingSafeEqual(given, expected)) return null;
+    return JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+function signature(encoded, key) {
+  return createHmac("sha256", key).update(encoded, "ascii").digest("base64url");
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function lifetimeValid(payload, now, maxLifetimeMs) {
+  const { iat, exp } = payload;
+  return typeof iat === "number" && Number.isSafeInteger(iat) && typeof exp === "number" && Number.isSafeInteger(exp) && iat <= now + 3e4 && exp > now && exp > iat && exp - iat <= maxLifetimeMs;
+}
+
+// src/domain/tokens/confirmation.ts
+function paramsFingerprint(params2) {
+  return fingerprint(params2);
+}
+function mintChallenge(binding, summary, now, key) {
+  const bounded = summary.length <= LIMITS.summaryChars ? summary : `${summary.slice(0, LIMITS.summaryChars - 1)}\u2026`;
+  const payload = {
+    v: 3,
+    scope: "confirm",
+    session: binding.session,
+    revision: binding.revision,
+    requestId: binding.requestId,
+    method: binding.method,
+    paramsHash: paramsFingerprint(binding.params),
+    summary: bounded,
+    iat: now,
+    exp: now + LIMITS.confirmationMs
+  };
+  return { challenge: signPayload(payload, key), payload };
+}
+function openChallenge(challenge, key, now) {
+  if (typeof challenge !== "string" || challenge.length === 0 || challenge.length > LIMITS.tokenChars) return null;
+  const payload = openToken(challenge, key);
+  if (!isRecord(payload)) return null;
+  if (payload.v !== 3 || payload.scope !== "confirm" || !isSessionId(payload.session) || !isRevision(payload.revision) || !isRequestId(payload.requestId) || !isMethodName(payload.method) || !isRevision(payload.paramsHash) || typeof payload.summary !== "string" || payload.summary.length === 0 || payload.summary.length > LIMITS.summaryChars || !lifetimeValid({ iat: payload.iat, exp: payload.exp }, now, LIMITS.confirmationMs)) {
+    return null;
+  }
+  return {
+    v: 3,
+    scope: "confirm",
+    session: payload.session,
+    revision: payload.revision,
+    requestId: payload.requestId,
+    method: payload.method,
+    paramsHash: payload.paramsHash,
+    summary: payload.summary,
+    iat: payload.iat,
+    exp: payload.exp
+  };
+}
+function challengeMatches(challenge, binding) {
+  return challenge.session === binding.session && challenge.revision === binding.revision && challenge.requestId === binding.requestId && challenge.method === binding.method && challenge.paramsHash === paramsFingerprint(binding.params);
+}
+
+// src/domain/tokens/action-token.ts
+function mintActionToken(args, key) {
+  const payload = {
+    v: 3,
+    scope: "action",
+    session: args.session,
+    revision: args.revision,
+    iat: args.now,
+    exp: args.now + LIMITS.actionTokenMs
+  };
+  return { token: signPayload(payload, key), payload };
+}
+function verifyActionToken(token, key, now) {
+  if (typeof token !== "string" || token.length === 0 || token.length > LIMITS.tokenChars) return null;
+  const payload = openToken(token, key);
+  if (!isRecord(payload)) return null;
+  if (payload.v !== 3 || payload.scope !== "action" || !isSessionId(payload.session) || !isRevision(payload.revision) || !lifetimeValid({ iat: payload.iat, exp: payload.exp }, now, LIMITS.actionTokenMs)) {
+    return null;
+  }
+  return {
+    v: 3,
+    scope: "action",
+    session: payload.session,
+    revision: payload.revision,
+    iat: payload.iat,
+    exp: payload.exp
+  };
+}
+
+// src/serving/action-request.ts
+async function readJsonBody(context, maxBytes) {
+  const declared = Number(context.req.header("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > maxBytes) throw new PageError("request_too_large", "Request body is too large");
+  const raw = await context.req.text();
+  if (Buffer.byteLength(raw, "utf8") > maxBytes) throw new PageError("request_too_large", "Request body is too large");
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new PageError("invalid_json", "Request body is not valid JSON");
+  }
+}
+function requireActionToken(serving, token) {
+  const verified = typeof token === "string" ? verifyActionToken(token, serving.signingKey, serving.now()) : null;
+  if (!verified) throw new PageError("confirmation_invalid", PUBLIC_MESSAGES.tokenInvalid, { status: 401 });
+  return verified;
+}
+function acquireRate(serving, session) {
+  const release = serving.rate.acquire(session, serving.now());
+  if (!release) throw new PageError("rate_limited", PUBLIC_MESSAGES.rateLimited);
+  return release;
+}
+
+// src/serving/session-access.ts
+function sessionIdFrom(context) {
+  const url = new URL(context.req.url);
+  const candidate = url.searchParams.get("session") ?? url.searchParams.get("threadId");
+  if (!isSessionId(candidate)) throw new PageError("invalid_session", PUBLIC_MESSAGES.invalidSession);
+  return candidate;
+}
+async function eligibleSession(serving, id) {
+  const session = await serving.host.sessions.get(id);
+  if (!session) throw new PageError("not_found", "That session does not exist.");
+  const reason = ineligibleReason(session);
+  if (reason) throw new PageError("ineligible", `${PUBLIC_MESSAGES.ineligible} (${describeIneligible(reason)}.)`);
+  return session;
+}
+
+// src/serving/bridge/dispatcher.ts
+function parseEnvelope(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new PageError("invalid_request", "Invalid bridge envelope");
+  const input = value;
+  const keys = Object.keys(input);
+  if (!keys.includes("actionToken") || !keys.includes("request") || keys.some((key) => !["actionToken", "request", "confirmation"].includes(key))) {
+    throw new PageError("invalid_request", "Invalid bridge envelope");
+  }
+  if (typeof input.actionToken !== "string" || input.actionToken.length > LIMITS.tokenChars) throw new PageError("invalid_request", "Invalid bridge envelope");
+  const confirmation = input.confirmation;
+  if (confirmation !== void 0 && confirmation !== null && (typeof confirmation !== "string" || confirmation.length > LIMITS.tokenChars)) {
+    throw new PageError("invalid_request", "Invalid bridge envelope");
+  }
+  return { actionToken: input.actionToken, request: input.request, confirmation: typeof confirmation === "string" ? confirmation : null };
+}
+function createDispatcher(serving, handlers) {
+  const byMethod = new Map(handlers.map((entry) => [entry.method, entry]));
+  for (const spec2 of serving.registry.list()) {
+    if (spec2.implemented && !byMethod.has(spec2.method)) throw new Error(`No handler for capability ${spec2.method}`);
+  }
+  return async function dispatch(body) {
+    let requestId;
+    let release = null;
+    try {
+      const envelope = parseEnvelope(body);
+      requestId = envelope.request?.id;
+      const token = requireActionToken(serving, envelope.actionToken);
+      release = acquireRate(serving, token.session);
+      const request = decodeBridgeRequest(envelope.request);
+      requestId = request.id;
+      const invocation = resolveInvocation(request, serving.registry, token.revision);
+      const entry = byMethod.get(invocation.spec.method);
+      if (!entry) throw new PageError("unknown_method", `Unknown capability: ${invocation.spec.method}`);
+      const session = await eligibleSession(serving, token.session).catch((error) => {
+        throw PageError.is(error) && error.code === "ineligible" ? new PageError("conflict", "This session no longer accepts page actions") : error;
+      });
+      const page = await serving.pages.load(token.session);
+      if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
+      const context = { serving, session, page, requestId: request.id };
+      await entry.refuse?.(invocation.params, context);
+      if (invocation.spec.confirmed) {
+        const binding = { session: token.session, revision: token.revision, requestId: request.id, method: request.method, params: invocation.params };
+        if (envelope.confirmation === null) {
+          const summary = await entry.summarize?.(invocation.params, context) ?? invocation.spec.description;
+          const { challenge: challenge2, payload } = mintChallenge(binding, summary, serving.now(), serving.signingKey);
+          return { status: 401, body: { confirm: { requestId: request.id, summary: payload.summary, challenge: challenge2 } } };
+        }
+        const challenge = openChallenge(envelope.confirmation, serving.signingKey, serving.now());
+        if (!challenge || !challengeMatches(challenge, binding)) {
+          throw new PageError("confirmation_invalid", "The confirmation is expired or does not match this request");
+        }
+      }
+      if (page.stale && invocation.spec.effect !== "read" && invocation.spec.effect !== "navigation") {
+        throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);
+      }
+      let outcome;
+      try {
+        outcome = await entry.execute(invocation.params, context);
+      } catch (error) {
+        if (PageError.is(error) && isBridgeErrorCode(error.code)) throw error;
+        serving.host.log.warn(`bridge ${request.method} for ${token.session}: ${errorText(error)}`);
+        throw new PageError("handler_error", PUBLIC_MESSAGES.handler, { cause: error });
+      }
+      const response = completeInvocation(invocation, outcome.result);
+      return { status: response.ok ? 200 : 500, body: outcome.navigate ? { response, navigate: outcome.navigate } : { response } };
+    } catch (error) {
+      if (PageError.is(error)) {
+        if (error.cause !== void 0) serving.host.log.warn(`bridge: ${error.code}: ${errorText(error.cause)}`);
+        const code = isBridgeErrorCode(error.code) ? error.code : error.code === "ineligible" || error.code === "no_page" ? "not_found" : "handler_error";
+        return { status: error.status, body: { response: failure(requestId, code, error.message) } };
+      }
+      serving.host.log.warn(`bridge: ${errorText(error)}`);
+      return { status: 500, body: { response: failureFromError(requestId, error) } };
+    } finally {
+      release?.();
+    }
+  };
+}
+
+// src/serving/bridge/handler.ts
+function handler(definition) {
+  return definition;
+}
+function excerpt(text, max = 80) {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length <= max ? line : `${line.slice(0, max - 1)}\u2026`;
+}
+
+// src/serving/bridge/handlers/navigation.ts
+var pagesOpen2 = handler({
+  method: "pages.open",
+  async refuse(params2, { serving }) {
+    const target = await serving.host.sessions.get(params2.sessionId);
+    if (!target || ineligibleReason(target)) throw new PageError("not_found", "That session has no page");
+  },
+  async execute(params2, { serving }) {
+    return { result: { opened: true }, navigate: { kind: "page", url: pageUrl(serving.routeBase, params2.sessionId) } };
+  }
+});
+var sessionsOpenHost2 = handler({
+  method: "sessions.openHost",
+  async refuse(params2, { serving }) {
+    const target = await serving.host.sessions.get(params2.sessionId);
+    if (!target || target.deleted) throw new PageError("not_found", "That session is not available");
+  },
+  async execute(params2, { serving }) {
+    return { result: { opened: true }, navigate: { kind: "host", url: serving.hostSessionUrl(params2.sessionId) } };
+  }
+});
+var navigationOpenExternal2 = handler({
+  method: "navigation.openExternal",
+  async summarize(params2) {
+    const origin = new URL(params2.url).origin;
+    return params2.label ? `Leave this page and open \u201C${excerpt(params2.label, 60)}\u201D at ${origin}` : `Leave this page and open ${origin}`;
+  },
+  async execute(params2) {
+    return { result: { opened: true }, navigate: { kind: "external", url: new URL(params2.url).href } };
+  }
+});
+
+// src/serving/bridge/handlers/reads.ts
+var contextGet2 = handler({
+  method: "context.get",
+  async execute(_params, { serving, session, page }) {
+    return {
+      result: {
+        protocolVersion: 1,
+        session: { id: session.id, title: session.title.slice(0, LIMITS.titleChars), projectId: session.projectId },
+        page: { revision: page.revision, readOnly: page.stale },
+        capabilities: serving.registry.descriptors()
+      }
+    };
+  }
+});
+var sessionActivity2 = handler({
+  method: "session.activity",
+  async execute(params2, { serving, session }) {
+    const items = await serving.host.sessions.activity(session.id, params2.limit);
+    return { result: { state: session.state, updatedAtMs: session.updatedAtMs, items } };
+  }
+});
+function queryKey(params2) {
+  return `${params2.projectId ?? ""}|${params2.includeArchived ? 1 : 0}`;
+}
+function encodeCursor(cursor) {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+function decodeCursor(value, params2) {
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (parsed.phase !== "live" && parsed.phase !== "archived" || !Number.isSafeInteger(parsed.offset) || parsed.offset < 0 || parsed.query !== queryKey(params2)) {
+      throw new Error("mismatch");
+    }
+    return { phase: parsed.phase, offset: parsed.offset, query: parsed.query };
+  } catch {
+    throw new PageError("invalid_params", "The cursor does not belong to this query");
+  }
+}
+async function pageAvailability(context, sessions) {
+  const { serving } = context;
+  const byHost = /* @__PURE__ */ new Map();
+  await Promise.all(
+    sessions.map(async (session) => {
+      try {
+        const location = await serving.host.sessions.storage(session.id);
+        const entries = byHost.get(location.hostId) ?? [];
+        entries.push({ session: session.id, path: joinPath(location.rootPath, ENTRY_FILE) });
+        byHost.set(location.hostId, entries);
+      } catch {
+      }
+    })
+  );
+  const availability = /* @__PURE__ */ new Map();
+  await Promise.all(
+    [...byHost.entries()].map(async ([hostId, entries]) => {
+      const existence = await serving.host.files.exist(hostId, entries.map((entry) => entry.path));
+      for (const entry of entries) availability.set(entry.session, existence[entry.path] === true);
+    })
+  );
+  return availability;
+}
+var sessionsSnapshot2 = handler({
+  method: "sessions.snapshot",
+  async execute(params2, context) {
+    const { serving } = context;
+    const start = params2.cursor ? decodeCursor(params2.cursor, params2) : { phase: "live", offset: 0, query: queryKey(params2) };
+    const collected = [];
+    let phase = start.phase;
+    let offset = start.offset;
+    let next = null;
+    while (collected.length < params2.limit) {
+      const want = params2.limit - collected.length;
+      const rows = await serving.host.sessions.list({
+        ...params2.projectId ? { projectId: params2.projectId } : {},
+        archived: phase === "archived",
+        offset,
+        limit: want + 1
+      });
+      const visible = rows.filter((row) => row.visibility === "visible" && !row.deleted);
+      const more = rows.length > want;
+      collected.push(...visible.slice(0, want));
+      offset += Math.min(rows.length, want);
+      if (more) {
+        next = { phase, offset, query: start.query };
+        break;
+      }
+      if (phase === "live" && params2.includeArchived) {
+        phase = "archived";
+        offset = 0;
+        continue;
+      }
+      break;
+    }
+    const availability = await pageAvailability(context, collected);
+    const sessions = collected.map((record) => ({
+      id: record.id,
+      title: record.title.slice(0, LIMITS.titleChars),
+      projectId: record.projectId,
+      parentSessionId: record.parentId,
+      status: record.state,
+      archived: record.archived,
+      page: { available: availability.get(record.id) === true, revision: availability.get(record.id) ? serving.pages.knownRevision(record.id) : null },
+      updatedAtMs: record.updatedAtMs
+    }));
+    return { result: { sessions, nextCursor: next ? encodeCursor(next) : null, generatedAtMs: serving.now() } };
+  }
+});
+var projectsList2 = handler({
+  method: "projects.list",
+  async execute(_params, { serving }) {
+    const projects = await serving.host.projects.list();
+    return { result: { projects: projects.slice(0, LIMITS.projectsMax).map((project) => ({ id: project.id, name: project.name.slice(0, LIMITS.titleChars), kind: project.kind })) } };
+  }
+});
+var providersList2 = handler({
+  method: "providers.list",
+  async execute(_params, { serving }) {
+    const providers = await serving.host.providers.list();
+    return {
+      result: {
+        providers: providers.slice(0, LIMITS.providersMax).map((provider) => ({
+          id: provider.id,
+          displayName: provider.displayName.slice(0, LIMITS.titleChars),
+          available: provider.available,
+          models: provider.models.slice(0, LIMITS.modelsPerProvider).map((model) => ({
+            id: model.id,
+            displayName: model.displayName.slice(0, LIMITS.titleChars),
+            isDefault: model.isDefault,
+            reasoningLevels: model.reasoningLevels.slice(0, 16)
+          }))
+        }))
+      }
+    };
+  }
+});
+function storageKey2(session, key) {
+  return `state:${session}:${key}`;
+}
+var storageGet2 = handler({
+  method: "storage.get",
+  async execute(params2, { serving, session }) {
+    const stored = await serving.host.kv.get(storageKey2(session.id, params2.key));
+    return { result: stored === void 0 ? { found: false } : { found: true, value: stored } };
+  }
+});
+var storageSet2 = handler({
+  method: "storage.set",
+  async execute(params2, { serving, session }) {
+    await serving.host.kv.set(storageKey2(session.id, params2.key), params2.value);
+    return { result: { stored: true } };
+  }
+});
+
+// src/domain/submissions/message.ts
+function formatSubmissionMessage(submission) {
+  const heading = submission.title.trim() || "Thread Page";
+  const sections = submission.answers.map((answer) => {
+    const label = answer.label.trim() || answer.name;
+    return `**${label}**
+${formatValue(answer.value)}`;
+  });
+  if (submission.files.length > 0) {
+    sections.push(
+      [
+        "**Attached files**",
+        ...submission.files.map((file) => `- \`$BB_THREAD_STORAGE/${file.path}\` (${file.name}, ${file.sizeBytes} bytes)`),
+        `They are in the \`${UPLOAD_DIR}/\` directory of your page root; read them with your normal tools.`
+      ].join("\n")
+    );
+  }
+  return [`The user answered the form on your Thread Page \u2014 ${heading}.`, ...sections].join("\n\n");
+}
+function formatValue(value) {
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "(left blank)";
+  return value.length > 0 ? value : "(left blank)";
+}
+function formatReplyMessage(title2, result2) {
+  const heading = title2?.trim() || "Interactive response";
+  const serialized = JSON.stringify(result2, null, 2) ?? "null";
+  let longestRun = 0;
+  for (const match of serialized.matchAll(/`+/g)) longestRun = Math.max(longestRun, match[0].length);
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  return [`The user sent an interactive response from your Thread Page \u2014 ${heading}.`, `**Result**
+
+${fence}json
+${serialized}
+${fence}`].join("\n\n");
+}
+
+// src/serving/bridge/handlers/writes.ts
+var sessionReply2 = handler({
+  method: "session.reply",
+  async execute(params2, { serving, session, page, requestId }) {
+    const key = `${session.id}:${params2.idempotencyKey ?? requestId}`;
+    const print = fingerprint({ revision: page.revision, result: params2.result, mode: params2.mode, title: params2.title ?? null });
+    const remembered = serving.replies.remember(key, print, () => serving.host.sessions.send(session.id, formatReplyMessage(params2.title, params2.result), params2.mode), serving.now());
+    if (remembered.kind === "conflict") throw new PageError("conflict", "This idempotency key was already used with a different reply");
+    const outcome = await remembered.outcome;
+    return { result: { delivery: outcome.delivery, duplicate: remembered.kind === "replay" } };
+  }
+});
+async function targetSession(context, id) {
+  const target = await context.serving.host.sessions.get(id);
+  if (!target || target.deleted) throw new PageError("not_found", "That session is not available");
+  return target;
+}
+var sessionsSend2 = handler({
+  method: "sessions.send",
+  async refuse(params2, context) {
+    if (params2.sessionId === context.session.id) throw new PageError("invalid_params", "Use session.reply to answer this page's own session");
+    await targetSession(context, params2.sessionId);
+  },
+  async summarize(params2, context) {
+    const target = await targetSession(context, params2.sessionId);
+    return `Send to \u201C${excerpt(target.title, 60)}\u201D: \u201C${excerpt(params2.prompt)}\u201D${params2.mode === "steer" ? " (interrupting its current turn)" : ""}`;
+  },
+  async execute(params2, { serving }) {
+    const sent = await serving.host.sessions.send(params2.sessionId, params2.prompt, params2.mode);
+    return { result: { sessionId: params2.sessionId, delivery: sent.delivery, duplicate: false } };
+  }
+});
+async function resolveStart(params2, context) {
+  const projects = await context.serving.host.projects.list();
+  const project = projects.find((candidate) => candidate.id === params2.projectId);
+  if (!project) throw new PageError("not_found", "That project is not available");
+  let environment = { kind: "project-default" };
+  let environmentLabel = "the project's default environment";
+  if (typeof params2.environment === "object") {
+    const other = await targetSession(context, params2.environment.sameAs);
+    if (!other.environmentId) throw new PageError("invalid_params", "That session has no environment to share");
+    environment = { kind: "reuse", environmentId: other.environmentId };
+    environmentLabel = `the environment of \u201C${excerpt(other.title, 40)}\u201D`;
+  }
+  return {
+    args: {
+      projectId: params2.projectId,
+      prompt: params2.prompt,
+      ...params2.title ? { title: params2.title } : {},
+      ...params2.providerId ? { providerId: params2.providerId } : {},
+      ...params2.model ? { model: params2.model } : {},
+      ...params2.reasoningLevel ? { reasoningLevel: params2.reasoningLevel } : {},
+      environment
+    },
+    projectName: project.name,
+    environmentLabel
+  };
+}
+var sessionsStart2 = handler({
+  method: "sessions.start",
+  async refuse(params2, context) {
+    await resolveStart(params2, context);
+  },
+  async summarize(params2, context) {
+    const { projectName, environmentLabel } = await resolveStart(params2, context);
+    const runtime = [params2.providerId, params2.model, params2.reasoningLevel].filter(Boolean).join(" \xB7 ") || "the project's default provider and model";
+    return `Start a session in ${projectName}: \u201C${excerpt(params2.prompt)}\u201D \u2014 using ${runtime}, in ${environmentLabel}`;
+  },
+  async execute(params2, context) {
+    const { args } = await resolveStart(params2, context);
+    const started = await context.serving.host.sessions.start(args);
+    return { result: { sessionId: started.id } };
+  }
+});
+var sessionsStop2 = handler({
+  method: "sessions.stop",
+  async refuse(params2, context) {
+    if (params2.sessionId === context.session.id) throw new PageError("invalid_params", "A page cannot stop its own session");
+    await targetSession(context, params2.sessionId);
+  },
+  async summarize(params2, context) {
+    const target = await targetSession(context, params2.sessionId);
+    return `Stop \u201C${excerpt(target.title, 60)}\u201D`;
+  },
+  async execute(params2, { serving }) {
+    await serving.host.sessions.stop(params2.sessionId);
+    return { result: { stopped: true } };
+  }
+});
+var sessionsArchive2 = handler({
+  method: "sessions.archive",
+  async refuse(params2, context) {
+    await targetSession(context, params2.sessionId);
+  },
+  async summarize(params2, context) {
+    const target = await targetSession(context, params2.sessionId);
+    return `Archive \u201C${excerpt(target.title, 60)}\u201D${params2.sessionId === context.session.id ? " (this page's own session; its page will stop being served)" : ""}`;
+  },
+  async execute(params2, { serving }) {
+    await serving.host.sessions.archive(params2.sessionId);
+    return { result: { archived: true } };
+  }
+});
+var projectsBrowse2 = handler({
+  method: "projects.browse",
+  async summarize() {
+    return "Choose a project folder on this device";
+  },
+  async execute(_params, { serving, session }) {
+    const location = await serving.host.sessions.storage(session.id);
+    const picked = await serving.host.projects.browse(location.hostId);
+    if (!picked) return { result: { selection: null } };
+    const token = serving.selections.issue({ session: session.id, hostId: location.hostId, path: picked.path }, serving.now());
+    return { result: { selection: { token, displayPath: displayPath(picked.path), hostName: picked.hostName } } };
+  }
+});
+function displayPath(path) {
+  return path.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~").replace(/^[A-Za-z]:\\Users\\[^\\]+/, "~");
+}
+var projectsCreate2 = handler({
+  method: "projects.create",
+  async refuse(params2, { serving, session }) {
+    if (!serving.selections.peek(params2.selectionToken, session.id, serving.now())) {
+      throw new PageError("not_found", "That folder selection has expired; choose the folder again");
+    }
+  },
+  async summarize(params2, { serving, session }) {
+    const selection = serving.selections.peek(params2.selectionToken, session.id, serving.now());
+    const name = params2.name ?? selection?.path.split(/[\\/]/).pop() ?? "the selected folder";
+    return `Create project \u201C${excerpt(name, 60)}\u201D from ${selection ? displayPath(selection.path) : "the selected folder"}`;
+  },
+  async execute(params2, { serving, session }) {
+    const selection = serving.selections.redeem(params2.selectionToken, session.id, serving.now());
+    if (!selection) throw new PageError("not_found", "That folder selection has expired; choose the folder again");
+    const name = params2.name ?? selection.path.split(/[\\/]/).pop() ?? "New project";
+    const created = await serving.host.projects.create({ name, hostId: selection.hostId, path: selection.path });
+    return { result: { project: { id: created.id, name: created.name, kind: created.kind } } };
+  }
+});
+
+// src/serving/bridge/handlers/index.ts
+var ALL_HANDLERS = [
+  contextGet2,
+  sessionActivity2,
+  sessionsSnapshot2,
+  projectsList2,
+  providersList2,
+  storageGet2,
+  storageSet2,
+  sessionReply2,
+  sessionsSend2,
+  sessionsStart2,
+  sessionsStop2,
+  sessionsArchive2,
+  projectsBrowse2,
+  projectsCreate2,
+  pagesOpen2,
+  sessionsOpenHost2,
+  navigationOpenExternal2
+];
+
+// src/serving/responses.ts
+function baseHeaders(contentType) {
+  return new Headers({
+    "cache-control": "no-store, max-age=0",
+    "content-type": contentType,
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+  });
+}
+function shellCsp(nonce) {
+  return [
+    "default-src 'none'",
+    "base-uri 'none'",
+    "connect-src 'self'",
+    "form-action 'none'",
+    "frame-ancestors 'self'",
+    "frame-src 'self'",
+    `script-src 'nonce-${nonce}'`,
+    `style-src 'nonce-${nonce}'`,
+    "img-src 'self' data:"
+  ].join("; ");
+}
+function documentCsp() {
+  return [
+    "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'",
+    "script-src * data: blob: 'unsafe-inline' 'unsafe-eval'",
+    "style-src * data: blob: 'unsafe-inline'",
+    "img-src * data: blob:",
+    "font-src * data: blob:",
+    "media-src * data: blob:",
+    "connect-src * data: blob:",
+    "worker-src * blob: data:",
+    "frame-src 'none'",
+    "child-src blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "sandbox allow-scripts allow-forms"
+  ].join("; ");
+}
+function jsonResponse(value, status2 = 200, extra) {
+  const headers = baseHeaders("application/json; charset=utf-8");
+  for (const [key, entry] of Object.entries(extra ?? {})) headers.set(key, entry);
+  return new Response(JSON.stringify(value), { status: status2, headers });
+}
+function errorJson(error) {
+  return jsonResponse({ ok: false, code: error.code, message: error.message }, error.status);
+}
+function errorPage(message, status2) {
+  const headers = baseHeaders("text/html; charset=utf-8");
+  headers.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thread Page</title><style>body{max-width:42rem;margin:4rem auto;padding:0 1rem;font:16px/1.5 system-ui,sans-serif;color:CanvasText;background:Canvas}h1{font-size:1.4rem}</style></head><body><main><h1>Thread Page</h1><p>${escapeHtml(message)}</p></main></body></html>`;
+  return new Response(html, { status: status2, headers });
+}
+function failureResponse(error, log, where, asPage) {
+  if (PageError.is(error)) {
+    if (error.cause !== void 0) log.warn(`${where}: ${error.code}: ${errorText(error.cause)}`);
+    return asPage ? errorPage(error.message, error.status) : errorJson(error);
+  }
+  log.warn(`${where}: ${errorText(error)}`);
+  const generic = new PageError("handler_error", "Something went wrong serving this page.");
+  return asPage ? errorPage(generic.message, 500) : errorJson(generic);
+}
+
+// src/serving/bridge-route.ts
+function bridgeRoute(dispatch) {
+  return async (context) => {
+    let body;
+    try {
+      body = await readJsonBody(context, LIMITS.capabilityPayloadBytes + 8192);
+    } catch (error) {
+      const failed = PageError.is(error) ? error : new PageError("invalid_json", "Invalid bridge body");
+      const code = failed.code === "request_too_large" ? "request_too_large" : "invalid_json";
+      return jsonResponse({ response: failure(void 0, code, failed.message) }, failed.status);
+    }
+    const outcome = await dispatch(body);
+    return jsonResponse(outcome.body, outcome.status);
+  };
+}
 
 // node_modules/parse5/dist/common/unicode.js
 var UNDEFINED_CODE_POINTS = /* @__PURE__ */ new Set([
@@ -576,8 +3688,8 @@ var ERR;
 // node_modules/parse5/dist/tokenizer/preprocessor.js
 var DEFAULT_BUFFER_WATERLINE = 1 << 16;
 var Preprocessor = class {
-  constructor(handler) {
-    this.handler = handler;
+  constructor(handler2) {
+    this.handler = handler2;
     this.html = "";
     this.pos = -1;
     this.lastGapPos = -2;
@@ -765,59 +3877,191 @@ function getTokenAttr(token, attrName) {
 }
 
 // node_modules/entities/dist/decode-codepoint.js
-var decodeMap = /* @__PURE__ */ new Map([
-  [0, 65533],
-  // C1 Unicode control character reference replacements
-  [128, 8364],
-  [130, 8218],
-  [131, 402],
-  [132, 8222],
-  [133, 8230],
-  [134, 8224],
-  [135, 8225],
-  [136, 710],
-  [137, 8240],
-  [138, 352],
-  [139, 8249],
-  [140, 338],
-  [142, 381],
-  [145, 8216],
-  [146, 8217],
-  [147, 8220],
-  [148, 8221],
-  [149, 8226],
-  [150, 8211],
-  [151, 8212],
-  [152, 732],
-  [153, 8482],
-  [154, 353],
-  [155, 8250],
-  [156, 339],
-  [158, 382],
-  [159, 376]
-]);
+var c1 = [
+  8364,
+  0,
+  8218,
+  402,
+  8222,
+  8230,
+  8224,
+  8225,
+  710,
+  8240,
+  352,
+  8249,
+  338,
+  0,
+  381,
+  0,
+  0,
+  8216,
+  8217,
+  8220,
+  8221,
+  8226,
+  8211,
+  8212,
+  732,
+  8482,
+  353,
+  8250,
+  339,
+  0,
+  382,
+  376
+];
+function isInvalidCodePoint(codePoint) {
+  return codePoint === 0 || codePoint >= 55296 && codePoint <= 57343 || codePoint > 1114111;
+}
 function replaceCodePoint(codePoint) {
-  if (codePoint >= 55296 && codePoint <= 57343 || codePoint > 1114111) {
+  if (isInvalidCodePoint(codePoint)) {
     return 65533;
   }
-  return decodeMap.get(codePoint) ?? codePoint;
+  if (codePoint >= 128 && codePoint <= 159) {
+    return c1[codePoint - 128] || codePoint;
+  }
+  return codePoint;
+}
+function replaceCodePointXML(codePoint) {
+  return isInvalidCodePoint(codePoint) ? 65533 : codePoint;
 }
 
 // node_modules/entities/dist/internal/decode-shared.js
-function decodeBase64(input) {
-  const binary = atob(input);
-  const evenLength = binary.length & ~1;
-  const out = new Uint16Array(evenLength / 2);
-  for (let index = 0, outIndex = 0; index < evenLength; index += 2) {
-    const lo = binary.charCodeAt(index);
-    const hi = binary.charCodeAt(index + 1);
-    out[outIndex++] = lo | hi << 8;
+var BASE91_INVERSE = /* @__PURE__ */ (() => {
+  const table = new Uint8Array(127);
+  let code = 0;
+  for (let char = 33; char <= 126; char++) {
+    if (char !== 34 && char !== 36 && char !== 92) {
+      table[char] = code++;
+    }
+  }
+  return table;
+})();
+function decodeTrieDict(input, resultLength, atomCount, dict1AtomCount, ngramCount, dictSize) {
+  const base = 91;
+  const inputLength = input.length;
+  const twoCharBias = dictSize * (base - 1);
+  let pos = 0;
+  const readSlotCode = () => {
+    const c12 = BASE91_INVERSE[input.charCodeAt(pos++)];
+    return c12 < dictSize ? c12 : c12 * base - twoCharBias + BASE91_INVERSE[input.charCodeAt(pos++)];
+  };
+  const dict2AtomCount = atomCount - dict1AtomCount;
+  const slotCount = atomCount + ngramCount;
+  const single = new Int32Array(slotCount);
+  single.fill(-1, dict1AtomCount, dictSize);
+  single.fill(-1, dictSize + dict2AtomCount, slotCount);
+  const start = new Int32Array(slotCount);
+  const length = new Int32Array(slotCount);
+  function decodeDelta(count, off) {
+    let previous = 0;
+    let slot = off;
+    const end = off + count;
+    while (slot < end) {
+      const code = BASE91_INVERSE[input.charCodeAt(pos++)];
+      if (code < 89) {
+        previous += code;
+        single[slot++] = previous;
+      } else if (code === 89) {
+        let runLength = BASE91_INVERSE[input.charCodeAt(pos++)] + 2;
+        while (runLength--)
+          single[slot++] = ++previous;
+      } else {
+        const next = BASE91_INVERSE[input.charCodeAt(pos++)];
+        previous += 89 + // eslint-disable-next-line unicorn/prefer-minimal-ternary -- branches read a different number of side-effecting input bytes
+        (next < 90 ? next * base + BASE91_INVERSE[input.charCodeAt(pos++)] : BASE91_INVERSE[input.charCodeAt(pos++)] * 8281 + BASE91_INVERSE[input.charCodeAt(pos++)] * base + BASE91_INVERSE[input.charCodeAt(pos++)]);
+        single[slot++] = previous;
+      }
+    }
+  }
+  decodeDelta(dict1AtomCount, 0);
+  decodeDelta(dict2AtomCount, dictSize);
+  const references = new Int32Array(ngramCount * 2);
+  let poolSize = 0;
+  let ngramIndex = 0;
+  function readNgramReferences(count, startSlot) {
+    for (let index = 0; index < count; index++) {
+      const slot = startSlot + index;
+      const a = readSlotCode();
+      const b = readSlotCode();
+      references[ngramIndex * 2] = a;
+      references[ngramIndex * 2 + 1] = b;
+      ngramIndex += 1;
+      start[slot] = poolSize;
+      const entryLength = (single[a] < 0 ? length[a] : 1) + (single[b] < 0 ? length[b] : 1);
+      length[slot] = entryLength;
+      poolSize += entryLength;
+    }
+  }
+  readNgramReferences(ngramCount - dictSize + dict1AtomCount, dictSize + dict2AtomCount);
+  readNgramReferences(dictSize - dict1AtomCount, dict1AtomCount);
+  const pool = new Uint16Array(poolSize);
+  let write = 0;
+  for (let index = 0; index < ngramIndex; index++) {
+    for (let half = 0; half < 2; half++) {
+      const source = references[index * 2 + half];
+      const value = single[source];
+      if (value < 0) {
+        let read = start[source];
+        const readEnd = read + length[source];
+        while (read < readEnd)
+          pool[write++] = pool[read++];
+      } else {
+        pool[write++] = value;
+      }
+    }
+  }
+  const out = new Uint16Array(resultLength);
+  let outIndex = 0;
+  while (pos < inputLength) {
+    let slot = BASE91_INVERSE[input.charCodeAt(pos++)];
+    if (slot >= dictSize) {
+      slot = slot * base - twoCharBias + BASE91_INVERSE[input.charCodeAt(pos++)];
+    }
+    const value = single[slot];
+    if (value < 0) {
+      let read = start[slot];
+      const readEnd = read + length[slot];
+      while (read < readEnd)
+        out[outIndex++] = pool[read++];
+    } else {
+      out[outIndex++] = value;
+    }
   }
   return out;
 }
 
 // node_modules/entities/dist/generated/decode-data-html.js
-var htmlDecodeTree = /* @__PURE__ */ decodeBase64("QR08ALkAAgH6AYsDNQR2BO0EPgXZBQEGLAbdBxMISQrvCmQLfQurDKQNLw4fD4YPpA+6D/IPAAAAAAAAAAAAAAAAKhBMEY8TmxUWF2EYLBkxGuAa3RsJHDscWR8YIC8jSCSIJcMl6ie3Ku8rEC0CLjoupS7kLgAIRU1hYmNmZ2xtbm9wcnN0dVQAWgBeAGUAaQBzAHcAfgCBAIQAhwCSAJoAoACsALMAbABpAGcAO4DGAMZAUAA7gCYAJkBjAHUAdABlADuAwQDBQHIiZXZlAAJhAAFpeW0AcgByAGMAO4DCAMJAEGRyAADgNdgE3XIAYQB2AGUAO4DAAMBA8CFoYZFj4SFjcgBhZAAAoFMqAAFncIsAjgBvAG4ABGFmAADgNdg43fAlbHlGdW5jdGlvbgCgYSBpAG4AZwA7gMUAxUAAAWNzpACoAHIAAOA12Jzc6SFnbgCgVCJpAGwAZABlADuAwwDDQG0AbAA7gMQAxEAABGFjZWZvcnN1xQDYANoA7QDxAPYA+QD8AAABY3LJAM8AayNzbGFzaAAAoBYidgHTANUAAKDnKmUAZAAAoAYjeQARZIABY3J0AOAA5QDrAGEidXNlAACgNSLuI291bGxpcwCgLCFhAJJjcgAA4DXYBd1wAGYAAOA12Dnd5SF2ZdhiYwDyAOoAbSJwZXEAAKBOIgAHSE9hY2RlZmhpbG9yc3UXARoBHwE6AVIBVQFiAWQBZgGCAakB6QHtAfIBYwB5ACdkUABZADuAqQCpQIABY3B5ACUBKAE1AfUhdGUGYWmg0iJ0KGFsRGlmZmVyZW50aWFsRAAAoEUhbCJleXMAAKAtIQACYWVpb0EBRAFKAU0B8iFvbgxhZABpAGwAO4DHAMdAcgBjAAhhbiJpbnQAAKAwIm8AdAAKYQABZG5ZAV0BaSJsbGEAuGB0I2VyRG90ALdg8gA5AWkAp2NyImNsZQAAAkRNUFRwAXQBeQF9AW8AdAAAoJkiaSJudXMAAKCWIuwhdXMAoJUiaSJtZXMAAKCXIm8AAAFjc4cBlAFrKndpc2VDb250b3VySW50ZWdyYWwAAKAyImUjQ3VybHkAAAFEUZwBpAFvJXVibGVRdW90ZQAAoB0gdSJvdGUAAKAZIAACbG5wdbABtgHNAdgBbwBuAGWgNyIAoHQqgAFnaXQAvAHBAcUB8iJ1ZW50AKBhIm4AdAAAoC8i7yV1ckludGVncmFsAKAuIgABZnLRAdMBAKACIe8iZHVjdACgECJuLnRlckNsb2Nrd2lzZUNvbnRvdXJJbnRlZ3JhbAAAoDMi7yFzcwCgLypjAHIAAOA12J7ccABDoNMiYQBwAACgTSKABURKU1phY2VmaW9zAAsCEgIVAhgCGwIsAjQCOQI9AnMCfwNvoEUh9CJyYWhkAKARKWMAeQACZGMAeQAFZGMAeQAPZIABZ3JzACECJQIoAuchZXIAoCEgcgAAoKEhaAB2AACg5CoAAWF5MAIzAvIhb24OYRRkbAB0oAciYQCUY3IAAOA12AfdAAFhZkECawIAAWNtRQJnAvIjaXRpY2FsAAJBREdUUAJUAl8CYwJjInV0ZQC0YG8AdAFZAloC2WJiJGxlQWN1dGUA3WJyImF2ZQBgYGkibGRlANxi7yFuZACgxCJmJWVyZW50aWFsRAAAoEYhcAR9AgAAAAAAAIECjgIAABoDZgAA4DXYO91EoagAhQKJAm8AdAAAoNwgcSJ1YWwAAKBQIuIhbGUAA0NETFJVVpkCqAK1Au8C/wIRA28AbgB0AG8AdQByAEkAbgB0AGUAZwByAGEA7ADEAW8AdAKvAgAAAACwAqhgbiNBcnJvdwAAoNMhAAFlb7kC0AJmAHQAgAFBUlQAwQLGAs0CciJyb3cAAKDQIekkZ2h0QXJyb3cAoNQhZQDlACsCbgBnAAABTFLWAugC5SFmdAABQVLcAuECciJyb3cAAKD4J+kkZ2h0QXJyb3cAoPon6SRnaHRBcnJvdwCg+SdpImdodAAAAUFU9gL7AnIicm93AACg0iFlAGUAAKCoInAAQQIGAwAAAAALA3Iicm93AACg0SFvJHduQXJyb3cAAKDVIWUlcnRpY2FsQmFyAACgJSJuAAADQUJMUlRhJAM2AzoDWgNxA3oDciJyb3cAAKGTIUJVLAMwA2EAcgAAoBMpcCNBcnJvdwAAoPUhciJldmUAEWPlIWZ00gJDAwAASwMAAFIDaSVnaHRWZWN0b3IAAKBQKWUkZVZlY3RvcgAAoF4p5SJjdG9yQqC9IWEAcgAAoFYpaSJnaHQA1AFiAwAAaQNlJGVWZWN0b3IAAKBfKeUiY3RvckKgwSFhAHIAAKBXKWUAZQBBoKQiciJyb3cAAKCnIXIAcgBvAPcAtAIAAWN0gwOHA3IA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YwAAoN8i4SFycnCgtiEAoD0pgKIqImJjZG9zACsVMBU6FT4VQRVyImNhcAAAoEgqAAFhdTQVNxVwAACgRipwAACgSipvAHQAAKCNInIAAKBFKgDgKiIA/gACYWxydksVURVuFXMVcgByAG2gtyEAoDwpeQCAAWV2dwBYFWUVaRVxAHACXxUAAAAAYxVyAGUA4wAXFXUA4wAZFWUAZQAAoM4iZSJkZ2UAAKDPImUAbgA7gKQApEBlI2Fycm93AAABbHJ7FX8V5SFmdACgtiFpImdodAAAoLchZQDkAG0VAAFjaYsVkRVvAG4AaQBuAPQAkwFuAHQAAKAxImwiY3R5AACgLSOACUFIYWJjZGVmaGlqbG9yc3R1d3oAuBW7Fb8V1RXgFegV+RUKFhUWHxZUFlcWZRbFFtsW7xb7FgUXChdyAPIAtAJhAHIAAKBlKQACZ2xyc8YVyhXOFdAV5yFlcgCgICDlIXRoAKA4IfIA9QxoAHagECAAoKMiawHZFd4VYSJyb3cAAKAPKWEA4wBfAgABYXnkFecV8iFvbg9hNGQAoUYhYW/tFfQVAAFnciEC8RVyAACgyiF0InNlcQAAoHcqgAFnbG0A/xUCFgUWO4CwALBAdABhALRjcCJ0eXYAAKCxKQABaXIOFhIW8yFodACgfykA4DXYId1hAHIAAAFschsWHRYAoMMhAKDCIYACYWVnc3YAKBauAjYWOhY+Fm0AAKHEIm9zLhY0Fm4AZABzoMQi9SFpdACgZiZhIm1tYQDdY2kAbgAAoPIiAKH3AGlvQxZRFmQAZQAAgfcAO29KFksW90BuI3RpbWVzAACgxyJuAPgAUBZjAHkAUmRjAG8CXhYAAAAAYhZyAG4AAKAeI28AcAAAoA0jgAJscHR1dwBuFnEWdRaSFp4W7CFhciRgZgAA4DXYVd0AotkCZW1wc30WhBaJFo0WcQBkoFAibwB0AACgUSJpIm51cwAAoDgi7CF1cwCgFCLxInVhcmUAoKEiYgBsAGUAYgBhAHIAdwBlAGQAZwDlANcAbgCAAWFkaAClFqoWtBZyAHIAbwD3APUMbwB3AG4AYQByAHIAbwB3APMA8xVhI3Jwb29uAAABbHK8FsAWZQBmAPQAHBZpAGcAaAD0AB4WYgHJFs8WawBhAHIAbwD3AJILbwLUFgAAAADYFnIAbgAAoB8jbwBwAACgDCOAAWNvdADhFukW7BYAAXJ55RboFgDgNdi53FVkbAAAoPYp8iFvaxFhAAFkcvMW9xZvAHQAAKDxImkA5qC/JVsSAAFhaP8WAhdyAPIANQNhAPIA1wvhIm5nbGUAoKYpAAFjaQ4XEBd5AF9k5yJyYXJyAKD/JwAJRGFjZGVmZ2xtbm9wcXJzdHV4MRc4F0YXWxcyBF4XaRd5F40XrBe0F78X2RcVGCEYLRg1GEAYAAFEbzUXgRZvAPQA+BUAAWNzPBdCF3UAdABlADuA6QDpQPQhZXIAoG4qAAJhaW95TRdQF1YXWhfyIW9uG2FyAGOgViI7gOoA6kDsIW9uAKBVIk1kbwB0ABdhAAFEcmIXZhdvAHQAAKBSIgDgNdgi3XKhmipuF3QXYQB2AGUAO4DoAOhAZKCWKm8AdAAAoJgqgKGZKmlscwCAF4UXhxfuInRlcnMAoOcjAKATIWSglSpvAHQAAKCXKoABYXBzAJMXlheiF2MAcgATYXQAeQBzogUinxcAAAAAoRdlAHQAAKAFInAAMaADIDMBqRerFwCgBCAAoAUgAAFnc7AXsRdLYXAAAKACIAABZ3C4F7sXbwBuABlhZgAA4DXYVt2AAWFscwDFF8sXzxdyAHOg1SJsAACg4yl1AHMAAKBxKmkAAKG1A2x21RfYF28AbgC1Y/VjAAJjc3V24BfoF/0XEBgAAWlv5BdWF3IAYwAAoFYiaQLuFwAAAADwF+0ADQThIW50AAFnbPUX+Rd0AHIAAKCWKuUhc3MAoJUqgAFhZWkAAxgGGAoYbABzAD1gcwB0AACgXyJ2AESgYSJEAACgeCrwImFyc2wAoOUpAAFEYRkYHRhvAHQAAKBTInIAcgAAoHEpgAFjZGkAJxgqGO0XcgAAoC8hbwD0AIwCAAFhaDEYMhi3YzuA8ADwQAABbXI5GD0YbAA7gOsA60BvAACgrCCAAWNpcABGGEgYSxhsACFgcwD0ACwEAAFlb08YVxhjAHQAYQB0AGkAbwDuABoEbgBlAG4AdABpAGEAbADlADME4Ql1GAAAgRgAAIMYiBgAAAAAoRilGAAAqhgAALsYvhjRGAAA1xgnGWwAbABpAG4AZwBkAG8AdABzAGUA8QBlF3kARGRtImFsZQAAoEAmgAFpbHIAjRiRGJ0Y7CFpZwCgA/tpApcYAAAAAJoYZwAAoAD7aQBnAACgBPsA4DXYI93sIWlnAKAB++whaWcA4GYAagCAAWFsdACvGLIYthh0AACgbSZpAGcAAKAC+24AcwAAoLElbwBmAJJh8AHCGAAAxhhmAADgNdhX3QABYWvJGMwYbADsAGsEdqDUIgCg2SphI3J0aW50AACgDSoAAWFv2hgiGQABY3PeGB8ZsQPnGP0YBRkSGRUZAAAdGbID7xjyGPQY9xj5GAAA+xg7gL0AvUAAoFMhO4C8ALxAAKBVIQCgWSEAoFshswEBGQAAAxkAoFQhAKBWIbQCCxkOGQAAAAAQGTuAvgC+QACgVyEAoFwhNQAAoFghtgEZGQAAGxkAoFohAKBdITgAAKBeIWwAAKBEIHcAbgAAoCIjYwByAADgNdi73IAIRWFiY2RlZmdpamxub3JzdHYARhlKGVoZXhlmGWkZkhmWGZkZnRmgGa0ZxhnLGc8Z4BkjGmygZyIAoIwqgAFjbXAAUBlTGVgZ9SF0ZfVhbQBhAOSgswM6FgCghipyImV2ZQAfYQABaXliGWUZcgBjAB1hM2RvAHQAIWGAoWUibHFzAMYEcBl6GfGhZSLOBAAAdhlsAGEAbgD0AN8EgKF+KmNkbACBGYQZjBljAACgqSpvAHQAb6CAKmyggioAoIQqZeDbIgD+cwAAoJQqcgAA4DXYJN3noGsirATtIWVsAKA3IWMAeQBTZIChdyJFYWoApxmpGasZAKCSKgCgpSoAoKQqAAJFYWVztBm2Gb0ZwhkAoGkicABwoIoq8iFveACgiipxoIgq8aCIKrUZaQBtAACg5yJwAGYAAOA12FjdYQB2AOUAYwIAAWNp0xnWGXIAAKAKIW0AAKFzImVs3BneGQCgjioAoJAqAIM+ADtjZGxxco0E6xn0GfgZ/BkBGgABY2nvGfEZAKCnKnIAAKB6Km8AdAAAoNci0CFhcgCglSl1ImVzdAAAoHwqgAJhZGVscwAKGvQZFhrVBCAa8AEPGgAAFBpwAHIAbwD4AFkZcgAAoHgpcQAAAWxxxAQbGmwAZQBzAPMASRlpAO0A5AQAAWVuJxouGnIjdG5lcXEAAOBpIgD+xQAsGgAFQWFiY2Vma29zeUAaQxpmGmoabRqDGocalhrCGtMacgDyAMwCAAJpbG1yShpOGlAaVBpyAHMA8ABxD2YAvWBpAGwA9AASBQABZHJYGlsaYwB5AEpkAKGUIWN3YBpkGmkAcgAAoEgpAKCtIWEAcgAAoA8h6SFyYyVhgAFhbHIAcxp7Gn8a8iF0c3WgZSZpAHQAAKBlJuwhaXAAoCYg4yFvbgCguSJyAADgNdgl3XMAAAFld4wakRphInJvdwAAoCUpYSJyb3cAAKAmKYACYW1vcHIAnxqjGqcauhq+GnIAcgAAoP8h9CFodACgOyJrAAABbHKsGrMaZSRmdGFycm93AACgqSHpJGdodGFycm93AKCqIWYAAOA12Fnd4iFhcgCgFSCAAWNsdADIGswa0BpyAADgNdi93GEAcwDoAGka8iFvaydhAAFicNca2xr1IWxsAKBDIOghZW4AoBAg4Qr2GgAA/RoAAAgbExsaGwAAIRs7GwAAAAA+G2IbmRuVG6sbAACyG80b0htjAHUAdABlADuA7QDtQAChYyBpeQEbBhtyAGMAO4DuAO5AOGQAAWN4CxsNG3kANWRjAGwAO4ChAKFAAAFmcssCFhsA4DXYJt1yAGEAdgBlADuA7ADsQIChSCFpbm8AJxsyGzYbAAFpbisbLxtuAHQAAKAMKnQAAKAtIuYhaW4AoNwpdABhAACgKSHsIWlnM2GAAWFvcABDG1sbXhuAAWNndABJG0sbWRtyACthgAFlbHAAcQVRG1UbaQBuAOUAyAVhAHIA9AByBWgAMWFmAACgtyJlAGQAtWEAoggiY2ZvdGkbbRt1G3kb4SFyZQCgBSFpAG4AdKAeImkAZQAAoN0pZABvAPQAWxsAoisiY2VscIEbhRuPG5QbYQBsAACguiIAAWdyiRuNG2UAcgDzACMQ4wCCG2EicmhrAACgFyryIW9kAKA8KgACY2dwdJ8boRukG6gbeQBRZG8AbgAvYWYAAOA12FrdYQC5Y3UAZQBzAHQAO4C/AL9AAAFjabUbuRtyAADgNdi+3G4AAKIIIkVkc3bCG8QbyBvQAwCg+SJvAHQAAKD1Inag9CIAoPMiaaBiIOwhZGUpYesB1hsAANkbYwB5AFZkbAA7gO8A70AAA2NmbW9zdeYb7hvyG/Ub+hsFHAABaXnqG+0bcgBjADVhOWRyAADgNdgn3eEhdGg3YnAAZgAA4DXYW93jAf8bAAADHHIAAOA12L/c8iFjeVhk6yFjeVRkAARhY2ZnaGpvcxUcGhwiHCYcKhwtHDAcNRzwIXBhdqC6A/BjAAFleR4cIRzkIWls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ZmdobG1vcHJzdHV3CiwNLBEsHSwnLDEsQCxLLFIsYix6LIQsjyzLLOgs7Sz/LAotcgDyAAkDYQByAACgYykAAWNyFSwbLHUAdABlADuA+gD6QPIACQ1yAOMBIywAACUseQBeZHYAZQBtYQABaXkrLDAscgBjADuA+wD7QENkgAFhYmgANyw6LD0scgDyANEO7CFhY3FhYQDyAOAOAAFpckQsSCzzIWh0AKB+KQDgNdgy3XIAYQB2AGUAO4D5APlAYQFWLF8scgAAAWxyWixcLACgvyEAoL4hbABrAACggCUAAWN0Zix2LG8CbCwAAAAAcyxyAG4AZaAcI3IAAKAcI28AcAAAoA8jcgBpAACg+CUAAWFsfiyBLGMAcgBrYTuAqACoQAABZ3CILIssbwBuAHNhZgAA4DXYZt0AA2FkaGxzdZksniynLLgsuyzFLHIAcgBvAPcACQ1vAHcAbgBhAHIAcgBvAPcA2A5hI3Jwb29uAAABbHKvLLMsZQBmAPQAWyxpAGcAaAD0AF0sdQDzAKYOaQAAocUDaGzBLMIs0mNvAG4AxWPwI2Fycm93cwCgyCGAAWNpdADRLOEs5CxvAtcsAAAAAN4scgBuAGWgHSNyAACgHSNvAHAAAKAOI24AZwBvYXIAaQAAoPklYwByAADgNdjK3IABZGlyAPMs9yz6LG8AdAAAoPAi7CFkZWlhaQBmoLUlAKC0JQABYW0DLQYtcgDyAMosbAA7gPwA/EDhIm5nbGUAoKcpgAdBQkRhY2RlZmxub3Byc3oAJy0qLTAtNC2bLZ0toS2/LcMtxy3TLdgt3C3gLfwtcgDyABADYQByAHag6CoAoOkqYQBzAOgA/gIAAW5yOC08LechcnQAoJwpgANla25wcnN0AJkpSC1NLVQtXi1iLYItYQBwAHAA4QAaHG8AdABoAGkAbgDnAKEXgAFoaXIAoSmzJFotbwBwAPQAdCVooJUh7wD4JgABaXVmLWotZwBtAOEAuygAAWJwbi14LXMjZXRuZXEAceCKIgD+AODLKgD+cyNldG5lcQBx4IsiAP4A4MwqAP4AAWhyhi2KLWUAdADhABIraSNhbmdsZQAAAWxyki2WLeUhZnQAoLIiaSJnaHQAAKCzInkAMmThIXNoAKCiIoABZWxyAKcttC24LWKiKCKuLQAAAACyLWEAcgAAoLsicQAAoFoi7CFpcACg7iIAAWJ0vC1eD2EA8gBfD3IAAOA12DPddAByAOkAlS1zAHUAAAFicM0t0C0A4IIi0iAA4IMi0iBwAGYAAOA12GfdcgBvAPAAWQt0AHIA6QCaLQABY3XkLegtcgAA4DXYy9wAAWJw7C30LW4AAAFFZXUt8S0A4IoiAP5uAAABRWV/LfktAOCLIgD+6SJnemFnAKCaKYADY2Vmb3BycwANLhAuJS4pLiMuLi40LukhcmN1YQABZGkULiEuAAFiZxguHC5hAHIAAKBfKmUAcaAnIgCgWSLlIXJwAKAYIXIAAOA12DTdcABmAADgNdho3WWgQCJhAHQA6ABqD2MAcgAA4DXYzNzjCuQRUC4AAFQuAABYLmIuAAAAAGMubS5wLnQuAAAAAIguki4AAJouJxIqEnQAcgDpAB0ScgAA4DXYNd0AAUFhWy5eLnIA8gDnAnIA8gCTB75jAAFBYWYuaS5yAPIA4AJyAPIAjAdhAPAAeh5pAHMAAKD7IoABZHB0APgReS6DLgABZmx9LoAuAOA12GnddQDzAP8RaQBtAOUABBIAAUFhiy6OLnIA8gDuAnIA8gCaBwABY3GVLgoScgAA4DXYzdwAAXB0nS6hLmwAdQDzACUScgDpACASAARhY2VmaW9zdbEuvC7ELsguzC7PLtQu2S5jAAABdXm2LrsudABlADuA/QD9QE9kAAFpecAuwy5yAGMAd2FLZG4AO4ClAKVAcgAA4DXYNt1jAHkAV2RwAGYAAOA12GrdYwByAADgNdjO3AABY23dLt8ueQBOZGwAO4D/AP9AAAVhY2RlZmhpb3N38y73Lv8uAi8MLxAvEy8YLx0vIi9jInV0ZQB6YQABYXn7Lv4u8iFvbn5hN2RvAHQAfGEAAWV0Bi8KL3QAcgDmAB8QYQC2Y3IAAOA12DfdYwB5ADZk5yJyYXJyAKDdIXAAZgAA4DXYa91jAHIAAOA12M/cAAFqbiYvKC8AoA0gagAAoAwg");
+var htmlDecodeTree = /* @__PURE__ */ decodeTrieDict("!}.&u%}'&}*'~!6*)%&,~!J~!J~%L~y<~!R,~~%Lu~~#GD~~#|)1#%}^%}2%+#.##%##%}&%##%'#%##&%#%#'%#&#%#&#'#%%#&#%##%#)%''%&%#%#'%#%%#%%}%%%#%#&(23#%%#&-%0%('1#(##%#'##+%'*.:1}#%#6-+(%'%%#%%%}#L'2351&('%}&/N'(0(/*-%(%%}#'+&T%7.2}#&%&#%#36/5##%&%%#&#%%#))2%%##%&&'0~!#*+&'%1~!%).'3q?&%'1~!.##%6(~!+%%%(Gw'rT~!E#<nA%#jZ~!H%(~!42##~!*31&~!G%U~#)5~#`3~!J~!Z~%]~%Y~%C~!q~!u~#kz~%#~!6'~!D~!U~!?~#T~!c%~!G#'~%7|~!G~!J~!G&~#pb~(Df}#%}*&}#%##%##%##&#-}&'#'&%#.++}%mI,#,@&(}*%}*'%&##&#%##%}&0}#.},U},%}+%}&%}#%##&}B%(}(%}+%)})%##%#&}&%##%&}<%}>%#%&}*%}(%}9%}/%})%}*%}*%}?&}&%}3%}&*#%})%#%#)}#&#-#+*%E%%'%'#%}#*V##&##I}#&&##%&%#&&Qf%%))w/0+&%#(#.%-''''++++7}>%4'',##1,#%#&%##&#'##&#*#9)%&%}#*}%,#+P(%A&%#'&##wSD',9E00#y#@}(+}&%&>~!#~!X}#*}(&&}(&}(,%}%&#+&}#&}I%#%}%)#(},'%#*}4%%#%}(''}#/##(##),%-##%%)#&}(.}&%#&}%%}*&#%},&&}&%}#%*'#%})%}D&}&%}-&}6&#&}-,%}#%})-(~+`~,=?~I9'9%~!,#%})%})%}@%}?%}(~!?~#<~#pP~#BG~#=1#%K+~#?#~%;)~#A~#mF1~#A'~'X%'~#lR~#N~'N~#r~#m#-~#i'?%#'%~#B%##%,%#~#_%#0%~#]732~,w~2+#:&#%&'0%&>%}#>##F+)#%&&#(+_}4&}-%}(&}@&}O7Fdf0@+/v4}&WU##&/0#&'('B#%}.%}'+#%}#%%&#&%#%##+#&#)#6#'#.},%}c%},%#%##%&#&%#&~#>'*-.%##%##%}#%%}%'~#)D1}#%*&~#_%%'(~#S2%'.}#~#=##*'*-%}&'%'##&&~'E%.#&~#M4}%%##&'%#~#O1##%&#'+~#<B%##%%'%+~#;#@%}#&%#&&%#(~#H1}'%'##&&~#?A}&'~#D#%32}'&&&&~#[}'(#%}'~#;C})&}%%#%~#=&%,3}%'(#%%~#^'#&&)#%'~#Y%-~#d-%'~#^%%&#&&&}#~#b~2t*&'~&(~&@~0%~e~3}%*''0})&}+~!9##-}#%-hD*)1fC#%/&/fB#40~!+#)*4~!+~!K'&:~!/*7~!.#~!H~!L':~%x&~!H#~!*~%1~!I#~!+A~#p'~!F~~#-#~,,(~.Z~!V~%;'B'mq-W~!N~%I%#&&#&}#%},%%}'%}+X#%}#&}(%}'%}<%}#%}%%'}'%}:~![)9@~%>~#UA%-%##&~!C%~!-.9:~!1~!-^2/:a~!y,D*J#-5)/4~%23,~#G~!L1~!0X3`~!2+~!!0-~&E~!W~!o,>Y&]~%cZx_&~#O*9#A#'#+I'%#)~!0B*-5A+-((F&*M#)(-7-5+'-3a5Vi~!Y~!?+[)%3),ERHm~!+:D,VG.+)?fB%%*(%)'(#&80%1'8`K8?`+'Z#&O&'H5#*9)A%%5&3))0%39+.*7#()&&*=4@**L)<'_&*+..;(#*+)./&0#3)%')-8(4ixD(&.}%,('aI:,)%,k2231T)I'#/-W7,/'Q#.'Y24+h')37</31&83##&0#),H(?'&?/1##%#&&#%''-%&&&#(&''&#.-'%#%%(,')*'&#&#'##%(%(#%('#&##%%%%('%#%#%%#%#&%##h>w+v<ayvyvcg.uuhKr}g/v|g>u9i[~>g5uI~=RvdwEg;v/g;uk!!TTSx]@RT!U!#!@VBRUU!'UTe-d0c`e&gSdicedFcrdTaqb.kYcAohdYd@a3e+d}dMdtd.aJ#bqcK`dle/e.e'dwdPdodddjbEb}ogd^ofdpduc6j?l%d{drdqc)d7bacOdQ%T#Y)X.sR[yH>6Vyv3[xwLu>vo'!*.[yBacahoj>6Rew3[xqdZa#!a&#^(X-[yG>6Vyu3[xvg3sEr|g.u/Ri9db0T#^(Xa)!-[y;>6Vylg4wKs{JwNZt3@3r=c4Z([xlg;wKt!cpq's@v7A'*a(a+!-a#[y<3Dt?3Dt'>6Vym3[xmg9rxsNJwLZt4~?r?db1T#`-!(Xa,!0[yS>6Vz%NuQs.g4wKtnJwNZtS@3r>c4Z([y%g;wKtrdga8!a(!#&T*Y-Xa#!a0<or[yc3Dtq>6Vz43[y3JwNZtf@3s!Ju}!%Dti:pm3c_%X#tjB5pkd6q!r]u?voC'*-a.a2!0a&a+[yI3DtI3Ds~3DtH>6Vyw3[xx;:s#~<5pKJwNZtE@3r~d`a)!a2T#a.(!+U.X1[yT3Dt`3Dtv>6Vz&3[y&g9rxwzcxstPu.<rAJwLZtT~?r@dZa%!a.&^*Za(/Reu[ya>6Vz23[y1g3sEr}wkg{NuQRg{ci(U#5@b`~,cg#U(2WnH5wugcRh7dX#T(Y,a'Ta!!a,[yZ<]mj>6Vz,3[y+Pv#5ReZKu+=,%!H}7ABwkaS?Rh:BcW(X#<]mrj:ubv/ARekdg%!(!a.*Ta(Y.X1!#sP>Rl*Dt6[y>>6Vyo3Wf*jOvuumvuRgRJuq*!:9<B@bX~3jVv&v@s@5Re[d/rQt{uAvo&a&a*)a2!,0Wf!3Dt0=Bs'>6Re}3[xy~<5s%JwJZt1~Gs)c;&!#2sJkNuXvzq7rxu,Re8dka4!a8(aEZ+a@Y.X1Xa)[yd=Bs(3DtP>6Vz53[y4cX#X&Re:avRe9~<5s&JwJZtQ~Gs*i^rzvdRg+Jv{%!2sbB@bX}kdga,!Za?&^*T1/!a'Dt+[y6>6Vyf3Wf%g/u;s4hGu6?Rh-JvZ,!c%#&RoX54Rivj7uyvf8RgTKvZB%*!2sGh<vu5Rgq<=C::9bb~#dZ#T&Ta6Y.X*Dt>[y93Wf)coZ(T,6VyifluvRgC@95@B@bX~/hFu34cC#T,k/unq8w8Q5RkUklwQuzunq8w8Q5Rk8d/rJu?v8w9)-&!a0a;a&aIWejg3sEr/h1s<DtDJvyZqY5aws3Jvy!&Wei~Hr1:au5@Bag>23E~5c:Z&bX};kKv?w&unuVu5Rjc;>bs)#~@:Rh.=ay<a]C;b`}Vd6s/t{uAvoaxa()!a,a7%-a#a2Dt,[yF2Wo[>6Vyt3[xuNuPRi&NuPwpi#RoWh?vf8Ri%Jv]!%Ri:KvxD!.'2WeAjZu`q9rxu,Re7woeAg-unLq(qA_/*2Wg_g3u5q^9:4E}/jTrxrzv=Wkkd~0UX#^^Xa-a1a5T&a=U1a'*aEa]!a*aPaA-adok[y54Rn>;:p3~Dp5g9rpsFNvZqjg3uJp4~<5p0Pw;5qlJwNZt*@3p1Pw:5p/Ou!5p2JvG'!6Vye=<qnJvh_[xhg3v,Rh3kOwOw-sDuev/Re^dha[a%!%!a+#Ta7)-5TaCaO!aka!a)sf[yb2>Rl!9ARiq5E}Qg=ucRkBE|oJrJ_@Wk~@Wk{JrJ_@Wk|@WkyJrJ_@Wk}@WkzJvO_[y2g-vMRmiKuYC!)&>Ri;>Ri<@3RkNc](X#@9Rk=g5vuRmhKvDB!+'=]meg3u4Rmgd)#Y'Vz3CARmfd`a+!%T'!+#Ta1Ta6TaM-sTDt9[yA9sYd'%Y#s[[xpj:ueunaXRgEjRq,v-vuqdd2'`#6Rev<32@5>:2<E}5xIo9a*X#Y(;5RePJvD_g>vyRgNj8w)v8<wggs:RgXiZt|vjx,hSq3ah!-(~@:Ro/Ou!5RhWj^v(pyw8unRhUdx-UY#^Ua.a3a70!)%UX1TaDa)'omRiRRhE[y:3Dsz=Br,>6Vyj3[xkg6ruwjcqsrPw;5r*Ku]D'Zt-@3r(~?r.i[vwv]dU1a--U#`a4(g/vsRhPOu!5RhLj:rmu9Wo!~@:wdh@g/vsRiTjXuvvNr}:RhBj^v(pyw8unRn]dz1UYa'a+^Y(!aETZalaRY.Ta?a4[yDJw1!#qLsW>6Vyrfzq-pLflpwRe|Js>%!Dt@3Dt&Jvy_[xs~HrnjMuwpsw'RecKu+D#'!t<~Grl~?rjg5u-x,gwp{ah!-(~@:Rg~Ou!5Rh'jXuvvNr}:Rh#cW#X/c;&!#2sLi[v7u7RgpJv)(!iLrxu,Re6j7v@s@5Se[e7d`aW!Za(a`T.a#!a3!&aDa-!9)Dt_=6s+3[x~~DR|h~DS6avhGun5RkZj3w)v-]mkKunB!&*]kb97R|i<ARk<c:Z(6Vy}Juh'!wziMRoS:F|vkLuauJv5vtvQRh1d='T+Y#VyO~DR|jcF#T'7R|g97R|kJv3'!ay<Rj,Jvh&!:ReXcsa6*a+#a#_aIRf9aLRf?c,Z&Rf5Rf7c.Z&Rf;Rf>cQ#%T'p-Rf8Rf=ct#%'(*!,p,Rf4p+Rf6Rf:Rf<d~'Ua%U*^UYa(!a,-!#a4YaTalaEX0a8a<Weo3Dt/3Dsx=Br93Wen~Dr;~<5p<JwNZt2@3p=Pw:5p;Ou!5r3c7&!#:p>3Ds}KvGB)_6Vyk2sM=<r7x'eovA(!hFu1ARf}cV#X&@r5j6rvwQa^Rf3c=Za'wkghJv__g;unRggA53B9=b^}%j6uduo5Jq;!(hIv%2Re`Ou4ARe_e%a#^^^Xa&!a*a2!&a6YaP!*ad!#a:aE/5Rn?[y@>6Vyp;:pE~DrY~<5pBJwNZt8@3pCh=rt3rWPw:5pAJup_[xoNuPpF9c!#'45pD5ARn)d8#X'X*3@rU72s]h>v<<sSjJpqvewOJq/(!hNw'5ReBk0s2u3w/w'5ReE5@Jq.!a+JQ!&WeU23d(#Y&RjG5]jBk!u7w&u0udARjEe#+^^^Ub#!a2/a`Z(agT1!a-a;|@TaG!aS[yV=Re~fow'RguNuPRe?bz#'>RoUWeL>:Cbb|?JwPZtVg6ruRmzJvD'!6Vz(g/vmRh~Jvy_[y(g9voRgyx*cy(#2>Ri2B9b]~9kIw9u7rluJu3Rg]dI#a%UY'@=p%CAx.gQZ&RhwwygtRm{x5g_Z'+ABqR9Woa=Bp&dV#^*Xa'!&@o{g4v]Rk;Jv{!%Rk[wkkiA5RkiwwfUB=x,fUuqC&*!>RfTg8v0RfV~ARfSd;rJsAuAv9wR'ae+/aO!a@aza/a#[yQ@Wg!2Wemg3sEr0JvB_g>uvReWg2v+Re=KupB_+[y!2AbY~-~Hr2AJwD!(h<~El>h<~El?Kun@+_:9b`}Kg-v/Ri3g;vtwyk_9]k_d=&T#*U.6qh@Ab`|K9:H|CJv[!&3Dtex'fDwC%!Rf[9WlMd[(^X,!a%Z06Vz!@WgBg=v~Rgvg,QRe@awd,#Y+jTv|Q~EfWj]uNr|~FRfXdy#Y&^Ua%!aO.!(a)Ua;=!a@aKap!a-,a!Ta]a[rSa]p?[y82sK=Bq~;:p:~<5p8Pw:5p7d'#Y'Wf(;RnRi[u4w&RgJJvG'!6Vyh=<r#ijuuv/sIKuYD'ZtG@3p9~Gr&d2#`(g<vtRgFj`u5w&rqpxRf2CJuY!+:wfnTOu!5Rg}jNs1ucv&RfwJvA!&3@q|BDcC#T,k/unq8w8Q5RkTklwQuzunq8w8Q5Rk9dga#!a'!a=#a0!:+Tb*b@aO.a4!aba8aFJv^}?!VyR~Dr<g;u%Rn.~<5p[x'e`wNZtR@3p]Pw:5pZhNvjBp.woe_g5u-r4JwF!%DtO3:ooc7&!#:p^3DtpLuGw(!+%)Dtk6Vz#2sd=<r8d'#Y([y#<x3gJt`w@!)%}MRiowzikRij=]ilxAf3,U(#B2Rf#g0v-Rm[ck{`U#]giKv3>)!&6Ri154s,KuGB_%@r68r:dJ|t`#X(9<E|u2@H|rx3gJu?w'!+'1Nu7Reg4=H~+9<wxgY95Rm]xLggZ-`(X}U2:Ri4h<uOawRmsJv__5@bb{jbV~3dka#a'a]!,#a+U=a>b6a3b%!/aKa/)!arwve^VyJ;:pR~DpTg3uJpS~<5pOPw;5qmPw:5pNOu!5pQJvG'!6Vyx=<qoJvA!{~Jup!%@qk7Rn/KvyD!}''[xz;>wkh'?Rh,x8gyt`w5D!&),(SgyccRgztJ@3pPB5p#d'(Y#<]mmifubw&RgoJvE&!82s^JvF&!8Rf,ADb]~;x=h'rNu]vK!,%'*0RnORh)4Rh*AqQg-vaRnNg;wHwkh'ba~4cE#Ta*x3gctyw@'!+%RnFRnD<4Rn@hFvK5RnCxWg[#`&a0Ua()`1Rm75Rg[c]%X#qi8Rg^NvdRj>BwzgZauwji7Rm6A4wgg]d1#&(*,.0a#Rm;Rm<Rm=Rm>Rm?Rm@RmARmBe%#^^^Xaea?aC/b+(,!a+a#!a/!>a&Ta<aKbD!2wphBRnk[yPw}hE|.=Br-3Dtm>6Vy~g6urRf.x,hPrNav!%'RnqRo%Ro#Nu;q[Pw;5r+JwNZtM@3r)d'#Y'Weh;xChL#`&RnmRnoKu}>%(!Rne~Bs-;2wjcussJv+'!aYSO}6@B<5?ba~8LrNvj!.%*ROwungw~ng~:9;Ri^>wtnig;wHRnixDh@|(UZ.x1h@|)!#:2<H|*xHn]#-UX'3Ro)z=iT}6ARns=Bwsn_wpnaRncw]aR(#UXa&Ua*a/=]iPd'#Y&Ro'WnXf{QRm2hNvj]nZd`'T~&1`{|`#9b]{}c:'!#Wl{>@=be}]?cl{{U#:5Abb}Jds#^YaF!a*b4a#a3aPa>&Tb!bH!*a_!Eau?/a&RjY<]gj>6Vz*;:pe~DrZg,QRj1JwNZtX@wihspcJvZ&!VyX9WmOJu|!|N2WmHJvh&!]ht~Bpbcn&T(!#RmQ<s7Nu;padH#X'`+WmJ@>RmKCARhnKup=!)&Wf+:RhqNuPpf9c!#'45pd5AwghpARn(Ls@w!%,)!RmP@Wfe<E|IJva!&WmNg8vsRmLd`*.`#Y'Xa!axRn*]hrA8Rhug5s@rXg8u!RmMd8#X'X*3@rV72smdI*#UY&RmICARho~GsgxVgd)Ta'U-Y&Xa!T#RnEWnA@Wffg1uDRi0hFvK5RnBxGnG&#`%owp)@wsf+bX}Ze-*1!a*^^^Ua|!#a.aq&Ya2!a>.a6!a:aO`aJDtL[y`@Wg#>6Vz12@wzoYRoZNuPRi!NuPRhzg=ucRi,@=b`{Yg=ucRi-ACJvB!&Sh[ebSh]ebi`wUuFRm4Jw2_[y0JvB!.<Ju(!&SoG}6Shd}6<Ju(!&SoH}6She}6Kur@._g5vHRieJvx!{L2G{Kx6gd'T#?Rh82Wi5cZ#X(g1w)Rm5dW-Y(Ta#!a)!#aYa=wnfE=su2>>bU{0j9udv:<svj8uQv-7RgHdE%#^'sq9sp=>Bb_{TJv`!&g/r|snj6v(us5d,#Y(56H}[978H}]Jw5!&g1rushJvB!+j;v{u5?zDhd}6}bj;v{u5?zDhe}6}ce*#`(^^^a[aea!=!a6a*aoXb1a.!aAbL!b>,b'aL!aV@Wf|2Wlg3[y/JwNZt^@3piPw:5pgJunZou3@rsJva&!Vy_g<v~Rm#JvG'!6Vz0=<r{Ju{%!:pj@WfsiXuJu3Rm:JvZ&!WfA~Bph@c4Z&Dtwax5rubx(#:awRk1@d,#Y&RfjRfid1#,Y(@Wfp2Wlrg5s@ryKu[@!,'=]ig9wlk?Rk>g5u-rqJvy'!@9RkQcH(T#=>Ri~@<wkj(Wj(KuZB*!&<7rw@9RkRcH(T#=>Ri}@<wkj)Wj)dg(Ta2Xa9X#`-!a*CARhg@@=I}d9x;c~#X%so=<sj>2@@=aybb}XjWv0Q~EfEj3vLv;<d,#Y(56H}`978H}_dgaPaFa'a/!#a3Y0a_a;a|!1(a7-[yE3[xt;:pJNvZrrg3uJrvJwNZt=@3pIh=rt3rxPw:5pGOu!5rpJvG'!6Vys=<rz@c4Z&Dt(ax5rtJvZ!&~BpH@wsfNg-vaRlNci*U#=<wei<F}a5@Jq.!a*JQ!%@qZ23d(#Y&RjH5]jCk!u7w&u0udARjFd/prq=tyvpaEa(a:.!a1aZ(@@=I}:9wpd%=<sX55w_h}@@=I{t=ay<aU@@=I}T=ay<2@@=I})?C9:9au@9Cb]}DP~=x-fAZ(2Wl1=ay<aU@@=I}>5@d##Y+jTv|vV~EfFj]uNpn~FRfGdgaK!Z2&!a8a-Tb({E!acTbM*!a(DtY[yYd'%Y#sl[y*hHvh>Re5x2c{Z}.j4uCvcawRiMd+#X+_x&d!},<5RkX;2Hzw@x,gavfB-!{CcF&T#Roe;RodwWbBg5urRgaKvHC*_6Vz+<4opieuew&Rmq@d]&Y)X,T#X0Rh}<BqP=4qS9:ReMg/ujReNJw0!/<Jui%!bd{kawwnemRelAxUa?a3#*.&UX(Ya+a/RhvRnQ<o}9Wmtd-#Y&RgSRmw9;Rmxay=Rmyg-vaRmuxEhSrNu,v-voC!%(aR.a(a7+1Ro1>Ro5CE{A9b]{@;5x#eO{:g;urRi+KrNA!%(Ro3>Ro79;Ri_Ku@>{;&!x%gX|{KunA_+g5QRj/g3u5Rj#g>uERj%wio/xRhS&!,!#^1U}wba{8>>@=be}qC@:D5ba{7Ku+A&!}x?ba}t>>@=be}se(aA^^^Uat!b0#{pa+awUazbGa#aLb9bgaWac'a5TbS=Br!d1#`%scp_Jvl!#rT>Re0JvX&!VyN=H{Fcm#U&:pY=ReaJv2&!]h0=]nUJvG'!6Vy|=<r%JrM_=]h2@Wlud'#)U'Wf'b]{i=]h/Jvh!&~BpWg=v]RnMx+ny#'Nu;pVwjnu=]nwxJnx,T#`&Reqwjnt=]nvieu9vrRjLLuYwP(#+!th@wih5pX~Gr'g5v/Rh4KunA'!-CARnP@wwiN:Rm_9x'cvw>!|l=<saKvAA!0&3@q}>w^e1bp#&Re2Re3BDx7gH#T|f5H|eKuZ>!%(:qNAH{]Jv6!+3B2B9=b^{X<5<B92:E{ZLvhwA(a;a%!igQuyRmad+#Y}m@3Rh5d8#X'X*:AqUAHzmaxwbh<aXRnVcF}RT#Nw&cj#U(BWnug/vsRntdka)(a3+.Zb7aYYan1!bVa@Xa}[y^@b[{G=H{+hFu73Rj&Pv#5ReQcK%T#sig1v{Rj'Ku+D#'!t]~Grm~?rkKuMB!01d5#`'Vy.ta3Dtu~Hroc8#'{^45s85AwZbP&!#Rn!wghxWn#KvEA!)&2RlA2RlBx:h|#(T,=]j09Wobz>x]z/@awRoTd+#Y(az]hFhCrm4d,#Y+jTv|Q~EfMj]uNr|~FRfOdCa!Xa9_X#@<plJvf!%b`{(9;Rgwc;.!#2x7cw#T|UDb]|T5Ju={(!=@E{&Jv)&!Ab`{'awJvf!~*>>@=be{#KuY>!+&4Ezyi[ugv&RjIdea+T)#UXa&T-T&a!Rh9auRmW=]kLg5vuRn+g3u4Rn-Ow6ARn,hHus5xNk?#UX(U~)/g8v0RkD~AwkkF?Ri.OuNBwkkA?Ri/d|a2`a*^UYa.!aBTZaTa'Xa;!(!2!-a#b2[yC>6Vyq3[xr2Wi?g1rusVh%s?DtF~<5rbJs;%!DtBfswKtCj[uvuSsEu3RgVx3o:u+wN'*Zt;@3rd~Grh~?rfg8w)Lq)qE&-a%!>bI|`jWv0vV~EfCjTv|vV~Ef@j]uNpn~FRfBcK#T']gWNu7x,k7q4ai(0!hHv8<RhmkMu9vrsBuev/RhlCJvB!,g<v{wchh~@:Rhji[vrv{wchi~@:RhkdS&a5UY#Ta!RgPwwiI5BwciI~@:Rh`x'iJvj'!5]iJPu8Bwch]~@:Rhach)U#h3rp]gLh@t|Ax,hTq3ah!-(~@:Ro0Ou!5RhXj^v(pyw8unRhVd|)`,^UYas!a?/a2Z'a^Ta{Tb7Ta(a#!a,Wf&9sZ3DtAadamov=Bqt3[xig8vsRm~>waiL2b`{QJv*_Ouv2qgj<v]v2BqfdR'X*X#Y-@3qr~Gqv~?p6hHv-]glPup5Lq+q?_%*b_{qF{n9b^{rOu4ARhpKvCD!+&~Bqp:5Dbb}nwoiKl&unuTuBv]v+ueunaXRf0=Jvh!0nKufu8v1w&w7q%w&uHrz:Rgnj5w,uxDJq/(!hNw'5ReCk0s2u3w/w'5ReFd>Za&!*UaA=<wkgsRnSJv^!%Refifw3vyRgOKu_B'!,<]gkiiu:w&Rh<=C@a^<B57@2F{[<B5@aW:=3away9A5aW=<B=C@a^<B57@2F{Ie-#`(^^^bCara.b8aza6!/bZ,!adTbnTbOb+aFaS!aAT9@Wf~2Wli3Dtl2@d,#Y&RfnRfmJwJZtN~GqyJva&!VyMg<v~Rm%iXuJu3Rm9Jv[_=]ih9wlkDRkCd1#`(@Wg>2Wls3cH#T(@<Rj*=>Ri|b~'#23s9h<~El.d'#Y&Dtxi^rzvdRl#d*#U%(o|B2s`hJwSaxRmDKv4B&!1:Rmdd5#`'Vx}to~Hq{x'f1v3(!BA5ba|bJv_&!Wfug1v]ReIdO+U/Y#&G}-8wze=Rh{g1v]ReHg/uQRf/by#)ibQwERl/cH#T(@<Rj+=>Ri{cNu+vlax-!(#a0qa9<Rii2;;bU{H;x<i=&X#Rk`<4wwi=C9H~8xAI(Y#<azRi@45wXI<B9;5bb~7dL(X#Xa(+!aL6Vy{g5QqOau:5au2@ay547EzbxOcU(UX-T#Ta#:Cbb|A?wjh/b_|SOw6ARgtihr}u7Rhy<d1#T)X1@@=I|~=ay<2@@=aybb}Sj3vLv;<d,#Y(56H}A978H}@dGpvs@uAu`vcw9*!aFa+ai%(b!aXa8.a?a[ozWey=sU2@G}Nch&U#Rf_WexKu+D#'!t:~Gr`~?r^j]uNr|~FRg*j^psurwJt|RmcKv)@&!)7Rkv~Br[@wxfO:Rl3co#U'6Rezj_q#vIuavjRltwzeyh@vr5JqD0!>aY?C9:9au@9Cb]}9cl#U*5;5<H||jbuus1ucv&Rfvg1v~d/pppzqFr^a--a~!aMat1(hFv;Wiz@@=Izoj5uuv-7Rix~Cw`fk2WlVcZ#X,k)u3vWs@u2]ktg;wEx'fBq(_2Wg/jTv|vV~EfoJv]!15x'hzqG!(P~EfU~CRl_j6v(us5x4i-#T(2WmZ?C2F|d>Kq<aj1!*jTqIsBv=Wl`~Cw`fi2WlWj`v0u*~>RlR=c>Z,k#u3vWs@u2]kr<c1Z+jTqIsBv=Wla~Cw`fm2WlXdmb3!a{(arZa`bkTa%TbQTa-a9+c'!aM!/[yL=Bqug.w'RifhFvyDRj.g>vgwyk^9]k^Jv3_@WfbAARkhJw2_[x|JvB_wkoIRoKwkoJRoLd'(Y#<]gm=<9<H|yd'%_X#skDtb3awwqkgNulRkgdB#^',9:p'hJwSaxRmEBwVb8@4=H|qLu+w50&!)@3qs~?pU>Awwn;;Rn=c:Z'ARn<=<qwKvC@!/&~BqqJv6!&]eVb^z^xRge'/a%+^`#Sge}6<4Rn3=]n0Pw2>Rn8Jw0!&>Rn:>Rn6cY#a7+!a&=<wkaNw~h3z_c5Z{=wjh#=]nLKv^D!&)Vyz=bW|swYb<WetcG#T(2wxa@qVx@gD#Y&b^|V5JwG&!5bb|pg/w&RgD@x=kHs=uAvn!a%%/'+RmSRh694Ro`g-vaRmRhHv-]mlxCcS#`&ba~.5cD#Ta)P~=d,#Y(56H{>978H{Dd_#{2^Y%_+qbbb{6g3sERhsbU{?dfa.,`a(Xa<!aiX#(55RiG54RiHcI#T'WiU3RiVNvdwtfcRlKNvdd,#Y&RlHRlExQgf.1*^T'X#Sgf}6Wn4=]hfPrk>Rn7Jw0!&>Rn5>Rn9Lunw?&a2!,5<oq@@wqfdRlJj5Q~=d,#Y(~ARfcOuN]fdDKw;ay(}i!547E}j?cI#T(@5bV}iCbV}hdv(^^Tb?a40,b##Tbo!a*bR!a<b|a/!aKai!aU[yK=]o^g:v>ReGJwPZtK<7Rh+h<~El,Pv#5ReR@awwxjCg,ulRjDJv6&!]j!z?aQeeg>w=Sh<eeJw;!&axEzOg,Qosc!#*:wkeJ]eJ>x'h-u(!%Ro.w~h.zPdNZ(X,Ya![x{;9ReY;wkgxRiF:x?ap#Y&RmUg<s2Rkod]+UY0TZ'!a&A9sw<=bczLNvuw{gqzNhJwSaxRmCKuLay!#&s_Rf-55b^{uJvZa!!c%#(55Ri654wmiu5RiuawLu,vp!+}^%b_}Y9;wkgxba}o>A9:=b^}zKuh=a''!3awRk3c*'!#aHRk6c+Z&Rk5Rk4Jv)&!awRjSawd9*`#0?C2@EzMj8u<uJ5RmbjQrquJu3x,k>uq@_+=ayb^|W~ARkEOuN]k@7dhzV^X/X&a-#zRzSb`zXcJzTT#2WkVKvDBzW!%FzY9;5bbzWjQrquJu3Jw3%!b`zU=ayb^zQd:#X(T-a!6Vyywxh}=b]{Jg=u1RiAdGp~qHtzv!w(wA+a+a;<!aJaYai'anasb(=azRmV:Cbb{MLq2vb!%')RjuRjrRjtRjqx3jnqCw3!%')Rk(Rk+Rk&Rk)Lq2vb!%')Rj{RjxRjzRjwLq2vb!%')RjsRjpRjfRjex3jcqCw3!%')Rk'Rk*RjkRjl9<CbbzfOu4ARhxLq2vb!%')RjyRjvRjhRjgx=joq*uKvb!%')+-Rk.Rk%Rj~Rk-Rk#Rj}x=jdq*uKvb!%')+-Rk,Rk!Rj|RjmRjjRjidAq&qKs@uAv8Aa.'*-a@a&0!aM@a5[y73Dsy3Ds|3Dt):wxgI2sHJwJZt.~Gqxwsf0ikrzt}Rl0Jvy_[xj~HqzKv_A|D!&WfP8axRoVcf,U#k(v]v+ueunaXRf1Ju}'!g8u#Ri=jQw!sCunLprq>!,')~<5qeGzq9F{W=c##%s5au:5aU3CBE|;d4#X(D!a&6Vygx(b;#(=]ed?C2F{N<capoq2r[a&!aPa9,'Pw;5s:@@=I|,55w_h|@@=IzcP~=x'fCqB_2Wl2>aU@@=I|1OuNBc1Z+jTqIsBv=Wlc~Cw`fl2WlZ~AcTa%!Z+jTqIsBv=Wlb~Cw`fh2WlYk+uNqJsBv=WlSg,u3dca3#UXaMYa)TaB-=cM|7T#<bI}l5@B932:aV2G{BOuNBJq:|M!5Ezt=<B=C@a^<B57@2F{v>cB{/T#=ay<bI{3Jv6!a.6BKq0ah&+!5E}HP~Ef{978BaU@@=Iza<7d#.Y#978BaU@@=IzH~AJq0!(@@=IzG978BaU@@=IzFe,aU*Y&^^^bvJb,b:bFad!a,c2Ta>aL.bo6!a#CbTa'T#Re{2Wlh2@G{yg6t~Ro_NvdRfticuRQRllJv3&!x&c|zs@Jw3!%RflwpfkRlpKuL;%(!Re<@G|C2GzdhIvuBwgjAg-u0RjAKQB%!(GzZ@G|5NuuRl7d='T+Y#Vy[g<v~Rm!==G|>JvA!)@wma=]m1ifuaw&RmnLs@vT'!|/+[y,g:v>ReTJw1!#qX=x!eC{bLu+wT&)ZtZauq_~Graci&U#F|89:r_Lupvq!.)&2RlG8RfaC=x!eF{_h?rpWlmd&'!#X|&]k::xJey#`'T|+<E|&2@H|%dE#(^,g;u.RiEg6vjRiC9xCkA{O|zY#g=ucRmXKs0@!&*@G|m@awRknJuh!,3d(}gY}eJvj!%Rm):Jw3!%Rm+Rm-Ls0w(&!a(a#@b[|6cZ#X'7RkxWgAOu4ARn'dH'U#Y*Vz-Wm'CARm}d]*#a%^a*T'aK!a<9bV{PC=p*Jw4!&SgxcbB5r]idw(wBRmF7xFkt#&`(Rm/Rm8E|!JuY_9:Rl5=wrgr2:bbxd@xXfB(a*#T+!.X0X1Ta/a'T&RlDRfL>RlyARl9b[z[>RfZ:RlL:RfRwlg/ARl;9;RlxKv,A/!%7s69<74=BA5ba{-8Bde#`a<XaKYa1,a'P~=wxfB2bZ}}?C972@@=I}r8@55B9;5bb}G978B2@@=aybb}3j3vLv;<Jw3&!>Rfk=ayb^}4~Ad1#`*@@=aybb{w2@>==<bbz]dx+UY#^UaF!a9!bB'Ya1.!ajXa#%olRhD[y=3Dt#Ov5BrHKuMB%!(Rf^Wep~HrJwkiQjKr|~FRg)Ku+D#'!t5~GrF~?rDdV)UY,Z/_7RkuG{<~BrBg,rlsO:235B@bX}|d?a1!#`(6Vyn5@d##Y+jTv|vV~EfIj]uNpn~FRfH7Lq2vb1!a9-978BaU@@=Iz9978BbU}#~AJq0!(@@=Iz8978BaU@@=Iz7~AJQ|}!978BbU}!JvkaK!AdUa21-U#`a+(g/vsRn~Ou!5RPj:rmu9WhOjXuvvNr}:RhAj^v(pyw8unRn[kPr}p|u7vwv]RiSBd;pppzq@qHQa?(b.!a.a`@.|xa(hFv;Wiyj5uuv-7Riw~Cw`fg2WlU978BbU|wOuNBJqG!(P~EfD~CRlQcZ#X,k)u3vWs@u2]ksg;wEx'f@q1_2Wg.j]uNpn~FRfqJv]!15x'h{qG!(@@=IzK~CRl^j6v(us5x4i,#T(2WmY?C2F{1>Kq<aj1!*jTqIsBv=Wld~Cw`fj2Wl[j`v0u*~>RlT=c>Z,k#u3vWs@u2]kq<c1Z+jTqIsBv=Wle~Cw`fn2Wl]dn1#c(a(b^a2!b/bAT(bj!aDa7bu,a_a{c0!2T0g:v>ReD2@G{42@G{5~DpM~<5rc=Bx6i>{RT#RnI@zCx]y]z:2Jv[!zr5Awyk]9]k]dD(Y+X#6Vz.g=wKtgwhaCwgmTWj2Lu,w%_+/[y-B;b^xeg3u3Rj-2@bX{*KrJ<!+'@Wg(g?QRlC@Jv`!%b[zIwsfII}8JQ_@w|kW|=Jv(%!AqcOuNBJvEzh!bYzjLs@wP#(0!oy@>RkdJwMZtc3Dtd@BcG#T'9bWxg2@2Fznd*#Y+;2x'c}w<zizixNgwa#Z'U+!/!a'!a+w~g~z6wcn{Rn}wcnzRn|5Rh%=]nJg5vuRmvNvdRlvcprJu}w*az*a#!%.a.'Bot9qT]kj@Wg'ay2Gzv@Jv`!%b[zEwsfHI}1;ck#Ux`<Cbbx_Lu+w!a&0*!wko*wwo,So,}6Juqxf!E}PigQuyRm`d3(`#8>Rn%:A5B;bZ~%KvhCa!a2!x>k7#Uxb@b{#xaRk7Jw0!)>wwhlShl}6>wwhmShm}6CJvB!.x'hhvj{!!5Bwkhhbaz}x'hivjz~!5Bwkhibaz|xEhTrNu,v-vpD!a%&/)a3a.,%Ro2t[CE{)@3re9b]{%wjo09:rgc:Z&Ro6=<riifuaw&RmoKrNA!%(Ro4>Ro89;Ri`dSaL'UYzxZb)7Rka3xRhT&!,!#^1U}vbaz{>>@=be}yC@:D5bazzKu+A&!}{?ba}y>>@=be}wxBh[t`u~vJvr!%a!a()a,a0a4RoC=]o;Ju(!%RoGRhdwjh`=]oAg>w#Ro?g5vuRo=NvdRl|Ku]C.!&;RoEJvB!%RoORoMBx'h[v+_?w~h`}~5?w~hd~!xKh]oiptu-utv.vp!#%&a30a@a'a+(a/aOp(o~p!RoDJu(!%RoHRhewjha=]oBNvdRl}g>w#Ro@g5vuRo>c[#X']o<CauRoRAd-#Y':RkpauRoQKu]C.!&;RoFJvB!%RoNRoPBx'h]v+_?w~ha}t5?w~he}ue!/UbhYacXaW^Tc&a;b:a-c/#b&aja1(!cL+!bKbt!bmcRc9aIc?8[yW3Dtt94Rg`Jv}!&SiRMzBhEebShEMNuPRe>x7gL#TzuwjirRipc<Z&>on;>z=h-MSh.Mwqczx'a7vj&!>Re4@=ResJt__NuPRi*NuPRi)j]uNr|~FRfzKrJ>_+@Wfy@Wf]2WocKrJ<!+'@Wg%g/QRl@@Jv`!&awRl<wsfFIzgLu(w*!.*&ShBMwvhIRhI9;RhNx1hK'!#Sn]Mx1hK~0!#:2<H~7cNu+w7D*'1ZtW>Rn1~?rOc:Z&Rn2=<rQ<7wjh&=BSnLMc]#X(6Vz)w[b=a!U#9wzgMc3#&(RgMRitRis<x,gKt`ax!&+SioM=BSilMc3#&(RgKRinRimKurB,!&SiQMzBhDebShDM6BJQ!(P~Efx978B2@@=I}WLrJw!!,a*&@G}O@9wkibRid@@x'fKwC!&SlDMSfLMjUv~Q~EfKKv3@a+!(hFv-]mpx/hYZ(C5RiWz<o/MwkhY?So/M@x,gbvfB*&!SgEM:SoeeehFu3:Rgbda(,^TZa)X/7Sg[eb:2RgI~BrMC@wgkc:wwkcRerx3h(uUvK!&*,SnOM4Sh*MArRg;wHRh(x=h;rJvPwI!a4',a'0@Wg&=BSh/Mg>w=Rh=g3w*wwgGRgGcW(X#;Sg}M2Gzk@Jv`!&awRl=wsfGIz`dKZ*T'Y-:RhR7RhQg5u-p`j6v(us5d,#Y+~Awkia?RicOuNBwkibba}Ld6p~tyu_vbAa'a+!a/'a3aEa8a!>Sh,ebJv{!&Sh@ebSaReb9;SgwebNuPRi(NvdRl)NuPRi'hHu^<Rm^Jvv_@Wl(g;u1Si/ebKu'B&!*Sh?eb@Wl'z@aPeb95Si.ebcpputyvjB)!,&a+0a%ShAMWeK@G}C@WfJ9;RhMwvhH9w{ia}ix,hJvRA1(!zAn[MRhHx1hJ~*!#hFv(BSn[MBJQ!(@@=I~'978B2@@=I}2db.Ua<'X}+T#a0XaG2G}E;wkg|wuh!Rh!x,hZu,@)!&So0MVy)C5RiXACJvB!&5RiY5RiZg8w)cG}*T#2@bU}=KsA>(!a.3wkhZba~(x,h^u(A!&(SoCMRhb5Bz=h[eb?w~hb~6x,h_u(A!&(SoDMRhc5Bz=h]eb?w~hc~6e)aA1T#T,^^^c-bMb&blcPaP(a/!0!bA=b5c@a(!bfbrc#2afwmhARnjwchORnp2Wlf3DtsNvdRl-2@wpa<]m0bx(#:awRk2@Jw3!%RfhwpfgRlnKQB%!(G{V@G|'NuuRl6d='T+Y#VyUg<v~Rl~==G|<Jv+'!aYShC}6@B<5?ba~8@Jw3'!g2QRljhLrpWlOd+#Y'g.w'rIg>w*wgj@g-u0Rj@Lu+wT&)ZtUauq]~GrGci&U#F|39:rELrNvj!.%*RhCwunfw~nf~:9;Ri]>wtnhg;wHRnhx3hDs@v~!/+'@Wfr@9RkSNu&Rlo=@<5GzoKs0@_+@Wl+@awRkmJuh!-3d(}pY#qWJvj!%Rm(:Jw3!%Rm,Rm*de&!1U-U#`)Re;@G|.@9Ri82@wjfvRlq=@<5GzpLvOvr!).&2RlF8Rf`C=x!eE{.Jw3_g2QRlkhLrpWlPde(!#U{s,UXa*Ta'[y'g:v>ReS;x0PZ&RnlRnn~HrKJw1}f!=x!eB|2w]aP(#Xa&a*Ta.Ua2a7=]iOd'#Y&Ro&WnWg;u.RiDg6vjRiBNvdRlzhNvj]nYJuW_2Wm3x)kFze{9d])!a.!,Y01!#&aC!a3RndC=ox~BrC@2b^{pg,rlse7x'ksuq!%Rm.E{xidw(wBRmGx9o+)X#wwo-So-}69:Rl4@xSf@a#XZ'X)X,Ta(/ARl8b[xc>RfY:RlI:RfQwlg.ARl:9;Rlwdn'#^XafaQa1X1TaHTa)@b[{zcZ#X'7RkwWg@Ou4ARn&x)kG#{,g7u/RkGdH'U#Y*Vz'Wm&CARm|bx#(A]gUbUzJj9Q~=d,#Y(56H}l978H{U7d,0#U*2>ABb_xZ978BbU{e~AJQ{g!978BbU{hxMh?ad{oUYZ.x1h?{l!#:2<H{mx3n[t{vl!,&a%3Ro(z=iS}6ARnr=Bwsn^wvn`Rnbd`*T}B0!#^X'BG{c9b]{a>>@=be}F?JvS!&BG{d7BG}(Bde#`a1X,Ya@!a'P~=wxf@2bZ}I56B2@@=aybb}08@55B9;5bb}<j3vLv;<Jw3&!>Rfg=ayb^}&OuNBKuLA!)a!P~=x#fD{f2@>==<bbzl?C972@@=Ix^d6rSu,v7w*C(0a)a6#B+a%!sQ[y?3Dt%3[xn~<5rLOu!5p@Ku+D#'!t7~GrP~?rNKvlaya7'!h+v-5qMg=t|cd,U#5AAaa5Abb{S@52B5@a[@52B5Gx[iXueu;d<#`a(!/549C;ag>23ExY5@Dah89b^~689Jv)!~2b[~1Lv'w(%*!a#bX|aPrmawRe]keu7uhv-q6rxu,q`xTo]/a5aU!bNaDXbi!b-!ao!b<bwA!#5@B932:aV2G|:d-)Y#hJrL>RhG<7@C5<H|_=Cau:5aj5@B932:bJ|ng>vIbs)#?C2F|9jPv0w.vISh-MKvUaz(.!9ABbb|[5;5<H|Eg>unwfh;9:4E|YjQsBt|vjx'hYq3!(?C2F|J:2<BaY?C2F|GOu!5x,g|p{ah!-(?C2F|c9:4E|OjXuvvNr}:Rh&i[w*t|cd+U#jJvsu)vsSn~Mkfrmu9p}u7vwv]So!McW#Xa!ax5@A5aY:5;5<H|>kJv~vYrquJu3x4ib#T)2@SmZM?C2F|Bj:rmu9@xPhI(a*a#U#`a3-5Abb|L~@:RhK9:4E|0@52B5G|#C::aY?C2F|-:2<BaY?C2F|.5Jvk!a)javYrquJu3x4ia#T)2@SmYM?C2F|HAxPhH(!a#U#`a*-5Abb|4~@:RhJ9:4E|R@52B5G|F:2<BaY?C2F|Sc^#Xa2j=Qq5CJvB!-g<v{z;hhM?C2F|Zi[vrv{z;hiM?C2F|XKsA>!a)-g<v{z;h[eb?C2F|]i[vrv{z;h]eb?C2F|^iZu.vix,hZq3ah!.(?C2F|QOu!5ShXM:2<BaY?C2F|P", 13494, 2713, 49, 25, 61);
+
+// node_modules/entities/dist/generated/decode-data-xml.js
+var xmlDecodeTree = /* @__PURE__ */ new Uint16Array([
+  512,
+  26465,
+  29036,
+  7,
+  0,
+  2,
+  4,
+  116,
+  24638,
+  116,
+  24636,
+  8693,
+  29807,
+  24610,
+  621,
+  1,
+  0,
+  0,
+  3,
+  112,
+  24614,
+  111,
+  115,
+  24615
+]);
 
 // node_modules/entities/dist/internal/bin-trie-flags.js
 var BinTrieFlags;
@@ -826,36 +4070,33 @@ var BinTrieFlags;
   BinTrieFlags2[BinTrieFlags2["FLAG13"] = 8192] = "FLAG13";
   BinTrieFlags2[BinTrieFlags2["BRANCH_LENGTH"] = 8064] = "BRANCH_LENGTH";
   BinTrieFlags2[BinTrieFlags2["JUMP_TABLE"] = 127] = "JUMP_TABLE";
+  BinTrieFlags2[BinTrieFlags2["VALUE_MASK"] = 8191] = "VALUE_MASK";
 })(BinTrieFlags || (BinTrieFlags = {}));
 
 // node_modules/entities/dist/decode.js
 var CharCodes;
 (function(CharCodes2) {
+  CharCodes2[CharCodes2["AMP"] = 38] = "AMP";
   CharCodes2[CharCodes2["NUM"] = 35] = "NUM";
   CharCodes2[CharCodes2["SEMI"] = 59] = "SEMI";
   CharCodes2[CharCodes2["EQUALS"] = 61] = "EQUALS";
   CharCodes2[CharCodes2["ZERO"] = 48] = "ZERO";
   CharCodes2[CharCodes2["NINE"] = 57] = "NINE";
   CharCodes2[CharCodes2["LOWER_A"] = 97] = "LOWER_A";
-  CharCodes2[CharCodes2["LOWER_F"] = 102] = "LOWER_F";
   CharCodes2[CharCodes2["LOWER_X"] = 120] = "LOWER_X";
-  CharCodes2[CharCodes2["LOWER_Z"] = 122] = "LOWER_Z";
-  CharCodes2[CharCodes2["UPPER_A"] = 65] = "UPPER_A";
-  CharCodes2[CharCodes2["UPPER_F"] = 70] = "UPPER_F";
-  CharCodes2[CharCodes2["UPPER_Z"] = 90] = "UPPER_Z";
 })(CharCodes || (CharCodes = {}));
 var TO_LOWER_BIT = 32;
 function isNumber(code) {
-  return code >= CharCodes.ZERO && code <= CharCodes.NINE;
+  return code - CharCodes.ZERO >>> 0 <= 9;
 }
 function isHexadecimalCharacter(code) {
-  return code >= CharCodes.UPPER_A && code <= CharCodes.UPPER_F || code >= CharCodes.LOWER_A && code <= CharCodes.LOWER_F;
+  return (code | TO_LOWER_BIT) - CharCodes.LOWER_A >>> 0 <= 5;
 }
-function isAsciiAlphaNumeric(code) {
-  return code >= CharCodes.UPPER_A && code <= CharCodes.UPPER_Z || code >= CharCodes.LOWER_A && code <= CharCodes.LOWER_Z || isNumber(code);
+function isAlpha(code) {
+  return (code | TO_LOWER_BIT) - CharCodes.LOWER_A >>> 0 <= 25;
 }
 function isEntityInAttributeInvalidEnd(code) {
-  return code === CharCodes.EQUALS || isAsciiAlphaNumeric(code);
+  return code === CharCodes.EQUALS || isAlpha(code) || isNumber(code);
 }
 var EntityDecoderState;
 (function(EntityDecoderState2) {
@@ -875,11 +4116,6 @@ var EntityDecoder = class {
   decodeTree;
   emitCodePoint;
   errors;
-  constructor(decodeTree, emitCodePoint, errors) {
-    this.decodeTree = decodeTree;
-    this.emitCodePoint = emitCodePoint;
-    this.errors = errors;
-  }
   /** The current state of the decoder. */
   state = EntityDecoderState.EntityStart;
   /** Characters that were consumed while parsing an entity. */
@@ -887,18 +4123,29 @@ var EntityDecoder = class {
   /**
    * The result of the entity.
    *
-   * Either the result index of a numeric entity, or the codepoint of a
-   * numeric entity.
+   * For named entities: the trie index of the best legacy match so far
+   * (0 = none). For numeric entities: the accumulated code point.
    */
   result = 0;
   /** The current index in the decode tree. */
   treeIndex = 0;
-  /** The number of characters that were consumed in excess. */
+  /**
+   * Characters consumed since the last recorded legacy match, plus one.
+   * Invariant at the top of the `stateNamedEntity` loop: `excess` equals
+   * the number of unrecorded consumed characters + 1.
+   */
+  // biome-ignore lint/correctness/noUnusedPrivateClassMembers: False positive (read via destructuring)
   excess = 1;
   /** The mode in which the decoder is operating. */
   decodeMode = DecodingMode.Strict;
   /** The number of characters that have been consumed in the current run. */
+  // biome-ignore lint/correctness/noUnusedPrivateClassMembers: False positive
   runConsumed = 0;
+  constructor(decodeTree, emitCodePoint, errors) {
+    this.decodeTree = decodeTree;
+    this.emitCodePoint = emitCodePoint;
+    this.errors = errors;
+  }
   /**
    * Resets the instance to make it reusable.
    * @param decodeMode Entity decoding mode to use.
@@ -916,7 +4163,7 @@ var EntityDecoder = class {
    * Write an entity to the decoder. This can be called multiple times with partial entities.
    * If the entity is incomplete, the decoder will return -1.
    *
-   * Mirrors the implementation of `getDecoder`, but with the ability to stop decoding if the
+   * Mirrors the non-streaming `decodeWithTrie`, but with the ability to stop decoding if the
    * entity is incomplete, and resume when the next string is written.
    * @param input The string containing the entity (or a continuation of the entity).
    * @param offset The offset at which the entity begins. Should be 0 if this is not the first call.
@@ -942,7 +4189,7 @@ var EntityDecoder = class {
       case EntityDecoderState.NumericHex: {
         return this.stateNumericHex(input, offset);
       }
-      case EntityDecoderState.NamedEntity: {
+      default: {
         return this.stateNamedEntity(input, offset);
       }
     }
@@ -955,6 +4202,7 @@ var EntityDecoder = class {
    * @param offset The current offset.
    * @returns The number of characters that were consumed, or -1 if the entity is incomplete.
    */
+  // eslint-disable-next-line unicorn/consistent-class-member-order
   stateNumericStart(input, offset) {
     if (offset >= input.length) {
       return -1;
@@ -970,44 +4218,61 @@ var EntityDecoder = class {
   /**
    * Parses a hexadecimal numeric entity.
    *
-   * Equivalent to the `Hexademical character reference state` in the HTML spec.
+   * Equivalent to the `Hexademical character reference state` in the HTML
+   * spec. Digit parsing matches the hex loop in `parseNumericEntity`.
+   * The accumulated value is preserved for numeric validation callbacks.
    * @param input The string containing the entity (or a continuation of the entity).
    * @param offset The current offset.
    * @returns The number of characters that were consumed, or -1 if the entity is incomplete.
    */
   stateNumericHex(input, offset) {
-    while (offset < input.length) {
+    const inputLength = input.length;
+    let { result: result2 } = this;
+    let { consumed } = this;
+    while (offset < inputLength) {
       const char = input.charCodeAt(offset);
       if (isNumber(char) || isHexadecimalCharacter(char)) {
         const digit = char <= CharCodes.NINE ? char - CharCodes.ZERO : (char | TO_LOWER_BIT) - CharCodes.LOWER_A + 10;
-        this.result = this.result * 16 + digit;
-        this.consumed++;
-        offset++;
+        result2 = result2 * 16 + digit;
+        consumed += 1;
+        offset += 1;
       } else {
+        this.result = result2;
+        this.consumed = consumed;
         return this.emitNumericEntity(char, 3);
       }
     }
+    this.result = result2;
+    this.consumed = consumed;
     return -1;
   }
   /**
    * Parses a decimal numeric entity.
    *
-   * Equivalent to the `Decimal character reference state` in the HTML spec.
+   * Equivalent to the `Decimal character reference state` in the HTML
+   * spec. Digit parsing matches the decimal loop in `parseNumericEntity`.
+   * The accumulated value is preserved for numeric validation callbacks.
    * @param input The string containing the entity (or a continuation of the entity).
    * @param offset The current offset.
    * @returns The number of characters that were consumed, or -1 if the entity is incomplete.
    */
   stateNumericDecimal(input, offset) {
-    while (offset < input.length) {
-      const char = input.charCodeAt(offset);
-      if (isNumber(char)) {
-        this.result = this.result * 10 + (char - CharCodes.ZERO);
-        this.consumed++;
-        offset++;
-      } else {
-        return this.emitNumericEntity(char, 2);
+    const inputLength = input.length;
+    let { result: result2 } = this;
+    let { consumed } = this;
+    while (offset < inputLength) {
+      const digit = input.charCodeAt(offset) - CharCodes.ZERO;
+      if (digit >>> 0 > 9) {
+        this.result = result2;
+        this.consumed = consumed;
+        return this.emitNumericEntity(digit + CharCodes.ZERO, 2);
       }
+      result2 = result2 * 10 + digit;
+      consumed += 1;
+      offset += 1;
     }
+    this.result = result2;
+    this.consumed = consumed;
     return -1;
   }
   /**
@@ -1032,7 +4297,7 @@ var EntityDecoder = class {
     } else if (this.decodeMode === DecodingMode.Strict) {
       return 0;
     }
-    this.emitCodePoint(replaceCodePoint(this.result), this.consumed);
+    this.emitCodePoint((this.decodeTree === xmlDecodeTree ? replaceCodePointXML : replaceCodePoint)(this.result), this.consumed);
     if (this.errors) {
       if (lastCp !== CharCodes.SEMI) {
         this.errors.missingSemicolonAfterCharacterReference();
@@ -1040,6 +4305,23 @@ var EntityDecoder = class {
       this.errors.validateNumericCharacterReference(this.result);
     }
     return this.consumed;
+  }
+  /**
+   * Flush locally-tracked walk state back to the fields, then emit the
+   * recorded legacy match or reject (cold path — at most once per
+   * entity). Called after failed navigation (leaf node, branch miss, or
+   * compact-run mismatch). In attribute mode, reject if no legacy was
+   * recorded at the current node, if we descended past it, or if the
+   * pending input character is an invalid attribute terminator.
+   * @param consumed Locally-tracked consumed count.
+   * @param excess Locally-tracked excess count.
+   * @param char Pending input character (may be the mismatching char).
+   * @param valueLength Value length at the current trie node.
+   */
+  flushAndEmitLegacyOrReject(consumed, excess, char, valueLength2) {
+    this.consumed = consumed;
+    this.excess = excess;
+    return this.result === 0 || this.decodeMode === DecodingMode.Attribute && (valueLength2 === 0 || excess > 1 || isEntityInAttributeInvalidEnd(char)) ? 0 : this.emitNotTerminatedNamedEntity();
   }
   /**
    * Parses a named entity.
@@ -1051,68 +4333,110 @@ var EntityDecoder = class {
    */
   stateNamedEntity(input, offset) {
     const { decodeTree } = this;
-    let current = decodeTree[this.treeIndex];
-    let valueLength = (current & BinTrieFlags.VALUE_LENGTH) >> 14;
-    while (offset < input.length) {
-      if (valueLength === 0 && (current & BinTrieFlags.FLAG13) !== 0) {
-        const runLength = (current & BinTrieFlags.BRANCH_LENGTH) >> 7;
-        if (this.runConsumed === 0) {
-          const firstChar = current & BinTrieFlags.JUMP_TABLE;
-          if (input.charCodeAt(offset) !== firstChar) {
-            return this.result === 0 ? 0 : this.emitNotTerminatedNamedEntity();
+    const inputLength = input.length;
+    const isStrict = this.decodeMode === DecodingMode.Strict;
+    let { treeIndex } = this;
+    let { excess } = this;
+    let { consumed } = this;
+    let current = decodeTree[treeIndex];
+    while (offset < inputLength) {
+      while ((current & (BinTrieFlags.VALUE_LENGTH | BinTrieFlags.FLAG13)) === 0 && (current & BinTrieFlags.JUMP_TABLE) !== 0) {
+        const char2 = input.charCodeAt(offset);
+        const jumpOffset = current & BinTrieFlags.JUMP_TABLE;
+        const branchCount = (current & BinTrieFlags.BRANCH_LENGTH) >> 7;
+        if (branchCount === 0) {
+          if (char2 !== jumpOffset) {
+            return this.flushAndEmitLegacyOrReject(consumed, excess, char2, 0);
           }
-          offset++;
-          this.excess++;
-          this.runConsumed++;
+          treeIndex += 1;
+        } else {
+          const slot = char2 - jumpOffset;
+          if (slot >>> 0 >= branchCount) {
+            return this.flushAndEmitLegacyOrReject(consumed, excess, char2, 0);
+          }
+          const stored = decodeTree[treeIndex + 1 + slot];
+          if (stored === 0) {
+            return this.flushAndEmitLegacyOrReject(consumed, excess, char2, 0);
+          }
+          treeIndex = treeIndex + branchCount + stored & 65535;
         }
-        while (this.runConsumed < runLength) {
-          if (offset >= input.length) {
+        current = decodeTree[treeIndex];
+        offset += 1;
+        excess += 1;
+        if (offset >= inputLength)
+          break;
+      }
+      if (offset >= inputLength)
+        break;
+      if ((current & (BinTrieFlags.VALUE_LENGTH | BinTrieFlags.FLAG13)) === BinTrieFlags.FLAG13) {
+        const runLength = (current & BinTrieFlags.BRANCH_LENGTH) >> 7;
+        let { runConsumed } = this;
+        if (runConsumed === 0) {
+          const char2 = input.charCodeAt(offset);
+          if (char2 !== (current & BinTrieFlags.JUMP_TABLE)) {
+            return this.flushAndEmitLegacyOrReject(consumed, excess, char2, 0);
+          }
+          offset += 1;
+          excess += 1;
+          runConsumed = 1;
+        }
+        while (runConsumed < runLength) {
+          if (offset >= inputLength) {
+            this.treeIndex = treeIndex;
+            this.excess = excess;
+            this.consumed = consumed;
+            this.runConsumed = runConsumed;
             return -1;
           }
-          const charIndexInPacked = this.runConsumed - 1;
-          const packedWord = decodeTree[this.treeIndex + 1 + (charIndexInPacked >> 1)];
-          const expectedChar = charIndexInPacked % 2 === 0 ? packedWord & 255 : packedWord >> 8 & 255;
-          if (input.charCodeAt(offset) !== expectedChar) {
+          const charIndexInPacked = runConsumed - 1;
+          const packedWord = decodeTree[treeIndex + 1 + (charIndexInPacked >> 1)];
+          const expectedChar = packedWord >> ((charIndexInPacked & 1) << 3) & 255;
+          const char2 = input.charCodeAt(offset);
+          if (char2 !== expectedChar) {
             this.runConsumed = 0;
-            return this.result === 0 ? 0 : this.emitNotTerminatedNamedEntity();
+            return this.flushAndEmitLegacyOrReject(consumed, excess, char2, 0);
           }
-          offset++;
-          this.excess++;
-          this.runConsumed++;
+          offset += 1;
+          excess += 1;
+          runConsumed += 1;
         }
         this.runConsumed = 0;
-        this.treeIndex += 1 + (runLength >> 1);
-        current = decodeTree[this.treeIndex];
-        valueLength = (current & BinTrieFlags.VALUE_LENGTH) >> 14;
+        treeIndex += 1 + (runLength >> 1);
+        current = decodeTree[treeIndex];
+        continue;
       }
-      if (offset >= input.length)
-        break;
+      const valueLength2 = current >>> 14;
       const char = input.charCodeAt(offset);
-      if (char === CharCodes.SEMI && valueLength !== 0 && (current & BinTrieFlags.FLAG13) !== 0) {
-        return this.emitNamedEntityData(this.treeIndex, valueLength, this.consumed + this.excess);
-      }
-      this.treeIndex = determineBranch(decodeTree, current, this.treeIndex + Math.max(1, valueLength), char);
-      if (this.treeIndex < 0) {
-        return this.result === 0 || // If we are parsing an attribute
-        this.decodeMode === DecodingMode.Attribute && // We shouldn't have consumed any characters after the entity,
-        (valueLength === 0 || // And there should be no invalid characters.
-        isEntityInAttributeInvalidEnd(char)) ? 0 : this.emitNotTerminatedNamedEntity();
-      }
-      current = decodeTree[this.treeIndex];
-      valueLength = (current & BinTrieFlags.VALUE_LENGTH) >> 14;
-      if (valueLength !== 0) {
+      if (valueLength2 !== 0) {
+        if (!isStrict && (current & BinTrieFlags.FLAG13) === 0) {
+          this.result = treeIndex;
+          consumed += excess - 1;
+          excess = 1;
+        }
         if (char === CharCodes.SEMI) {
-          return this.emitNamedEntityData(this.treeIndex, valueLength, this.consumed + this.excess);
+          return this.emitNamedEntityData(treeIndex, valueLength2, consumed + excess);
         }
-        if (this.decodeMode !== DecodingMode.Strict && (current & BinTrieFlags.FLAG13) === 0) {
-          this.result = this.treeIndex;
-          this.consumed += this.excess;
-          this.excess = 0;
+        if (valueLength2 === 1) {
+          return this.flushAndEmitLegacyOrReject(consumed, excess, char, valueLength2);
         }
       }
-      offset++;
-      this.excess++;
+      const next = determineBranch(decodeTree, current, treeIndex + (valueLength2 || 1), char);
+      if (next < 0) {
+        return this.flushAndEmitLegacyOrReject(consumed, excess, char, valueLength2);
+      }
+      treeIndex = next;
+      current = decodeTree[treeIndex];
+      offset += 1;
+      excess += 1;
     }
+    if (!isStrict && current >>> 14 !== 0 && (current & BinTrieFlags.FLAG13) === 0) {
+      this.result = treeIndex;
+      consumed += excess - 1;
+      excess = 1;
+    }
+    this.treeIndex = treeIndex;
+    this.excess = excess;
+    this.consumed = consumed;
     return -1;
   }
   /**
@@ -1120,24 +4444,24 @@ var EntityDecoder = class {
    * @returns The number of characters consumed.
    */
   emitNotTerminatedNamedEntity() {
-    const { result, decodeTree } = this;
-    const valueLength = (decodeTree[result] & BinTrieFlags.VALUE_LENGTH) >> 14;
-    this.emitNamedEntityData(result, valueLength, this.consumed);
+    const { result: result2, decodeTree } = this;
+    const valueLength2 = decodeTree[result2] >>> 14;
+    this.emitNamedEntityData(result2, valueLength2, this.consumed);
     this.errors?.missingSemicolonAfterCharacterReference();
     return this.consumed;
   }
   /**
    * Emit a named entity.
    * @param result The index of the entity in the decode tree.
-   * @param valueLength The number of bytes in the entity.
+   * @param valueLength Encoded value length (header plus any value words).
    * @param consumed The number of characters consumed.
    * @returns The number of characters consumed.
    */
-  emitNamedEntityData(result, valueLength, consumed) {
+  emitNamedEntityData(result2, valueLength2, consumed) {
     const { decodeTree } = this;
-    this.emitCodePoint(valueLength === 1 ? decodeTree[result] & ~(BinTrieFlags.VALUE_LENGTH | BinTrieFlags.FLAG13) : decodeTree[result + 1], consumed);
-    if (valueLength === 3) {
-      this.emitCodePoint(decodeTree[result + 2], consumed);
+    this.emitCodePoint(valueLength2 === 1 ? decodeTree[result2] & BinTrieFlags.VALUE_MASK : decodeTree[result2 + 1], consumed);
+    if (valueLength2 === 3) {
+      this.emitCodePoint(decodeTree[result2 + 2], consumed);
     }
     return consumed;
   }
@@ -1163,7 +4487,7 @@ var EntityDecoder = class {
         this.errors?.absenceOfDigitsInNumericCharacterReference(this.consumed);
         return 0;
       }
-      case EntityDecoderState.EntityStart: {
+      default: {
         return 0;
       }
     }
@@ -1172,28 +4496,29 @@ var EntityDecoder = class {
 function determineBranch(decodeTree, current, nodeIndex, char) {
   const branchCount = (current & BinTrieFlags.BRANCH_LENGTH) >> 7;
   const jumpOffset = current & BinTrieFlags.JUMP_TABLE;
-  if (branchCount === 0) {
-    return jumpOffset !== 0 && char === jumpOffset ? nodeIndex : -1;
-  }
   if (jumpOffset) {
-    const value = char - jumpOffset;
-    return value < 0 || value >= branchCount ? -1 : decodeTree[nodeIndex + value] - 1;
-  }
-  const packedKeySlots = branchCount + 1 >> 1;
-  let lo = 0;
-  let hi = branchCount - 1;
-  while (lo <= hi) {
-    const mid = lo + hi >>> 1;
-    const slot = mid >> 1;
-    const packed = decodeTree[nodeIndex + slot];
-    const midKey = packed >> (mid & 1) * 8 & 255;
-    if (midKey < char) {
-      lo = mid + 1;
-    } else if (midKey > char) {
-      hi = mid - 1;
-    } else {
-      return decodeTree[nodeIndex + packedKeySlots + mid];
+    if (branchCount === 0) {
+      return char === jumpOffset ? nodeIndex : -1;
     }
+    const slot = char - jumpOffset;
+    if (slot >>> 0 >= branchCount)
+      return -1;
+    const stored = decodeTree[nodeIndex + slot];
+    return stored === 0 ? -1 : nodeIndex + branchCount + stored - 1 & 65535;
+  }
+  if (branchCount === 0)
+    return -1;
+  const packedKeySlots = branchCount + 1 >> 1;
+  const branchEnd = nodeIndex + packedKeySlots + branchCount;
+  for (let index = 0; index < branchCount; index++) {
+    const packed = decodeTree[nodeIndex + (index >> 1)];
+    const key = packed >> ((index & 1) << 3) & 255;
+    if (key === char) {
+      const pointerIndex = nodeIndex + packedKeySlots + index;
+      return branchEnd + decodeTree[pointerIndex] & 65535;
+    }
+    if (key > char)
+      return -1;
   }
   return -1;
 }
@@ -1809,7 +5134,7 @@ function isAsciiLower(cp) {
 function isAsciiLetter(cp) {
   return isAsciiLower(cp) || isAsciiUpper(cp);
 }
-function isAsciiAlphaNumeric2(cp) {
+function isAsciiAlphaNumeric(cp) {
   return isAsciiLetter(cp) || isAsciiDigit(cp);
 }
 function toAsciiLower(cp) {
@@ -1836,9 +5161,9 @@ function getErrorForNumericCharacterReference(code) {
   return null;
 }
 var Tokenizer = class {
-  constructor(options, handler) {
+  constructor(options, handler2) {
     this.options = options;
-    this.handler = handler;
+    this.handler = handler2;
     this.paused = false;
     this.inLoop = false;
     this.inForeignNode = false;
@@ -1851,12 +5176,12 @@ var Tokenizer = class {
     this.currentCharacterToken = null;
     this.currentToken = null;
     this.currentAttr = { name: "", value: "" };
-    this.preprocessor = new Preprocessor(handler);
+    this.preprocessor = new Preprocessor(handler2);
     this.currentLocation = this.getCurrentLocation(-1);
     this.entityDecoder = new EntityDecoder(htmlDecodeTree, (cp, consumed) => {
       this.preprocessor.pos = this.entityStartPos + consumed - 1;
       this._flushCodePointConsumedAsCharacterReference(cp);
-    }, handler.onParseError ? {
+    }, handler2.onParseError ? {
       missingSemicolonAfterCharacterReference: () => {
         this._err(ERR.missingSemicolonAfterCharacterReference, 1);
       },
@@ -4308,7 +7633,7 @@ var Tokenizer = class {
     if (length === 0) {
       this.preprocessor.pos = this.entityStartPos;
       this._flushCodePointConsumedAsCharacterReference(CODE_POINTS.AMPERSAND);
-      this.state = !this._isCharacterReferenceInAttribute() && isAsciiAlphaNumeric2(this.preprocessor.peek(1)) ? State.AMBIGUOUS_AMPERSAND : this.returnState;
+      this.state = !this._isCharacterReferenceInAttribute() && isAsciiAlphaNumeric(this.preprocessor.peek(1)) ? State.AMBIGUOUS_AMPERSAND : this.returnState;
     } else {
       this.state = this.returnState;
     }
@@ -4316,7 +7641,7 @@ var Tokenizer = class {
   // Ambiguos ampersand state
   //------------------------------------------------------------------
   _stateAmbiguousAmpersand(cp) {
-    if (isAsciiAlphaNumeric2(cp)) {
+    if (isAsciiAlphaNumeric(cp)) {
       this._flushCodePointConsumedAsCharacterReference(cp);
     } else {
       if (cp === CODE_POINTS.SEMICOLON) {
@@ -4364,9 +7689,9 @@ var OpenElementStack = class {
   get currentTmplContentOrNode() {
     return this._isInTemplate() ? this.treeAdapter.getTemplateContent(this.current) : this.current;
   }
-  constructor(document, treeAdapter, handler) {
+  constructor(document, treeAdapter, handler2) {
     this.treeAdapter = treeAdapter;
-    this.handler = handler;
+    this.handler = handler2;
     this.items = [];
     this.tagIDs = [];
     this.stackTop = -1;
@@ -8277,36 +11602,33 @@ function endTagInForeignContent(p, token) {
 }
 
 // node_modules/entities/dist/escape.js
-var getCodePoint = typeof String.prototype.codePointAt === "function" ? (input, index) => input.codePointAt(index) : (
-  // http://mathiasbynens.be/notes/javascript-encoding#surrogate-formulae
-  (c, index) => (c.charCodeAt(index) & 64512) === 55296 ? (c.charCodeAt(index) - 55296) * 1024 + c.charCodeAt(index + 1) - 56320 + 65536 : c.charCodeAt(index)
-);
-function getEscaper(regex, map) {
-  return function escape(data) {
-    let match;
-    let lastIndex = 0;
-    let result = "";
-    while (match = regex.exec(data)) {
-      if (lastIndex !== match.index) {
-        result += data.substring(lastIndex, match.index);
-      }
-      result += map.get(match[0].charCodeAt(0));
-      lastIndex = match.index + 1;
-    }
-    return result + data.substring(lastIndex);
-  };
+function getEscape(char) {
+  return char === 34 ? "&quot;" : char === 38 ? "&amp;" : char === 39 ? "&apos;" : char === 60 ? "&lt;" : char === 62 ? "&gt;" : "&nbsp;";
 }
-var escapeAttribute = /* @__PURE__ */ getEscaper(/["&\u00A0]/g, /* @__PURE__ */ new Map([
-  [34, "&quot;"],
-  [38, "&amp;"],
-  [160, "&nbsp;"]
-]));
-var escapeText = /* @__PURE__ */ getEscaper(/[&<>\u00A0]/g, /* @__PURE__ */ new Map([
-  [38, "&amp;"],
-  [60, "&lt;"],
-  [62, "&gt;"],
-  [160, "&nbsp;"]
-]));
+function escapeWithRegex(re, data) {
+  re.lastIndex = 0;
+  if (!re.test(data))
+    return data;
+  let out = "";
+  let last = 0;
+  do {
+    const index = re.lastIndex - 1;
+    if (last !== index)
+      out += data.substring(last, index);
+    const char = data.charCodeAt(index);
+    out += getEscape(char);
+    last = index + 1;
+  } while (re.test(data));
+  return out + data.substring(last);
+}
+var attributeEscapeRegex = /["&\u{A0}]/gu;
+function escapeAttribute(data) {
+  return escapeWithRegex(attributeEscapeRegex, data);
+}
+var textEscapeRegex = /[&<>\u{A0}]/gu;
+function escapeText(data) {
+  return escapeWithRegex(textEscapeRegex, data);
+}
 
 // node_modules/parse5/dist/serializer/index.js
 var VOID_ELEMENTS = /* @__PURE__ */ new Set([
@@ -8421,242 +11743,64 @@ function parse(html, options) {
   return Parser.parse(html, options);
 }
 
-// page.ts
-var PAGE_FILENAME = "thread-page.html";
-var MAX_PAGE_BYTES = 5 * 1024 * 1024;
-var VIEWER_TOKEN_TTL_MS = 2 * 60 * 60 * 1e3;
-var UPLOAD_DIRNAME = "thread-page-uploads";
-var MAX_UPLOAD_BYTES = 24 * 1024 * 1024;
-function safeUploadName(raw) {
-  let decoded = raw;
-  try {
-    decoded = decodeURIComponent(raw);
-  } catch {
-    decoded = raw;
+// src/domain/html/document.ts
+var XHTML = "http://www.w3.org/1999/xhtml";
+function injectKernel(source, options) {
+  const authored = parseAuthored(source);
+  if (authored) {
+    return injectInto(authored, options);
   }
-  const base = decoded.split(/[\\/]/).pop() ?? "upload";
-  const cleaned = base.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "");
-  return cleaned.slice(0, 80) || "upload";
+  return wrapFragment(source, options);
 }
-function escapeHtml(value) {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
-}
-function sha256Text(value) {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-var CONFIRMATION_TTL_MS = 2 * 60 * 1e3;
-function signConfirmationChallenge(payload, key) {
-  const encoded = encodeJson(payload);
-  const signature = createHmac("sha256", key).update(encoded, "ascii").digest("base64url");
-  return `${encoded}.${signature}`;
-}
-function isConfirmationChallenge(value, now) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const payload = value;
-  return payload.v === 2 && payload.scope === "confirm" && typeof payload.threadId === "string" && /^[A-Za-z0-9_-]{3,128}$/.test(payload.threadId) && typeof payload.pageHash === "string" && /^[a-f0-9]{64}$/.test(payload.pageHash) && typeof payload.requestId === "string" && payload.requestId.length > 0 && payload.requestId.length <= 96 && typeof payload.method === "string" && payload.method.length > 0 && payload.method.length <= 96 && typeof payload.paramsHash === "string" && /^[a-f0-9]{64}$/.test(payload.paramsHash) && typeof payload.summary === "string" && payload.summary.length > 0 && payload.summary.length <= 512 && typeof payload.iat === "number" && Number.isSafeInteger(payload.iat) && typeof payload.exp === "number" && Number.isSafeInteger(payload.exp) && payload.iat <= now + 3e4 && payload.exp > now && payload.exp > payload.iat && payload.exp - payload.iat <= CONFIRMATION_TTL_MS;
-}
-function verifyConfirmationChallenge(token, key, now = Date.now()) {
-  const parts = token.split(".");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
-  const [encoded, suppliedSignature] = parts;
-  try {
-    const expected = createHmac("sha256", key).update(encoded, "ascii").digest();
-    const supplied = Buffer.from(suppliedSignature, "base64url");
-    if (supplied.byteLength !== expected.byteLength) return null;
-    if (supplied.toString("base64url") !== suppliedSignature) return null;
-    if (!timingSafeEqual(supplied, expected)) return null;
-    const decoded = JSON.parse(
-      Buffer.from(encoded, "base64url").toString("utf8")
-    );
-    return isConfirmationChallenge(decoded, now) ? decoded : null;
-  } catch {
-    return null;
-  }
-}
-function etagForHash(hash) {
-  return `"${hash}"`;
-}
-function encodeJson(value) {
-  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
-}
-function signPageToken(payload, key) {
-  const encoded = encodeJson(payload);
-  const signature = createHmac("sha256", key).update(encoded, "ascii").digest("base64url");
-  return `${encoded}.${signature}`;
-}
-function isPageTokenPayload(value, expectedScope, now) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const payload = value;
-  return payload.v === 2 && payload.scope === expectedScope && typeof payload.threadId === "string" && /^[A-Za-z0-9_-]{3,128}$/.test(payload.threadId) && typeof payload.pageHash === "string" && /^[a-f0-9]{64}$/.test(payload.pageHash) && typeof payload.iat === "number" && Number.isSafeInteger(payload.iat) && typeof payload.exp === "number" && Number.isSafeInteger(payload.exp) && payload.iat <= now + 3e4 && payload.exp > now && payload.exp > payload.iat && payload.exp - payload.iat <= VIEWER_TOKEN_TTL_MS;
-}
-function verifyPageToken(token, key, expectedScope, now = Date.now()) {
-  const parts = token.split(".");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
-  const [encoded, suppliedSignature] = parts;
-  try {
-    const expected = createHmac("sha256", key).update(encoded, "ascii").digest();
-    const supplied = Buffer.from(suppliedSignature, "base64url");
-    if (supplied.byteLength !== expected.byteLength) return null;
-    if (supplied.toString("base64url") !== suppliedSignature) return null;
-    if (!timingSafeEqual(supplied, expected)) return null;
-    const decoded = JSON.parse(
-      Buffer.from(encoded, "base64url").toString("utf8")
-    );
-    return isPageTokenPayload(decoded, expectedScope, now) ? decoded : null;
-  } catch {
-    return null;
-  }
-}
-function jsonForInlineScript(value) {
-  return JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
-}
-var DOCUMENT_CSS = String.raw`
-:root{color-scheme:light dark;--bg:#f7f7f5;--surface:#fff;--ink:#191a1d;--muted:#656a73;--line:#dedfe2;--accent:#315fc5;--warn:#a54312;font:16px/1.55 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-@media(prefers-color-scheme:dark){:root{--bg:#111216;--surface:#191b20;--ink:#ececef;--muted:#a7abb3;--line:#30333a;--accent:#91aff1;--warn:#efa879}}
-*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{margin:0;background:var(--bg);color:var(--ink)}.thread-page{width:min(100% - 2rem,46rem);margin:0 auto;padding:clamp(2rem,7vw,5rem) 0 7rem}header{padding-bottom:1.5rem;margin-bottom:2rem;border-bottom:1px solid var(--line)}h1,h2,h3{line-height:1.2;text-wrap:balance}h1{margin:0;font-size:clamp(1.8rem,6vw,2.6rem);letter-spacing:-.025em}h2{margin-top:2.5rem}p,li{color:var(--muted)}a{color:var(--accent)}img,video,canvas,svg{max-width:100%;height:auto}pre{overflow:auto;padding:1rem;border:1px solid var(--line);border-radius:.65rem;background:var(--surface)}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line)}.card,form{margin-top:1.5rem;padding:1.15rem;border:1px solid var(--line);border-radius:.75rem;background:var(--surface)}.needs-you{border-left:3px solid var(--warn);padding-left:1rem}.stale{margin:0 0 1.25rem;padding:.8rem 1rem;border:1px solid color-mix(in srgb,var(--warn) 45%,var(--line));border-radius:.65rem;color:var(--warn);background:color-mix(in srgb,var(--warn) 8%,var(--surface))}form>*+*{margin-top:1rem}fieldset{padding:0;border:0}legend,label{display:block;font-weight:600}label+label{margin-top:.65rem}label:has(>input[type=radio]),label:has(>input[type=checkbox]){display:flex;gap:.55rem;font-weight:400;color:var(--muted)}input,textarea,select,button{font:inherit}input[type=text],input[type=email],input[type=url],input[type=number],textarea,select{display:block;width:100%;margin-top:.4rem;padding:.55rem .65rem;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:.45rem}textarea{resize:vertical}button{padding:.55rem .85rem;border:1px solid var(--line);border-radius:.45rem;color:white;background:var(--accent);cursor:pointer}button+button{margin-left:.4rem}button:disabled,input:disabled,textarea:disabled,select:disabled{opacity:.55;cursor:not-allowed}[data-thread-page-status]{min-height:1.4em;margin:.75rem 0 0;font-size:.9rem;color:var(--muted)}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-[data-thread-page-range]{display:inline-block;min-width:2.5rem;margin-left:.6rem;color:var(--ink);font-variant-numeric:tabular-nums}
-.thread-page{width:min(calc(100% - 2rem),46rem);overflow-wrap:anywhere}
-`;
-var DOCUMENT_RUNTIME = String.raw`
-const config=__THREAD_PAGE_CONFIG__;
-const bridgeErrorCodes=new Set(["invalid_json","request_too_large","response_too_large","invalid_request","invalid_response","unsupported_version","unknown_method","invalid_params","stale_page","confirmation_required","confirmation_invalid","not_found","conflict","unavailable","cancelled","rate_limited","handler_error","invalid_result"]);
-let dirty=false;
-let customDirty=false;
-let dirtySequence=0;
-const dirtyFormVersions=new Map();
-let bridgePort=null;
-let requestSequence=0;
-const pendingInvocations=new Map();
-const queuedInvocationIds=[];
-const pendingFormsById=new Map();
-const pendingForms=new WeakSet();
-const preparedRanges=new WeakSet();
-let readOnly=Boolean(config.stale);
-const sourceDisabled=new WeakSet();
-function makeBridgeError(code,message){const error=new Error(message);error.name="ThreadPageBridgeError";Object.defineProperty(error,"code",{value:code,enumerable:true});return error}
-function requestId(){requestSequence+=1;const random=globalThis.crypto&&typeof globalThis.crypto.randomUUID==="function"?globalThis.crypto.randomUUID():String(Date.now())+"-"+requestSequence;return "tp-"+random}
-function exactKeys(value,wanted){if(!value||typeof value!=="object"||Array.isArray(value))return false;const keys=Object.keys(value);return keys.length===wanted.length&&wanted.every(function(key){return Object.prototype.hasOwnProperty.call(value,key)})}
-function strictBridgeResponse(value){if(!value||typeof value!=="object"||Array.isArray(value)||value.v!==1||typeof value.id!=="string"||typeof value.ok!=="boolean")return false;if(value.ok===true)return exactKeys(value,["v","id","ok","result"]);return exactKeys(value,["v","id","ok","error"])&&exactKeys(value.error,["code","message"])&&bridgeErrorCodes.has(value.error.code)&&typeof value.error.message==="string"&&value.error.message.length>0&&value.error.message.length<=512}
-function postPort(value){if(!bridgePort)return false;bridgePort.postMessage(value);return true}
-function sendInvocation(id){const pending=pendingInvocations.get(id);if(!pending)return;try{postPort(pending.request)}catch(error){pendingInvocations.delete(id);pending.reject(makeBridgeError("invalid_request",error instanceof Error?error.message:"The request could not be sent"))}}
-function flushInvocations(){while(queuedInvocationIds.length){const id=queuedInvocationIds.shift();if(id)sendInvocation(id)}}
-function invoke(method,params){return new Promise(function(resolve,reject){const id=requestId();const request={v:1,id:id,method:method,params:params===undefined?null:params,pageRevision:config.pageRevision};pendingInvocations.set(id,{request:request,resolve:resolve,reject:reject});if(bridgePort)sendInvocation(id);else queuedInvocationIds.push(id)})}
-function watch(method,params,listener,options){if(typeof listener!=="function")throw new TypeError("Thread Page watch needs a listener");const requested=options&&options.intervalMs;const interval=Number.isFinite(requested)?Math.max(2000,Math.min(300000,Math.round(requested))):8000;let stopped=false;let timer=null;let running=false;function schedule(delay){if(stopped)return;if(timer!==null)clearTimeout(timer);timer=setTimeout(tick,delay)}async function tick(){timer=null;if(stopped||running||document.visibilityState==="hidden")return;running=true;try{const value=await invoke(method,params);if(!stopped)listener(value,null)}catch(error){if(!stopped)listener(undefined,error)}finally{running=false;if(!stopped)schedule(interval)}}function visible(){if(stopped)return;if(document.visibilityState==="hidden"){if(timer!==null)clearTimeout(timer);timer=null}else schedule(0)}document.addEventListener("visibilitychange",visible);schedule(0);return function(){if(stopped)return;stopped=true;if(timer!==null)clearTimeout(timer);timer=null;document.removeEventListener("visibilitychange",visible)}}
-function sendControl(kind,extra){if(!bridgePort)return false;try{bridgePort.postMessage(Object.assign({kind:kind},extra||{}));return true}catch{return false}}
-function syncDirty(){const next=customDirty||dirtyFormVersions.size>0;if(next===dirty)return;dirty=next;sendControl(next?"thread-page:dirty":"thread-page:clean")}
-function setDirty(next){customDirty=next!==false;syncDirty()}
-function assetUrl(name){if(!config.assetBase)throw new Error("Thread Page assets are unavailable");const safe=String(name==null?"":name).replace(/^\.\//,"");if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/.test(safe)||safe.includes(".."))throw new TypeError("Thread Page asset names may only use letters, digits, dot, dash, and underscore, with no path segments");return config.assetBase+encodeURIComponent(safe)}
-const threadPage=Object.freeze({version:1,invoke:invoke,watch:watch,setDirty:setDirty,assetUrl:assetUrl});
-Object.defineProperty(window,"threadPage",{value:threadPage,writable:false,configurable:false,enumerable:true});
-function statusFor(form){let node=form.querySelector("[data-thread-page-status]");if(!node){node=document.createElement("p");node.setAttribute("data-thread-page-status","");node.setAttribute("role","status");form.appendChild(node)}return node}
-// The text of an element minus anything nested that is not part of the question:
-// controls it wraps, hints, and plugin-injected nodes. A label that wraps its own
-// input ("How deep? <input>") must read as just the question, and a <select>'s
-// option text must never become part of its name.
-function labelText(node){if(!node||typeof node.cloneNode!=="function")return "";const clone=node.cloneNode(true);if(typeof clone.querySelectorAll==="function"){Array.prototype.forEach.call(clone.querySelectorAll("input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]"),function(element){element.remove()})}return String(clone.textContent||"").replace(/\s+/g," ").trim()}
-function labelFor(form,name,group){const control=group&&group[0]||Array.from(form.elements).find(function(item){return item&&item.name===name});if(!control)return name;const explicitLabel=control.dataset&&control.dataset.label;if(explicitLabel)return String(explicitLabel).trim();const fieldset=control.closest&&control.closest("fieldset");if(fieldset){const legend=fieldset.querySelector("legend");const legendText=labelText(legend);if(legendText)return legendText}const aria=control.getAttribute&&control.getAttribute("aria-label");if(aria)return aria.trim();const wrapped=control.closest&&control.closest("label");if(wrapped){const wrappedText=labelText(wrapped);if(wrappedText)return wrappedText}if(control.id){const explicit=Array.from(document.querySelectorAll("label[for]")).find(function(label){return label.htmlFor===control.id});const forText=labelText(explicit);if(forText)return forText}return name}
-function collect(form,submitter){const controls=Array.from(form.elements).filter(function(item){return item&&typeof item.name==="string"&&item.name&&!item.disabled});const answers=[];const seen=new Set();if(submitter){const actionValue=submitter.value||submitter.textContent.trim();answers.push({name:submitter.name||"action",label:"Action",value:actionValue});if(submitter.name)seen.add(submitter.name)}for(const control of controls){const name=control.name;const type=String(control.type||"").toLowerCase();if(seen.has(name)||["button","submit","reset","image","file"].includes(type))continue;seen.add(name);const group=controls.filter(function(item){return item.name===name});let value;if(type==="checkbox"){value=group.length===1?Boolean(control.checked):group.filter(function(item){return item.checked}).map(function(item){return item.value})}else if(type==="radio"){const checked=group.find(function(item){return item.checked});value=checked?checked.value:""}else if(control instanceof HTMLSelectElement&&control.multiple){value=Array.from(control.selectedOptions).map(function(option){return option.value})}else if(group.length>1){value=group.map(function(item){return String(item.value||"")})}else{value=String(control.value||"")}answers.push({name:name,label:labelFor(form,name,group),value:value})}return answers}
-function syncOfflineBanner(){if(!document.body)return;let banner=document.querySelector("[data-thread-page-offline=plugin]");if(readOnly&&!banner){banner=document.createElement("aside");banner.setAttribute("data-thread-page-offline","plugin");banner.setAttribute("role","status");banner.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui;background:Canvas;color:CanvasText");banner.textContent="Offline copy — responses are disabled until the source host reconnects.";document.body.insertBefore(banner,document.body.firstChild)}else if(!readOnly&&banner){banner.remove()}}
-function matches(root,selector){return root&&typeof root.matches==="function"&&root.matches(selector)}
-function descendants(root,selector){return root&&typeof root.querySelectorAll==="function"?Array.from(root.querySelectorAll(selector)):[]}
-function formsIn(root){const forms=descendants(root,"form");if(matches(root,"form"))forms.unshift(root);return forms}
-function isManualForm(form){return Boolean(form&&typeof form.hasAttribute==="function"&&form.hasAttribute("data-thread-page-manual"))}
-function autoFormsIn(root){return formsIn(root).filter(function(form){return !isManualForm(form)})}
-function controlsIn(root){const selector="form input,form textarea,form select,form button";const controls=descendants(root,selector);if(matches(root,selector))controls.unshift(root);return controls}
-function prepareRanges(form){descendants(form,'input[type="range"]').forEach(function(input){if(preparedRanges.has(input))return;preparedRanges.add(input);const output=document.createElement("output");output.setAttribute("data-thread-page-range","");const sync=function(){output.textContent=String(input.value)};input.addEventListener("input",sync);sync();input.insertAdjacentElement("afterend",output)})}
-function prepareRoot(root){const forms=autoFormsIn(root);forms.forEach(function(form){form.noValidate=true;prepareRanges(form)});if(!readOnly)return;controlsIn(root).forEach(function(control){if(!control.disabled){sourceDisabled.add(control);control.disabled=true}});forms.forEach(function(form){statusFor(form).textContent="Offline copy — responses are disabled"})}
-function applyReadOnly(next){readOnly=next;const forms=autoFormsIn(document);forms.forEach(function(form){form.noValidate=true});controlsIn(document).forEach(function(control){if(next){if(!control.disabled){sourceDisabled.add(control);control.disabled=true}}else if(sourceDisabled.has(control)){sourceDisabled.delete(control);control.disabled=false}});forms.forEach(function(form){const status=statusFor(form);if(next)status.textContent="Offline copy — responses are disabled";else if(status.textContent==="Offline copy — responses are disabled")status.textContent=""});syncOfflineBanner()}
-function initialize(){prepareRoot(document);syncOfflineBanner()}
-initialize();
-if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",initialize,{once:true});
-if(typeof MutationObserver==="function"&&document.documentElement){const observer=new MutationObserver(function(records){records.forEach(function(record){Array.from(record.addedNodes||[]).forEach(prepareRoot)});syncOfflineBanner()});observer.observe(document.documentElement,{childList:true,subtree:true})}
-function markFormDirty(event){const target=event&&event.target;const form=target&&typeof target.closest==="function"?target.closest("form"):null;if(!form||isManualForm(form))return;dirtySequence+=1;dirtyFormVersions.set(form,dirtySequence);syncDirty()}
-document.addEventListener("input",markFormDirty,true);
-document.addEventListener("change",markFormDirty,true);
-function filesIn(form){const out=[];descendants(form,'input[type="file"]').forEach(function(input){if(input.disabled)return;Array.prototype.forEach.call(input.files||[],function(file){if(out.length<8)out.push({field:input.name||"file",file:file})})});return out}
-document.addEventListener("submit",function(event){const form=event.target;if(!(form instanceof HTMLFormElement)||isManualForm(form))return;event.preventDefault();if(readOnly||pendingForms.has(form))return;const submissionId=requestId();const buttons=Array.from(form.querySelectorAll("button")).filter(function(button){return !button.disabled});const formVersion=dirtyFormVersions.get(form);pendingFormsById.set(submissionId,{form:form,buttons:buttons,formVersion:formVersion});pendingForms.add(form);const answers=collect(form,event.submitter);const files=filesIn(form);buttons.forEach(function(button){button.disabled=true});statusFor(form).textContent=files.length?"Uploading…":"Sending…";const heading=document.querySelector("h1");if(!sendControl("thread-page:submit",{submissionId:submissionId,pageHash:config.pageRevision,title:form.dataset.title||(heading?heading.textContent.trim():"Thread Page"),answers:answers,files:files})){pendingFormsById.delete(submissionId);pendingForms.delete(form);statusFor(form).textContent="Page connection is not ready";buttons.forEach(function(button){button.disabled=false})}},true);
-function onPortMessage(event){const data=event&&event.data;if(!data||typeof data!=="object")return;if(data.kind==="thread-page:source-state"){applyReadOnly(Boolean(data.stale));return}if(data.kind==="thread-page:submit-progress"){const progressForm=pendingFormsById.get(data.submissionId);if(progressForm)statusFor(progressForm.form).textContent=String(data.message||"Working…").slice(0,120);return}if(data.kind==="thread-page:submit-result"){const pendingForm=pendingFormsById.get(data.submissionId);if(!pendingForm)return;pendingFormsById.delete(data.submissionId);pendingForms.delete(pendingForm.form);statusFor(pendingForm.form).textContent=data.ok?(data.message||"Sent"):(data.error||"Could not send");pendingForm.buttons.forEach(function(button){if(readOnly)sourceDisabled.add(button);else button.disabled=false});if(data.ok&&dirtyFormVersions.get(pendingForm.form)===pendingForm.formVersion){dirtyFormVersions.delete(pendingForm.form);syncDirty()}return}const possibleId=typeof data.id==="string"?data.id:"";const pending=pendingInvocations.get(possibleId);if(!pending)return;pendingInvocations.delete(possibleId);if(!strictBridgeResponse(data)){pending.reject(makeBridgeError("invalid_response","The Thread Page bridge returned an invalid response"));return}if(data.ok)pending.resolve(data.result);else pending.reject(makeBridgeError(data.error.code,data.error.message))}
-function acceptPort(event){if(bridgePort||event.source!==parent||!event.data||event.data.kind!=="thread-page:connect"||event.data.version!==1||!event.ports||event.ports.length!==1)return;if(typeof event.stopImmediatePropagation==="function")event.stopImmediatePropagation();bridgePort=event.ports[0];bridgePort.onmessage=onPortMessage;if(typeof bridgePort.start==="function")bridgePort.start();flushInvocations();if(dirty)sendControl("thread-page:dirty")}
-window.addEventListener("message",acceptPort,true);
-if(readOnly)applyReadOnly(true);
-parent.postMessage({kind:"thread-page:ready",version:1},"*");
-`;
-function directHtmlChild(parent, tagName) {
+function directChild(parent, tagName) {
   for (const child of parent.childNodes) {
-    if (defaultTreeAdapter.isElementNode(child) && child.tagName === tagName && child.namespaceURI === "http://www.w3.org/1999/xhtml") {
+    if (defaultTreeAdapter.isElementNode(child) && child.tagName === tagName && child.namespaceURI === XHTML) {
       return child;
     }
   }
   return null;
 }
-function parseAuthoredDocument(source) {
-  const browserSource = source.charCodeAt(0) === 65279 ? source.slice(1) : source;
-  const document = parse(browserSource, {
-    scriptingEnabled: true,
-    sourceCodeLocationInfo: true
-  });
-  const html = directHtmlChild(document, "html");
+function parseAuthored(source) {
+  const text = source.charCodeAt(0) === 65279 ? source.slice(1) : source;
+  const document = parse(text, { scriptingEnabled: true, sourceCodeLocationInfo: true });
+  const html = directChild(document, "html");
   if (!html) return null;
-  const head = directHtmlChild(html, "head");
-  const body = directHtmlChild(html, "body");
-  const frameset = directHtmlChild(html, "frameset");
-  const hasHtmlDoctype = document.childNodes.some(
+  const head = directChild(html, "head");
+  const body = directChild(html, "body");
+  const frameset = directChild(html, "frameset");
+  const hasDoctype = document.childNodes.some(
     (child) => defaultTreeAdapter.isDocumentTypeNode(child) && child.name.toLowerCase() === "html"
   );
-  const hasAuthoredShell = [html, head, body, frameset].some(
-    (element) => element?.sourceCodeLocation != null
-  );
-  if (!hasHtmlDoctype && !hasAuthoredShell) return null;
-  return { document, injectionParent: head ?? body ?? frameset ?? html };
+  const hasAuthoredShell = [html, head, body, frameset].some((element) => element?.sourceCodeLocation != null);
+  if (!hasDoctype && !hasAuthoredShell) return null;
+  return { document, target: head ?? body ?? frameset ?? html };
 }
-function injectKernel(authored, runtime, nonce, assetBase) {
-  const script = defaultTreeAdapter.createElement(
-    "script",
-    authored.injectionParent.namespaceURI,
-    [
-      { name: "data-thread-page-kernel", value: "" },
-      { name: "nonce", value: nonce }
-    ]
-  );
-  defaultTreeAdapter.insertText(script, runtime);
-  const nodes = assetBase ? [
-    defaultTreeAdapter.createElement(
-      "base",
-      authored.injectionParent.namespaceURI,
-      [{ name: "href", value: assetBase }]
-    ),
-    script
-  ] : [script];
-  const anchor = defaultTreeAdapter.getFirstChild(authored.injectionParent);
+function kernelElement(namespace, options) {
+  const script = defaultTreeAdapter.createElement("script", namespace, [
+    { name: "data-thread-page-kernel", value: "" },
+    { name: "data-config", value: JSON.stringify(options.config) }
+  ]);
+  defaultTreeAdapter.insertText(script, options.kernel);
+  return script;
+}
+function injectInto(authored, options) {
+  const namespace = authored.target.namespaceURI;
+  const nodes = [];
+  if (options.baseHref) {
+    nodes.push(defaultTreeAdapter.createElement("base", namespace, [{ name: "href", value: options.baseHref }]));
+  }
+  nodes.push(kernelElement(namespace, options));
+  const anchor = defaultTreeAdapter.getFirstChild(authored.target);
   for (const node of nodes) {
-    if (anchor) {
-      defaultTreeAdapter.insertBefore(authored.injectionParent, node, anchor);
-    } else {
-      defaultTreeAdapter.appendChild(authored.injectionParent, node);
-    }
+    if (anchor) defaultTreeAdapter.insertBefore(authored.target, node, anchor);
+    else defaultTreeAdapter.appendChild(authored.target, node);
   }
   return serialize(authored.document);
 }
-function renderDocument(options) {
-  const config = jsonForInlineScript({
-    pageRevision: options.pageHash,
-    stale: options.stale,
-    assetBase: options.assetBase ?? null
-  });
-  const runtime = DOCUMENT_RUNTIME.replace("__THREAD_PAGE_CONFIG__", config);
-  const kernel = `<script data-thread-page-kernel nonce="${escapeHtml(options.nonce)}">${runtime}</script>`;
-  const authoredDocument = parseAuthoredDocument(options.fragment);
-  if (authoredDocument) {
-    return injectKernel(
-      authoredDocument,
-      runtime,
-      options.nonce,
-      options.assetBase
-    );
-  }
-  const staleBanner = options.stale ? '<aside class="stale" data-thread-page-offline="plugin" role="status"><strong>Offline copy.</strong> The source host is unavailable. This cached page is read-only until it reconnects.</aside>' : "";
-  const base = options.assetBase ? `<base href="${escapeHtml(options.assetBase)}">
+function wrapFragment(source, options) {
+  const base = options.baseHref ? `<base href="${escapeHtml(options.baseHref)}">
 ` : "";
+  const config = escapeHtml(JSON.stringify(options.config));
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -8664,217 +11808,200 @@ function renderDocument(options) {
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Thread Page</title>
-${base}<style nonce="${escapeHtml(options.nonce)}">${DOCUMENT_CSS}</style>
-${kernel}
+${base}<script data-thread-page-kernel data-config="${config}">${options.kernel}</script>
+<style>body{max-width:44rem;margin:2rem auto;padding:0 1rem;font:16px/1.55 system-ui,sans-serif;color:CanvasText;background:Canvas}</style>
 </head>
 <body>
-<div class="thread-page">${staleBanner}${options.fragment}</div>
+${source}
 </body>
 </html>`;
 }
-var OUTER_CSS = String.raw`
-:root{color-scheme:light dark;font:14px/1.4 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--bg:#f7f7f5;--surface:#fff;--ink:#17181b;--muted:#676c75;--line:#dfe0e3;--accent:#315fc5;--warn:#a54312} @media(prefers-color-scheme:dark){:root{--bg:#111216;--surface:#191b20;--ink:#eeeef0;--muted:#a5a9b1;--line:#30333a;--accent:#91aff1;--warn:#efa879}}*{box-sizing:border-box}html,body{height:100%;margin:0;background:var(--bg);color:var(--ink)}.shell{display:grid;grid-template-rows:auto 1fr;height:100%;min-height:100dvh}.bar{display:flex;align-items:center;gap:.75rem;min-height:2.5rem;padding:.45rem max(.7rem,env(safe-area-inset-right)) .45rem max(.7rem,env(safe-area-inset-left));border-bottom:1px solid var(--line);background:var(--surface)}.home{flex:none;color:var(--muted);text-decoration:none;font-weight:600;white-space:nowrap}.home:hover{color:var(--ink)}.title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.status{margin-left:auto;color:var(--muted);text-align:right}.status[data-tone=warn]{color:var(--warn)}
-.work{flex:none;display:none;align-items:center;gap:.4rem;color:var(--muted)}.work[data-visible=true]{display:inline-flex}.work .dot{width:.5rem;height:.5rem;border-radius:50%;background:var(--accent)}@media(prefers-reduced-motion:no-preference){.work[data-visible=true] .dot{animation:tp-pulse 1.4s ease-in-out infinite}}@keyframes tp-pulse{0%,100%{opacity:1}50%{opacity:.25}}button{display:none;padding:.25rem .55rem;border:1px solid var(--line);border-radius:.4rem;color:var(--ink);background:var(--bg);cursor:pointer}button[data-visible=true]{display:inline-block}iframe{display:block;width:100%;height:100%;border:0;background:var(--bg)}
-dialog{margin:auto;max-width:min(30rem,calc(100vw - 2rem));padding:1.15rem 1.25rem;border:1px solid var(--line);border-radius:.75rem;color:var(--ink);background:var(--surface)}dialog::backdrop{background:rgb(0 0 0 / .45)}dialog h2{margin:0 0 .5rem;font-size:1rem}dialog p{margin:0 0 1rem;color:var(--muted);overflow-wrap:anywhere}dialog .row{display:flex;gap:.5rem;justify-content:flex-end}dialog button{display:inline-block}dialog button[value=confirm]{color:#fff;background:var(--accent);border-color:var(--accent)}
+
+// src/generated/kernel-runtime.ts
+var KERNEL_RUNTIME = '"use strict";(()=>{var ee=Object.defineProperty;var te=(e,t,n)=>t in e?ee(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var F=(e,t,n)=>te(e,typeof t!="symbol"?t+"":t,n);var v=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var A=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],he=new Set(A);var ye=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${v.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var I=1,B=1,ne=new Set(A);function w(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function _(e,t){return Object.keys(e).length===t.length&&t.every(o=>Object.prototype.hasOwnProperty.call(e,o))}function q(e,t){if(!w(e)||e.v!==B||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return _(e,["v","id","ok","result"]);if(!_(e,["v","id","ok","error"])||!w(e.error))return!1;let n=e.error;return _(n,["code","message"])&&typeof n.code=="string"&&ne.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function N(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function re(e,t,n){let o=e.getAttribute("href");if(o===null)return{kind:"default"};if(o.startsWith("#"))return{kind:"default"};let s;try{s=new URL(o,n??t)}catch{return{kind:"block"}}return s.protocol!=="http:"&&s.protocol!=="https:"?{kind:"block"}:n&&s.href.startsWith(n)?{kind:"default"}:e.hasAttribute("download")?{kind:"default"}:{kind:"external",url:s.href,label:(e.textContent||"").replace(/\\s+/g," ").trim().slice(0,160)}}function U(e,t){e.addEventListener("click",n=>{if(n.defaultPrevented||n.button!==0)return;let s=n.target?.closest?.("a[href]");if(!s)return;let u=e.querySelector("base")?.getAttribute("href")??null,l=u?new URL(u,e.baseURI).href:null,a=re(s,e.baseURI,l);a.kind!=="default"&&(n.preventDefault(),a.kind==="external"&&t(a.url,a.label))},!0)}function K(e,t){let n=Object.freeze({version:1,invoke:t.invoke,watch:t.watch,setDirty:t.setDirty});Object.defineProperty(e,"threadPage",{value:n,writable:!1,configurable:!1,enumerable:!0})}var T=class extends Error{constructor(n,o){super(o);F(this,"code");this.name="ThreadPageError",this.code=n,Object.defineProperty(this,"code",{value:n,enumerable:!0,writable:!1})}};function j(e,t){let n=new Map,o=[],s=null,u=0;function l(){return u+=1,`tp-${typeof crypto<"u"&&typeof crypto.randomUUID=="function"?crypto.randomUUID():`${Date.now()}-${u}`}`}function a(m){let p=n.get(m);if(!(!p||!s))try{s(p.request)}catch(h){n.delete(m),p.reject(new T("invalid_request",h instanceof Error?h.message:"The request could not be sent"))}}function f(m,p){return new Promise((h,y)=>{if(typeof m!="string"){y(new T("invalid_request","A method name is required"));return}let b=l(),r={v:B,id:b,method:m,params:p===void 0?null:p,pageRevision:e};n.set(b,{request:r,resolve:h,reject:y}),s?a(b):o.push(b)})}function g(m,p,h,y){if(typeof h!="function")throw new TypeError("Thread Page watch needs a listener");let b=y?.intervalMs,r=typeof b=="number"&&Number.isFinite(b)?Math.max(v.watchMinMs,Math.min(v.watchMaxMs,Math.round(b))):v.watchDefaultMs,i=!1,c=!1,d=null;function E(x){i||(d!==null&&clearTimeout(d),d=setTimeout(k,x))}async function k(){if(d=null,!(i||c||t.visibilityState==="hidden")){c=!0;try{let x=await f(m,p);i||h(x,null)}catch(x){i||h(void 0,x)}finally{c=!1,i||E(r)}}}function R(){i||(t.visibilityState==="hidden"?(d!==null&&clearTimeout(d),d=null):E(0))}return t.addEventListener("visibilitychange",R),E(0),()=>{i||(i=!0,d!==null&&clearTimeout(d),d=null,t.removeEventListener("visibilitychange",R))}}return{invoke:f,watch:g,attach(m){for(s=m;o.length>0;){let p=o.shift();p&&a(p)}},receive(m){if(typeof m!="object"||m===null)return!1;let p=m.id;if(typeof p!="string")return!1;let h=n.get(p);if(!h)return!1;if(n.delete(p),!q(m,p))return h.reject(new T("invalid_response","The Thread Page bridge returned an invalid response")),!0;let y=m;return y.ok?h.resolve(y.result):h.reject(new T(y.error.code,y.error.message)),!0}}}function z(e){let t=new Map,n=0,o=!1,s=!1;function u(){let l=o||t.size>0;l!==s&&(s=l,e(l))}return{isDirty:()=>s,markForm(l){return n+=1,t.set(l,n),u(),n},versionOf:l=>t.get(l),clearForm(l,a){a!==void 0&&t.get(l)===a&&(t.delete(l),u())},setCustom(l){o=l===!0,u()}}}var oe="input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]";function H(e){if(!e)return"";let t=e.cloneNode(!0);for(let n of Array.from(t.querySelectorAll(oe)))n.remove();return(t.textContent||"").replace(/\\s+/g," ").trim()}function ie(e,t){let n=t.getAttribute("data-label");if(n&&n.trim())return n.trim();let o=t.closest("fieldset");if(o){let l=H(o.querySelector("legend"));if(l)return l}let s=t.getAttribute("aria-label");if(s&&s.trim())return s.trim();let u=t.closest("label");if(u){let l=H(u);if(l)return l}if(t.id){let l=e.ownerDocument,a=Array.from(l.querySelectorAll("label[for]")).find(g=>g.htmlFor===t.id),f=H(a??null);if(f)return f}return t.name}var se=new Set(["button","submit","reset","image","file"]);function ae(e){return Array.from(e.elements).filter(t=>{let n=t;return typeof n.name=="string"&&n.name.length>0&&!n.disabled&&"type"in n})}function $(e,t){let n=ae(e),o=[],s=new Set;if(t&&(C(t)==="button"||C(t)==="input")){let u=t,l=u.value||(u.textContent||"").trim();o.push({name:u.name||"action",label:"Action",value:l}),u.name&&s.add(u.name)}for(let u of n){let l=u.name,a=String(u.type||"").toLowerCase();if(s.has(l)||se.has(a))continue;s.add(l);let f=n.filter(g=>g.name===l);o.push({name:l,label:ie(e,u),value:le(u,f,a)})}return o}function C(e){return e.tagName.toLowerCase()}function le(e,t,n){if(n==="checkbox"){let o=t.filter(s=>C(s)==="input");return o.length===1?o[0]?.checked===!0:o.filter(s=>s.checked).map(s=>s.value)}if(n==="radio"){let o=t.find(s=>C(s)==="input"&&s.checked);return o?o.value:""}return C(e)==="select"&&e.multiple?Array.from(e.selectedOptions).map(o=>o.value):t.length>1?t.map(o=>String(o.value??"")):String(e.value??"")}var ue="data-thread-page-manual",V="data-thread-page-status",de="data-thread-page-range";function L(e){return e.hasAttribute(ue)}function S(e){let t=[];return"tagName"in e&&e.tagName.toLowerCase()==="form"&&t.push(e),"querySelectorAll"in e&&t.push(...Array.from(e.querySelectorAll("form"))),t.filter(n=>!L(n))}function M(e){let t=e.querySelector(`[${V}]`);return t||(t=e.ownerDocument.createElement("p"),t.setAttribute(V,""),t.setAttribute("role","status"),e.appendChild(t)),t}var G=new WeakSet;function W(e){e.noValidate=!0;for(let t of Array.from(e.querySelectorAll(\'input[type="range"]\'))){if(G.has(t))continue;G.add(t);let n=e.ownerDocument.createElement("output");n.setAttribute(de,"");let o=()=>{n.textContent=String(t.value)};t.addEventListener("input",o),o(),t.insertAdjacentElement("afterend",n)}}function P(e){return Array.from(e.querySelectorAll("input,textarea,select,button,fieldset"))}function ce(e){let t=[];for(let n of Array.from(e.querySelectorAll(\'input[type="file"]\')))if(!n.disabled)for(let o of Array.from(n.files??[])){if(t.length>=v.uploadsPerForm)return t;t.push({field:n.name||"file",file:o})}return t}function Z(e){let t=[];for(let n of P(e))n.disabled||(n.disabled=!0,t.push(n));return t}function D(e){for(let t of e)t.disabled=!1}function me(e){let t=e.getAttribute("data-title");return t&&t.trim()?t.trim().slice(0,300):(e.ownerDocument.querySelector("h1")?.textContent||"").trim().slice(0,300)||"Thread Page"}function J(e,t,n){return{submissionId:n,form:e,title:me(e),answers:$(e,t),files:ce(e)}}var X="data-thread-page-offline",O="Offline copy \\u2014 responses are disabled until the source host reconnects.";function Y(e,t){let n=new Set,o=t;function s(){if(!e.body)return;let a=e.querySelector(`[${X}="host"]`);o&&!a?(a=e.createElement("aside"),a.setAttribute(X,"host"),a.setAttribute("role","status"),a.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText"),a.textContent=O,e.body.insertBefore(a,e.body.firstChild)):!o&&a&&a.remove()}function u(a){for(let f of S(a)){for(let g of P(f))g.disabled||(g.disabled=!0,n.add(g));M(f).textContent=O}}function l(){for(let a of n)a.disabled=!1;n.clear();for(let a of S(e)){let f=M(a);f.textContent===O&&(f.textContent="")}}return{isReadOnly:()=>o,apply(a){o=a,a?u(e):l(),s()},prepare(a){o&&u(a),s()}}}function Q(e,t){let n=e.document,o=null,s=new Map,u=new WeakSet;function l(r){if(!o)return!1;try{return o.postMessage(r),!0}catch{return!1}}let a=z(r=>{l({kind:r?"thread-page:dirty":"thread-page:clean"})}),f=j(t.pageRevision,n),g=Y(n,t.stale);K(e,{version:1,invoke:(r,i)=>f.invoke(r,i),watch:(r,i,c,d)=>f.watch(r,i,c,d),setDirty:r=>a.setCustom(r!==!1)});function m(r){for(let i of S(r))W(i);g.prepare(r)}m(n),n.readyState==="loading"&&n.addEventListener("DOMContentLoaded",()=>m(n),{once:!0}),typeof e.MutationObserver=="function"&&n.documentElement&&new e.MutationObserver(i=>{for(let c of i)for(let d of Array.from(c.addedNodes))d.nodeType===1&&m(d)}).observe(n.documentElement,{childList:!0,subtree:!0});function p(r){let c=r.target?.closest?.("form");!c||L(c)||a.markForm(c)}n.addEventListener("input",p,!0),n.addEventListener("change",p,!0),n.addEventListener("submit",r=>{let i=r.target;if(!i||i.tagName?.toLowerCase()!=="form"||L(i)||(r.preventDefault(),g.isReadOnly()||u.has(i)))return;let c=`sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,d=i,E=J(d,r.submitter??null,c),k={form:d,disabled:[],dirtyVersion:a.versionOf(d)};s.set(c,k),u.add(d),M(d).textContent=E.files.length>0?"Uploading\\u2026":"Sending\\u2026",k.disabled=Z(d),l({kind:"thread-page:submit",submissionId:c,title:E.title,answers:E.answers,files:E.files})||(s.delete(c),u.delete(d),D(k.disabled),M(d).textContent="Page connection is not ready; try again in a moment.")},!0),U(n,(r,i)=>{f.invoke("navigation.openExternal",i?{url:r,label:i}:{url:r}).catch(()=>{})});function h(r){if(w(r)){if(r.kind==="thread-page:source-state"){g.apply(r.stale===!0);return}if(r.kind==="thread-page:submit-progress"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;i&&(M(i.form).textContent=String(r.message??"Working\\u2026").slice(0,160));return}if(r.kind==="thread-page:submit-result"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;if(!i)return;s.delete(r.submissionId),u.delete(i.form);let c=r.ok===!0;M(i.form).textContent=c?String(r.message??"Sent").slice(0,160):String(r.error??"Could not send").slice(0,160),D(i.disabled),g.isReadOnly()&&g.apply(!0),c&&a.clearForm(i.form,i.dirtyVersion);return}f.receive(r)}}function y(r){o=r,r.onmessage=i=>h(i.data),r.start?.(),f.attach(i=>{r.postMessage(i)}),a.isDirty()&&l({kind:"thread-page:dirty"})}function b(r){if(o||r.source!==e.parent)return;let i=r.data;if(!w(i)||i.kind!=="thread-page:connect"||i.version!==I||!r.ports||r.ports.length!==1)return;r.stopImmediatePropagation();let c=r.ports[0];c&&y(c)}return e.addEventListener("message",b,!0),t.stale&&g.apply(!0),e.parent.postMessage({kind:"thread-page:ready",version:I},"*"),{deliver:r=>h(r),connect:r=>y(r)}}Q(window,N(document.currentScript));})();';
+
+// src/serving/document-route.ts
+function documentRoute(serving) {
+  return async (context) => {
+    try {
+      const id = sessionIdFrom(context);
+      const session = await eligibleSession(serving, id);
+      const page = await serving.pages.load(id);
+      const headers = baseHeaders("text/html; charset=utf-8");
+      headers.set("content-security-policy", documentCsp());
+      headers.set("etag", etagFor(page.revision));
+      headers.set("x-thread-page-stale", String(page.stale));
+      headers.set("x-thread-page-activity", session.state);
+      headers.set("x-thread-page-updated-at", String(page.updatedAtMs));
+      if (ifNoneMatchMatches(context.req.header("if-none-match"), etagFor(page.revision))) {
+        return new Response(null, { status: 304, headers });
+      }
+      const config = { pageRevision: page.revision, stale: page.stale };
+      const html = injectKernel(page.html, { kernel: KERNEL_RUNTIME, config, baseHref: serving.site.baseHref(id) });
+      return new Response(html, { status: 200, headers });
+    } catch (error) {
+      return failureResponse(error, serving.host.log, "GET /document", true);
+    }
+  };
+}
+
+// src/serving/home-route.ts
+function homeRoute(serving) {
+  return async (_context) => {
+    const home3 = serving.settings.current().homeSessionId;
+    if (!isSessionId(home3)) {
+      return errorPage("No home page is set yet. Run `bb thread-page home` in the session whose page should be home.", 404);
+    }
+    const session = await serving.host.sessions.get(home3).catch(() => null);
+    if (!session || session.deleted || session.archived) {
+      return errorPage("The home page points at a session that no longer exists. Run `bb thread-page home` in another session, or `bb thread-page home --clear`.", 404);
+    }
+    return new Response(null, { status: 302, headers: { location: pageUrl(serving.routeBase, home3), "cache-control": "no-store, max-age=0" } });
+  };
+}
+
+// src/serving/shell-route.ts
+import { randomBytes as randomBytes2 } from "node:crypto";
+
+// src/generated/shell-runtime.ts
+var SHELL_RUNTIME = '"use strict";(()=>{var M=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var x=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],Y=new Set(x);var Q=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${M.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var E=1,_=1,$=new Set(x),j=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,F=/^[a-z][a-zA-Z0-9]*(?:\\.[a-z][a-zA-Z0-9]*)+$/;function b(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function R(e,t){return Object.keys(e).length===t.length&&t.every(l=>Object.prototype.hasOwnProperty.call(e,l))}function C(e){return typeof e=="string"&&j.test(e)}function T(e,t){return b(e)&&R(e,["v","id","method","params","pageRevision"])&&e.v===_&&C(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&F.test(e.method)&&e.pageRevision===t}function B(e,t){if(!b(e)||e.v!==_||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return R(e,["v","id","ok","result"]);if(!R(e,["v","id","ok","error"])||!b(e.error))return!1;let o=e.error;return R(o,["code","message"])&&typeof o.code=="string"&&$.has(o.code)&&typeof o.message=="string"&&o.message.length>0&&o.message.length<=512}function w(e,t,o){return{v:1,id:C(e)?e:"invalid",ok:!1,error:{code:t,message:o.slice(0,512)||"Request failed"}}}function P(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function D(e){let t=e.querySelector("p"),o=e.querySelector(\'button[value="cancel"]\'),l=e.querySelector(\'button[value="confirm"]\'),c=null,d;function p(g){let y=c;if(c=null,g&&d)try{d()}catch{}d=void 0,e.open&&e.close(),y?.(g)}return o?.addEventListener("click",g=>{g.preventDefault(),p(!1)}),l?.addEventListener("click",g=>{g.preventDefault(),p(!0)}),e.addEventListener("cancel",g=>{g.preventDefault(),p(!1)}),e.addEventListener("close",()=>{c&&p(!1)}),{confirm(g,y){return new Promise(m=>{if(c&&p(!1),t&&(t.textContent=g),c=m,d=y,typeof e.showModal=="function")try{e.showModal()}catch{p(!1)}else p(!1)})}}}function O(e){let t=null;return{inPlace(o){e.location.assign(o)},reserveWindow(){try{if(t=e.open("","_blank"),t)try{t.opener=null}catch{}}catch{t=null}},external(o){let l=t;if(t=null,l&&!l.closed)try{l.location.href=o;return}catch{try{l.close()}catch{}}e.location.assign(o)},release(){let o=t;t=null;try{o?.close()}catch{}}}}function A(e,t,o,l=e.fetch.bind(e)){let c=`"${t.pageRevision}"`,d=!1,p=!1,g=!1,y=t.stale,m=null,v=null;function k(s){m!==null&&clearTimeout(m),m=null,!(p||e.document.visibilityState!=="visible")&&(m=setTimeout(()=>{m=null,i()},s))}function r(){m!==null&&clearTimeout(m),m=null,v?.abort(),v=null}function n(){d?(o.setStatus("Page changed \\u2014 reload when ready",!0),o.showReload(!0)):o.reloadView()}async function i(){if(!(p||g||e.document.visibilityState!=="visible")){if(Date.now()>=t.expiresAt-3e4){p=!0,d?(o.setStatus("Session expiring \\u2014 reload when ready",!0),o.showReload(!0)):o.reloadView();return}g=!0,v=new AbortController;try{let s=await l(t.documentUrl,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":c},signal:v.signal});if(s.status===401||s.status===403){p=!0,o.setStatus("Session expired \\u2014 reload this page",!0),o.showReload(!0);return}if(!s.ok&&s.status!==304){o.setStatus("Page unavailable",!0);return}let f=s.headers.get("x-thread-page-stale")==="true";o.setWorking(s.headers.get("x-thread-page-activity")==="working"),f!==y&&(y=f,o.onStaleChanged(f)),o.setStatus(f?"Offline copy \\u2014 read-only":"",f);let u=s.headers.get("etag");u&&u!==c&&(c=u,n())}catch(s){s instanceof DOMException&&s.name==="AbortError"||o.setStatus("Cannot check for updates",!0)}finally{v=null,g=!1,k(t.pollMs)}}}return e.document.addEventListener("visibilitychange",()=>{e.document.visibilityState==="visible"?k(0):r()}),{start:()=>k(t.pollMs),setDirty:s=>{d=s},pollNow:()=>i(),isStopped:()=>p}}function I(e){let{config:t,confirmer:o,navigator:l}=e,c=e.fetchImpl??fetch;function d(r,n){r.postMessage(n)}async function p(r){return(await c(t.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify(r)})).json().catch(()=>null)}function g(r){return!b(r)||r.kind!=="page"&&r.kind!=="host"&&r.kind!=="external"||typeof r.url!="string"||r.kind==="external"&&!/^https?:\\/\\//i.test(r.url)||r.kind!=="external"&&!r.url.startsWith("/")?null:{kind:r.kind,url:r.url}}function y(r,n,i){if(!b(i)||!B(i.response,n.id)){d(r,w(n.id,"invalid_response","The Thread Page bridge returned an invalid response"));return}let s=i.navigate===void 0?null:g(i.navigate);if(i.response.ok&&s){d(r,i.response),s.kind==="external"?l.external(s.url):l.inPlace(s.url);return}l.release(),d(r,i.response)}async function m(r,n){try{let i=await p({actionToken:t.actionToken,request:n});if(b(i)&&b(i.confirm)){let s=i.confirm;if(typeof s.challenge!="string"||typeof s.summary!="string"||s.requestId!==n.id){d(r,w(n.id,"invalid_response","The Thread Page bridge returned an invalid confirmation"));return}let f=n.method==="navigation.openExternal";if(!await o.confirm(s.summary,f?()=>l.reserveWindow():void 0)){d(r,w(n.id,"cancelled","You declined this action"));return}let a=await p({actionToken:t.actionToken,request:n,confirmation:s.challenge});y(r,n,a);return}y(r,n,i)}catch(i){l.release(),d(r,w(n.id,"unavailable",i instanceof Error?i.message:"The Thread Page bridge is unavailable"))}}async function v(r){let n=r.file;if(!n||typeof n.size!="number")throw new Error("Attachment is not a file");let i=n.name||"file";if(n.size<=0)throw new Error(`Attachment ${i} is empty`);if(n.size>t.maxUploadBytes)throw new Error(`Attachment ${i} is larger than ${Math.round(t.maxUploadBytes/(1024*1024))} MiB`);let s=await V(n),f=await c(t.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,pageRevision:t.pageRevision,name:i,content:s})}),u=await f.json().catch(()=>null);if(!f.ok||!u||u.ok!==!0||typeof u.name!="string"||typeof u.path!="string"||typeof u.sizeBytes!="number")throw new Error(u&&typeof u.message=="string"&&u.message||`Upload failed (${f.status})`);return{field:String(r.field||"file").slice(0,128),name:u.name,path:u.path,sizeBytes:u.sizeBytes}}async function k(r,n){let i=typeof n.submissionId=="string"?n.submissionId:"";try{let s=(Array.isArray(n.files)?n.files:[]).slice(0,t.maxUploads),f=[];for(let S=0;S<s.length;S+=1)d(r,{kind:"thread-page:submit-progress",submissionId:i,message:`Uploading ${S+1} of ${s.length}\\u2026`}),f.push(await v(s[S]));f.length>0&&d(r,{kind:"thread-page:submit-progress",submissionId:i,message:"Sending\\u2026"});let u=await c(t.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,submissionId:i,pageRevision:t.pageRevision,title:n.title,answers:n.answers,files:f})}),a=await u.json().catch(()=>({ok:!1,message:"Invalid server response"})),h=u.ok&&a.ok===!0;d(r,{kind:"thread-page:submit-result",submissionId:i,ok:h,message:typeof a.delivery=="string"?`Sent (${a.delivery})`:"Sent",error:typeof a.message=="string"?a.message:`Request failed (${u.status})`})}catch(s){d(r,{kind:"thread-page:submit-result",submissionId:i,ok:!1,error:s instanceof Error?s.message:"Request failed"})}}return{handle(r,n){if(b(n)){if(n.kind==="thread-page:dirty"){e.onDirty(!0);return}if(n.kind==="thread-page:clean"){e.onDirty(!1);return}if(n.kind==="thread-page:submit"){k(r,n);return}if(!T(n,t.pageRevision)){d(r,w(n.id,"invalid_request","Invalid Thread Page bridge request"));return}m(r,n)}}}}async function V(e){let t=new Uint8Array(await e.arrayBuffer()),o="",l=32768;for(let c=0;c<t.length;c+=l)o+=String.fromCharCode.apply(null,Array.from(t.subarray(c,c+l)));return btoa(o)}function L(e,t,o,l){let{frame:c,status:d,work:p,reload:g,dialog:y}=o,m=null,v=!0,k=t.stale,n=A(e,t,{setStatus(a,h){d.textContent=a,d.dataset.tone=h?"warn":""},setWorking(a){p.dataset.visible=a&&t.workingLabel?"true":"false"},showReload(a){g.dataset.visible=a?"true":"false"},onStaleChanged(a){k=a,m?.postMessage({kind:"thread-page:source-state",stale:a})},reloadView(){e.location.reload()}},l),i=O(e),s=D(y),f=I({config:t,confirmer:s,navigator:i,onDirty:a=>n.setDirty(a),...l?{fetchImpl:l}:{}});function u(){let a=new e.MessageChannel,h=a.port1;m=h,h.onmessage=S=>f.handle(h,S.data),h.start?.(),c.contentWindow?.postMessage({kind:"thread-page:connect",version:E},"*",[a.port2]),h.postMessage({kind:"thread-page:source-state",stale:k})}return e.addEventListener("message",a=>{if(!v||a.origin!=="null"||a.source!==c.contentWindow)return;let h=a.data;!b(h)||h.kind!=="thread-page:ready"||h.version!==E||(v=!1,u())}),g.addEventListener("click",()=>e.location.reload()),c.src=t.documentUrl,n.start(),{poller:n}}var W=P(document.currentScript),q=document.querySelector("iframe"),N=document.querySelector("[data-shell-status]"),U=document.querySelector("[data-shell-working]"),H=document.querySelector("[data-shell-reload]"),z=document.querySelector("dialog");if(!q||!N||!U||!H||!z)throw new Error("Thread Page shell: chrome is incomplete");L(window,W,{frame:q,status:N,work:U,reload:H,dialog:z});})();';
+
+// src/serving/shell-html.ts
+var SHELL_CSS = `
+:root{color-scheme:light dark;font:14px/1.4 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--bg:#f7f7f5;--surface:#fff;--ink:#17181b;--muted:#676c75;--line:#dfe0e3;--accent:#315fc5;--warn:#a54312}
+@media(prefers-color-scheme:dark){:root{--bg:#111216;--surface:#191b20;--ink:#eeeef0;--muted:#a5a9b1;--line:#30333a;--accent:#91aff1;--warn:#efa879}}
+*{box-sizing:border-box}html,body{height:100%;margin:0;background:var(--bg);color:var(--ink)}
+.shell{display:grid;grid-template-rows:auto 1fr;height:100%;min-height:100dvh}
+.bar{display:flex;align-items:center;gap:.75rem;min-height:2.5rem;padding:.45rem max(.7rem,env(safe-area-inset-right)) .45rem max(.7rem,env(safe-area-inset-left));border-bottom:1px solid var(--line);background:var(--surface)}
+.home{flex:none;color:var(--muted);text-decoration:none;font-weight:600;white-space:nowrap}.home:hover{color:var(--ink)}
+.title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.status{margin-left:auto;color:var(--muted);text-align:right}.status[data-tone=warn]{color:var(--warn)}
+.work{flex:none;display:none;align-items:center;gap:.4rem;color:var(--muted)}.work[data-visible=true]{display:inline-flex}
+.work .dot{width:.5rem;height:.5rem;border-radius:50%;background:var(--accent)}
+@media(prefers-reduced-motion:no-preference){.work[data-visible=true] .dot{animation:tp-pulse 1.4s ease-in-out infinite}}
+@keyframes tp-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+button.reload{display:none;padding:.25rem .55rem;border:1px solid var(--line);border-radius:.4rem;color:var(--ink);background:var(--bg);cursor:pointer}button.reload[data-visible=true]{display:inline-block}
+iframe{display:block;width:100%;height:100%;border:0;background:var(--bg)}
+dialog{margin:auto;max-width:min(30rem,calc(100vw - 2rem));padding:1.15rem 1.25rem;border:1px solid var(--line);border-radius:.75rem;color:var(--ink);background:var(--surface)}
+dialog::backdrop{background:rgb(0 0 0 / .45)}dialog h2{margin:0 0 .5rem;font-size:1rem}dialog p{margin:0 0 1rem;color:var(--muted);overflow-wrap:anywhere}
+dialog .row{display:flex;gap:.5rem;justify-content:flex-end}dialog button{padding:.4rem .8rem;border:1px solid var(--line);border-radius:.4rem;color:var(--ink);background:var(--bg);cursor:pointer}
+dialog button[value=confirm]{color:#fff;background:var(--accent);border-color:var(--accent)}
 `;
-var OUTER_RUNTIME = String.raw`
-const config=__THREAD_PAGE_CONFIG__;
-const frame=document.querySelector("iframe");
-const status=document.querySelector(".status");
-const reloadButton=document.querySelector("button");
-const bridgeErrorCodes=new Set(["invalid_json","request_too_large","response_too_large","invalid_request","invalid_response","unsupported_version","unknown_method","invalid_params","stale_page","confirmation_required","confirmation_invalid","not_found","conflict","unavailable","cancelled","rate_limited","handler_error","invalid_result"]);
-let dirty=false;
-let etag='"'+config.pageRevision+'"';
-let polling=false;
-let stopped=false;
-let lastStale=Boolean(config.stale);
-let timer=null;
-let controller=null;
-let framePort=null;
-let awaitingReady=true;
-function setStatus(text,warn){status.textContent=text||"";status.dataset.tone=warn?"warn":""}
-/* The page you are reading is whatever was last saved, so the useful sentence is
-   not "loading" but that another version is coming. Driven by a header on the
-   revision poll the shell already makes, so no page and no agent implements it. */
-function setWorking(state){const strip=document.querySelector(".work");if(!strip)return;const label=strip.querySelector(".what");const working=state==="working"&&Boolean(config.workingLabel);strip.dataset.visible=working?"true":"false";if(label)label.textContent=config.workingLabel||""}
-function exactKeys(value,wanted){if(!value||typeof value!=="object"||Array.isArray(value))return false;const keys=Object.keys(value);return keys.length===wanted.length&&wanted.every(function(key){return Object.prototype.hasOwnProperty.call(value,key)})}
-function validId(value){return typeof value==="string"&&value.length>=1&&value.length<=96&&/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)}
-function safeId(value){return validId(value)?value:"invalid"}
-function failure(id,code,message){return {v:1,id:safeId(id),ok:false,error:{code:code,message:message}}}
-function strictBridgeRequest(value){return exactKeys(value,["v","id","method","params","pageRevision"])&&value.v===1&&validId(value.id)&&typeof value.method==="string"&&value.method.length>=3&&value.method.length<=96&&/^[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/.test(value.method)&&typeof value.pageRevision==="string"&&value.pageRevision===config.pageRevision}
-function strictBridgeResponse(value,id){if(!value||typeof value!=="object"||Array.isArray(value)||value.v!==1||value.id!==id||typeof value.ok!=="boolean")return false;if(value.ok===true)return exactKeys(value,["v","id","ok","result"]);return exactKeys(value,["v","id","ok","error"])&&exactKeys(value.error,["code","message"])&&bridgeErrorCodes.has(value.error.code)&&typeof value.error.message==="string"&&value.error.message.length>0&&value.error.message.length<=512}
-function closeFramePort(){if(framePort&&typeof framePort.close==="function")framePort.close();framePort=null}
-function navigateFrame(url){closeFramePort();awaitingReady=true;frame.src=url}
-function reloadFrame(){dirty=false;reloadButton.dataset.visible="false";navigateFrame(config.documentUrl+(config.documentUrl.includes("?")?"&":"?")+"reload="+Date.now())}
-function schedule(delay){if(timer!==null)clearTimeout(timer);timer=null;if(!stopped&&document.visibilityState==="visible")timer=setTimeout(function(){timer=null;void poll()},delay)}
-function pause(){if(timer!==null)clearTimeout(timer);timer=null;if(controller){controller.abort();controller=null}}
-reloadButton.addEventListener("click",function(){location.reload()});
-/* Navigation belongs to the trusted shell: the sandboxed frame cannot reach
-   top-level context, and these destinations are built here from an id the
-   server has already validated, never from page-supplied markup or a URL. */
-function navigateTo(port,request){const params=request.params;const id=params&&typeof params.threadId==="string"?params.threadId:"";if(!/^[A-Za-z0-9_-]{3,128}$/.test(id)){port.postMessage(failure(request.id,"invalid_params","A valid threadId is required"));return}const url=request.method==="threads.openPage"?config.pageUrlTemplate.replace("__THREAD__",encodeURIComponent(id)):config.bbThreadUrlTemplate.replace("__THREAD__",encodeURIComponent(id));try{window.open(url,"_blank","noopener");port.postMessage({v:1,id:request.id,ok:true,result:{opened:true}})}catch(error){port.postMessage(failure(request.id,"unavailable",error instanceof Error?error.message:"Could not open that destination"))}}
-/* Leaving bb entirely needs a confirmation the page cannot word, and the URL is
-   re-parsed here rather than trusted as a string. */
-async function openExternal(port,request){const params=request.params;const raw=params&&typeof params.url==="string"?params.url:"";let target=null;try{target=new URL(raw)}catch{target=null}if(!target||(target.protocol!=="http:"&&target.protocol!=="https:")){port.postMessage(failure(request.id,"invalid_params","Only http and https destinations can be opened"));return}const label=params&&typeof params.label==="string"?params.label:"";const summary="Leave bb and open "+(label?'\u201c'+label.slice(0,80)+'\u201d at ':"")+target.origin;if(!await confirmInChrome(summary)){port.postMessage(failure(request.id,"cancelled","You declined this action"));return}try{window.open(target.href,"_blank","noopener,noreferrer");port.postMessage({v:1,id:request.id,ok:true,result:{opened:true}})}catch(error){port.postMessage(failure(request.id,"unavailable",error instanceof Error?error.message:"Could not open that destination"))}}
-async function relayBridge(port,request){if(!strictBridgeRequest(request)){port.postMessage(failure(request&&request.id,"invalid_request","Invalid Thread Page bridge request"));return}if(request.method==="threads.openPage"||request.method==="threads.openBb"){navigateTo(port,request);return}if(request.method==="navigation.openExternal"){void openExternal(port,request);return}try{const response=await fetch(config.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:config.actionToken,request:request})});const body=await response.json().catch(function(){return null});
-/* The server answers a confirmed method with a signed challenge and its own
-   summary. We show that summary, never the page's. */
-if(response.status===401&&body&&body.confirm&&typeof body.confirm.challenge==="string"&&typeof body.confirm.summary==="string"&&body.confirm.requestId===request.id){await relayConfirmedBridge(port,request,body.confirm.challenge,body.confirm.summary);return}
-port.postMessage(strictBridgeResponse(body,request.id)?body:failure(request.id,"invalid_response","The Thread Page bridge returned an invalid response"))}catch(error){port.postMessage(failure(request.id,"unavailable",error instanceof Error?error.message:"The Thread Page bridge is unavailable"))}}
-const MAX_UPLOAD_BYTES=24*1024*1024;
-// bb's local auth requires an application/json body on non-GET requests, which
-// is what forces the CORS preflight. The bytes therefore travel base64-encoded
-// inside a JSON envelope rather than as a raw body.
-function encodeBase64(buffer){const bytes=new Uint8Array(buffer);let binary="";const chunk=0x8000;for(let index=0;index<bytes.length;index+=chunk)binary+=String.fromCharCode.apply(null,bytes.subarray(index,index+chunk));return btoa(binary)}
-async function uploadOne(entry){if(!(entry&&entry.file&&typeof entry.file.size==="number"))throw new Error("Attachment is not a file");if(entry.file.size<=0)throw new Error("Attachment "+(entry.file.name||"file")+" is empty");if(entry.file.size>MAX_UPLOAD_BYTES)throw new Error("Attachment "+(entry.file.name||"file")+" is larger than 24 MiB");const content=encodeBase64(await entry.file.arrayBuffer());const response=await fetch(config.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:config.actionToken,name:String(entry.file.name||"upload"),content:content})});const body=await response.json().catch(function(){return null});if(!response.ok||!body||body.ok!==true)throw new Error((body&&body.error)||"Upload failed ("+response.status+")");return {field:String(entry.field||"file").slice(0,128),name:body.name,path:body.path,sizeBytes:body.sizeBytes}}
-async function uploadAll(port,data){const entries=Array.isArray(data.files)?data.files.slice(0,8):[];const files=[];for(let index=0;index<entries.length;index+=1){port.postMessage({kind:"thread-page:submit-progress",submissionId:data.submissionId,message:"Uploading "+(index+1)+" of "+entries.length+"\u2026"});files.push(await uploadOne(entries[index]))}return files}
-async function relaySubmit(port,data){try{const files=await uploadAll(port,data);if(files.length)port.postMessage({kind:"thread-page:submit-progress",submissionId:data.submissionId,message:"Sending\u2026"});const response=await fetch(config.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:config.actionToken,submissionId:data.submissionId,pageHash:config.pageRevision,title:data.title,answers:data.answers,files:files})});const body=await response.json().catch(function(){return {ok:false,error:"Invalid server response"}});port.postMessage({kind:"thread-page:submit-result",submissionId:data.submissionId,ok:response.ok&&body.ok===true,message:body.delivery?"Sent ("+body.delivery+")":"Sent",error:body.error||("Request failed ("+response.status+")")})}catch(error){port.postMessage({kind:"thread-page:submit-result",submissionId:data.submissionId,ok:false,error:error instanceof Error?error.message:"Request failed"})}}
-/* A confirmed action is described by the server and shown here, in trusted
-   chrome the sandboxed page cannot draw over, click, or reword. The page never
-   supplies this text and never sees the challenge. */
-function confirmInChrome(summary){return new Promise(function(resolve){const dialog=document.querySelector("dialog");const text=dialog.querySelector("p");text.textContent=summary;let settled=false;function finish(value){if(settled)return;settled=true;dialog.removeEventListener("close",onClose);resolve(value)}function onClose(){finish(dialog.returnValue==="confirm")}dialog.addEventListener("close",onClose);dialog.returnValue="";if(typeof dialog.showModal==="function")dialog.showModal();else finish(false)})}
-async function relayConfirmedBridge(port,request,challenge,summary){const approved=await confirmInChrome(summary);if(!approved){port.postMessage(failure(request.id,"cancelled","You declined this action"));return}try{const response=await fetch(config.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:config.actionToken,request:request,confirmation:challenge})});const body=await response.json().catch(function(){return null});port.postMessage(strictBridgeResponse(body,request.id)?body:failure(request.id,"invalid_response","The Thread Page bridge returned an invalid response"))}catch(error){port.postMessage(failure(request.id,"unavailable",error instanceof Error?error.message:"The Thread Page bridge is unavailable"))}}
-function onFramePortMessage(port,event){const data=event&&event.data;if(!data||typeof data!=="object")return;if(data.kind==="thread-page:dirty"){dirty=true;return}if(data.kind==="thread-page:clean"){dirty=false;return}if(data.kind==="thread-page:submit"){void relaySubmit(port,data);return}void relayBridge(port,data)}
-function connectFrame(){const channel=new MessageChannel();const port=channel.port1;framePort=port;port.onmessage=function(event){onFramePortMessage(port,event)};if(typeof port.start==="function")port.start();frame.contentWindow.postMessage({kind:"thread-page:connect",version:1},"*",[channel.port2]);port.postMessage({kind:"thread-page:source-state",stale:lastStale})}
-window.addEventListener("message",function(event){if(!awaitingReady||event.origin!=="null"||event.source!==frame.contentWindow||!event.data||event.data.kind!=="thread-page:ready"||event.data.version!==1)return;awaitingReady=false;connectFrame()});
-async function poll(){if(stopped||polling||document.visibilityState!=="visible")return;if(Date.now()>=config.expiresAt-30000){if(dirty){stopped=true;setStatus("Session expiring — reload when ready",true);reloadButton.dataset.visible="true"}else location.reload();return}polling=true;controller=new AbortController();try{const response=await fetch(config.documentUrl,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":etag},signal:controller.signal});if(response.status===401){stopped=true;setStatus("Session expired — reload this page",true);reloadButton.dataset.visible="true";return}if(!response.ok&&response.status!==304){setStatus("Page unavailable",true);return}const stale=response.headers.get("x-thread-page-stale")==="true";setWorking(response.headers.get("x-thread-page-activity"));const next=response.headers.get("etag");if(stale!==lastStale){lastStale=stale;if(framePort)framePort.postMessage({kind:"thread-page:source-state",stale:stale});if(!dirty)reloadFrame()}if(stale)setStatus("Offline copy — read-only",true);else setStatus("",false);if(next&&next!==etag){if(dirty){setStatus("Page changed — reload when ready",true);reloadButton.dataset.visible="true"}else location.reload()}etag=next||etag}catch(error){if(!(error instanceof DOMException&&error.name==="AbortError"))setStatus("Cannot check for updates",true)}finally{controller=null;polling=false;schedule(10000)}}
-document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible")schedule(0);else pause()});
-navigateFrame(config.documentUrl);
-schedule(10000);
-`;
-function renderOuterPage(options) {
-  const config = jsonForInlineScript({
-    actionToken: options.actionToken,
-    pageRevision: options.pageHash,
-    expiresAt: options.expiresAt,
-    documentUrl: options.documentUrl,
-    submitUrl: options.submitUrl,
-    uploadUrl: options.uploadUrl,
-    bridgeUrl: options.bridgeUrl,
-    pageUrlTemplate: options.pageUrlTemplate,
-    bbThreadUrlTemplate: options.bbThreadUrlTemplate,
-    workingLabel: options.workingLabel,
-    stale: options.stale
-  });
-  const runtime = OUTER_RUNTIME.replace("__THREAD_PAGE_CONFIG__", config);
+function renderShell(view) {
+  const title2 = escapeHtml(view.title);
+  const nonce = escapeHtml(view.nonce);
+  const config = escapeHtml(JSON.stringify(view.config));
+  const working = view.working && view.config.workingLabel ? "true" : "false";
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<title>${escapeHtml(options.title)}</title>
-<style nonce="${escapeHtml(options.nonce)}">${OUTER_CSS}</style>
+<title>${title2}</title>
+<style nonce="${nonce}">${SHELL_CSS}</style>
 </head>
 <body>
 <div class="shell">
   <header class="bar">
-    ${options.homeUrl ? `<a class="home" href="${escapeHtml(options.homeUrl)}" title="All sessions">\u2190 Sessions</a>` : ""}
-    <span class="title">${escapeHtml(options.title)}</span>
-    <span class="work" role="status" data-visible="${options.working && options.workingLabel ? "true" : "false"}"><span class="dot" aria-hidden="true"></span><span class="what">${escapeHtml(options.workingLabel)}</span></span>
-    <span class="status" role="status"${options.stale ? ' data-tone="warn"' : ""}>${options.stale ? "Offline copy \u2014 read-only" : ""}</span>
-    <button type="button" aria-label="Reload updated page">Reload</button>
+    ${view.homeUrl ? `<a class="home" href="${escapeHtml(view.homeUrl)}" title="All sessions">\u2190 Sessions</a>` : ""}
+    <span class="title">${title2}</span>
+    <span class="work" role="status" data-shell-working data-visible="${working}"><span class="dot" aria-hidden="true"></span><span>${escapeHtml(view.config.workingLabel)}</span></span>
+    <span class="status" role="status" data-shell-status${view.config.stale ? ' data-tone="warn"' : ""}>${view.config.stale ? "Offline copy \u2014 read-only" : ""}</span>
+    <button type="button" class="reload" data-shell-reload aria-label="Reload updated page">Reload</button>
   </header>
-  <iframe title="${escapeHtml(options.title)}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
+  <iframe title="${title2}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
 </div>
 <dialog aria-labelledby="tp-confirm-title">
   <form method="dialog">
     <h2 id="tp-confirm-title">Confirm this action</h2>
     <p></p>
     <div class="row">
-      <button value="cancel">Cancel</button>
-      <button value="confirm">Confirm</button>
+      <button type="button" value="cancel">Cancel</button>
+      <button type="button" value="confirm">Confirm</button>
     </div>
   </form>
 </dialog>
-<script nonce="${escapeHtml(options.nonce)}">${runtime}</script>
+<script nonce="${nonce}" data-config="${config}">${SHELL_RUNTIME}</script>
 </body>
 </html>`;
 }
-function formatSubmissionMessage(submission) {
-  const heading = submission.title.trim() || "Thread Page";
-  const fields = submission.answers.map((answer) => {
-    const label = answer.label.trim() || answer.name;
-    const value = Array.isArray(answer.value) ? answer.value.length > 0 ? answer.value.join(", ") : "(left blank)" : typeof answer.value === "boolean" ? answer.value ? "Yes" : "No" : answer.value.length > 0 ? answer.value : "(left blank)";
-    return `**${label}**
-${value}`;
-  });
-  const attachments = submission.files.length ? [
-    [
-      "**Attached files**",
-      ...submission.files.map(
-        (file) => `- \`$BB_THREAD_STORAGE/${file.path}\` (${file.name}, ${file.sizeBytes} bytes)`
-      ),
-      "Read them from thread storage with your normal tools."
-    ].join("\n")
-  ] : [];
-  return [
-    `The user answered the form on your Thread Page \u2014 ${heading}.`,
-    ...fields,
-    ...attachments
-  ].join("\n\n");
-}
-function formatThreadReplyMessage(title2, result) {
-  const heading = title2?.trim() || "Interactive response";
-  const serialized = JSON.stringify(result, null, 2) ?? "null";
-  let longestBacktickRun = 0;
-  for (const match of serialized.matchAll(/`+/g)) {
-    longestBacktickRun = Math.max(longestBacktickRun, match[0].length);
-  }
-  const fence = "`".repeat(Math.max(3, longestBacktickRun + 1));
-  return [
-    `The user sent an interactive response from your Thread Page \u2014 ${heading}.`,
-    `**Result**
 
-${fence}json
-${serialized}
-${fence}`
-  ].join("\n\n");
+// src/serving/shell-route.ts
+function shellRoute(serving) {
+  return async (context) => {
+    try {
+      const id = sessionIdFrom(context);
+      const session = await eligibleSession(serving, id);
+      const page = await serving.pages.load(id);
+      const now = serving.now();
+      const { token, payload } = mintActionToken({ session: id, revision: page.revision, now }, serving.signingKey);
+      const nonce = randomBytes2(18).toString("base64url");
+      const settings = serving.settings.current();
+      const home3 = isSessionId(settings.homeSessionId) && settings.homeSessionId !== id ? homeUrl(serving.routeBase) : null;
+      const html = renderShell({
+        nonce,
+        title: session.title,
+        homeUrl: home3,
+        working: session.state === "working",
+        config: {
+          actionToken: token,
+          pageRevision: page.revision,
+          expiresAt: payload.exp,
+          documentUrl: serving.site.documentUrl(id),
+          submitUrl: `${serving.routeBase}/submit`,
+          uploadUrl: `${serving.routeBase}/upload`,
+          bridgeUrl: `${serving.routeBase}/bridge`,
+          workingLabel: settings.workingLabel,
+          stale: page.stale,
+          pollMs: LIMITS.shellPollMs,
+          maxUploadBytes: LIMITS.uploadFileBytes,
+          maxUploads: LIMITS.uploadsPerForm
+        }
+      });
+      const headers = baseHeaders("text/html; charset=utf-8");
+      headers.set("content-security-policy", shellCsp(nonce));
+      return new Response(html, { status: 200, headers });
+    } catch (error) {
+      return failureResponse(error, serving.host.log, "GET /page", true);
+    }
+  };
 }
+
+// src/domain/submissions/parse.ts
 function parseSubmission(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const input = value;
-  if (typeof input.actionToken !== "string" || input.actionToken.length > 4096 || typeof input.submissionId !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(input.submissionId) || typeof input.pageHash !== "string" || !/^[a-f0-9]{64}$/.test(input.pageHash) || typeof input.title !== "string" || input.title.length > 300 || !Array.isArray(input.answers) || input.answers.length > 64) {
+  if (typeof input.actionToken !== "string" || input.actionToken.length === 0 || input.actionToken.length > LIMITS.tokenChars || typeof input.submissionId !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(input.submissionId) || !isRevision(input.pageRevision) || typeof input.title !== "string" || input.title.length > 300 || !Array.isArray(input.answers) || input.answers.length > LIMITS.answersPerSubmission) {
     return null;
   }
-  let total = input.title.length;
   const answers = [];
+  let total = input.title.length;
   for (const raw of input.answers) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
     const answer = raw;
-    if (typeof answer.name !== "string" || answer.name.length > 128 || typeof answer.label !== "string" || answer.label.length > 300 || !isAnswerValue(answer.value)) {
-      return null;
-    }
-    const valueLength = Array.isArray(answer.value) ? answer.value.reduce((sum, item) => sum + item.length, 0) : typeof answer.value === "string" ? answer.value.length : 1;
-    total += answer.name.length + answer.label.length + valueLength;
-    if (total > 32e3) return null;
-    answers.push({
-      name: answer.name,
-      label: answer.label,
-      value: answer.value
-    });
+    if (typeof answer.name !== "string" || answer.name.length > 128 || typeof answer.label !== "string" || answer.label.length > 300) return null;
+    if (!isAnswerValue(answer.value)) return null;
+    total += answer.name.length + answer.label.length + valueLength(answer.value);
+    if (total > LIMITS.submissionBodyBytes) return null;
+    answers.push({ name: answer.name, label: answer.label, value: answer.value });
   }
   const files = [];
   if (input.files !== void 0) {
-    if (!Array.isArray(input.files) || input.files.length > 8) return null;
+    if (!Array.isArray(input.files) || input.files.length > LIMITS.uploadsPerForm) return null;
     for (const raw of input.files) {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
       const file = raw;
-      if (typeof file.field !== "string" || file.field.length > 128 || typeof file.name !== "string" || file.name.length > 80 || file.name !== safeUploadName(file.name) || typeof file.path !== "string" || file.path.length > 300 || !file.path.startsWith(`${UPLOAD_DIRNAME}/`) || file.path.includes("..") || typeof file.sizeBytes !== "number" || !Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 0 || file.sizeBytes > MAX_UPLOAD_BYTES) {
+      if (typeof file.field !== "string" || file.field.length > 128 || typeof file.name !== "string" || !isSafeUploadName(file.name) || typeof file.path !== "string" || file.path !== `${UPLOAD_DIR}/${file.name}` || typeof file.sizeBytes !== "number" || !Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 0 || file.sizeBytes > LIMITS.uploadFileBytes) {
         return null;
       }
-      files.push({
-        field: file.field,
-        name: file.name,
-        path: file.path,
-        sizeBytes: file.sizeBytes
-      });
+      files.push({ field: file.field, name: file.name, path: file.path, sizeBytes: file.sizeBytes });
     }
   }
   return {
     actionToken: input.actionToken,
     submissionId: input.submissionId,
-    pageHash: input.pageHash,
+    pageRevision: input.pageRevision,
     title: input.title,
     answers,
     files
@@ -8882,3949 +12009,159 @@ function parseSubmission(value) {
 }
 function isAnswerValue(value) {
   if (typeof value === "boolean") return true;
-  if (typeof value === "string") return value.length <= 8e3;
-  return Array.isArray(value) && value.length <= 64 && value.every((item) => typeof item === "string" && item.length <= 2e3);
+  if (typeof value === "string") return value.length <= LIMITS.answerValueChars;
+  return Array.isArray(value) && value.length <= LIMITS.answerListItems && value.every((item) => typeof item === "string" && item.length <= 2e3);
+}
+function valueLength(value) {
+  if (typeof value === "boolean") return 1;
+  if (typeof value === "string") return value.length;
+  return value.reduce((sum, item) => sum + item.length, 0);
 }
 
-// theme.ts
-var THEME_CSS = String.raw`
-  :root {
-    --bg:        #fbfbfa;
-    --surface:   #ffffff;
-    --ink:       #16181d;
-    --ink-2:     #4a5058;
-    --ink-3:     #767d87;
-    --rule:      #e3e4e6;
-    --rule-soft: #eeeff0;
-    --accent:    #2f5cc7;
-    --flag:      #a8410f;
-    --ok:        #1f6b45;
-    --code-bg:   #f2f3f4;
-    --measure:   34rem;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg:        #121316;
-      --surface:   #191b1f;
-      --ink:       #e9eaec;
-      --ink-2:     #b0b5bc;
-      --ink-3:     #838a93;
-      --rule:      #2c2f35;
-      --rule-soft: #232227;
-      --accent:    #8aa9f0;
-      --flag:      #e8a37a;
-      --ok:        #79c69d;
-      --code-bg:   #22242a;
-    }
-  }
-
-  *, *::before, *::after { box-sizing: border-box; }
-
-  html { -webkit-text-size-adjust: 100%; }
-
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--ink);
-    font: 400 16.5px/1.6 ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
-    font-feature-settings: "kern", "liga";
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
-  }
-
-  .wrap {
-    max-width: calc(var(--measure) + 6rem);
-    margin: 0 auto;
-    padding: 4.5rem 3rem 8rem;
-  }
-  @media (max-width: 640px) { .wrap { padding: 2.5rem 1.25rem 5rem; } }
-
-  /* ---- header ---- */
-
-  header.brief-head {
-    padding-bottom: 1.75rem;
-    margin-bottom: 3rem;
-    border-bottom: 1px solid var(--rule);
-  }
-  header.brief-head h1 {
-    margin: 0;
-    font-size: 1.9rem;
-    line-height: 1.2;
-    font-weight: 640;
-    letter-spacing: -0.021em;
-    text-wrap: balance;
-  }
-  .brief-meta {
-    margin: 0.85rem 0 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.45rem 1.15rem;
-    font-size: 0.78rem;
-    line-height: 1.4;
-    color: var(--ink-3);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* ---- rhythm ---- */
-
-  main > * + * { margin-top: 1.05rem; }
-
-  h2 {
-    margin: 3rem 0 0;
-    font-size: 1.16rem;
-    line-height: 1.3;
-    font-weight: 620;
-    letter-spacing: -0.012em;
-  }
-  h2 + * { margin-top: 0.85rem; }
-
-  h3 {
-    margin: 2rem 0 0;
-    font-size: 0.94rem;
-    line-height: 1.35;
-    font-weight: 640;
-    letter-spacing: 0.005em;
-    color: var(--ink-2);
-  }
-  h3 + * { margin-top: 0.6rem; }
-
-  p, li { max-width: var(--measure); color: var(--ink-2); }
-  p { margin: 0; }
-  main > p:first-child { font-size: 1.06rem; color: var(--ink); }
-
-  ul, ol { margin: 0; padding-left: 1.3rem; }
-  li + li { margin-top: 0.42rem; }
-  li::marker { color: var(--ink-3); }
-
-  strong { font-weight: 620; color: var(--ink); }
-  em { font-style: italic; }
-
-  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
-  a:hover { text-decoration-thickness: 2px; }
-
-  code {
-    font: 0.85em/1.5 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-    background: var(--code-bg);
-    padding: 0.13em 0.36em;
-    border-radius: 4px;
-  }
-  pre {
-    margin: 0;
-    background: var(--code-bg);
-    border: 1px solid var(--rule-soft);
-    border-radius: 8px;
-    padding: 0.9rem 1.05rem;
-    overflow-x: auto;
-    font: 0.83rem/1.6 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-  }
-  pre code { background: none; padding: 0; }
-
-  hr {
-    margin: 3rem 0;
-    border: 0;
-    border-top: 1px solid var(--rule);
-  }
-
-  /* ---- callouts: use sparingly ---- */
-
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    border-radius: 10px;
-    padding: 1.15rem 1.3rem;
-  }
-  .card > * + * { margin-top: 0.7rem; }
-  .card > h3:first-child { margin-top: 0; }
-
-  .needs-you {
-    border-left: 3px solid var(--flag);
-    padding: 0.15rem 0 0.15rem 1.05rem;
-  }
-  .needs-you > * + * { margin-top: 0.55rem; }
-
-  .label {
-    display: inline-block;
-    font-size: 0.68rem;
-    font-weight: 660;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-    color: var(--flag);
-  }
-  .label.done { color: var(--ok); }
-
-  table {
-    border-collapse: collapse;
-    width: 100%;
-    font-size: 0.9rem;
-  }
-  th, td {
-    text-align: left;
-    padding: 0.55rem 0.9rem 0.55rem 0;
-    border-bottom: 1px solid var(--rule-soft);
-    vertical-align: top;
-  }
-  th {
-    font-weight: 620;
-    font-size: 0.75rem;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-  }
-  td { color: var(--ink-2); }
-
-  /* ---- forms ----------------------------------------------------------
-     Styled off semantic structure, not classes, so a page only ever needs
-     plain HTML: fieldset/legend for a group, a wrapping label for a single
-     control, small for a hint, button for an action. ------------------- */
-
-  form {
-    margin-top: 1.75rem;
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    border-radius: 10px;
-    padding: 1.4rem 1.45rem 1.3rem;
-  }
-  form > * + * { margin-top: 1.25rem; }
-
-  /* 'margin: 0' here used to beat 'form > * + *' on specificity, so two groups
-     of choices in a row ran together with no gap between them. */
-  form fieldset { padding: 0; border: 0; min-width: 0; }
-  form > fieldset { margin: 0; }
-  form > fieldset + fieldset,
-  form > * + fieldset,
-  form > fieldset + * { margin-top: 1.25rem; }
-  form legend,
-  form > label,
-  .field > label {
-    display: block;
-    padding: 0;
-    font-size: 0.82rem;
-    font-weight: 620;
-    letter-spacing: 0.005em;
-    color: var(--ink);
-  }
-  form legend { margin-bottom: 0.5rem; }
-
-  form small, .field .hint {
-    display: block;
-    margin-top: 0.35rem;
-    font-size: 0.78rem;
-    line-height: 1.45;
-    color: var(--ink-3);
-  }
-
-  form input[type="file"] {
-    display: block; margin-top: 0.45rem; font: inherit; font-size: 0.85rem;
-    color: var(--ink-2); max-width: 100%;
-  }
-  form input[type="file"]::file-selector-button {
-    font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer;
-    color: var(--accent); background: transparent;
-    border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * 0.6);
-    padding: 0.35rem 0.75rem; margin-right: 0.6rem;
-  }
-  form input[type="text"], form input[type="number"], form input[type="url"],
-  form input[type="email"], form input[type="date"], form textarea, form select {
-    display: block;
-    width: 100%;
-    margin-top: 0.45rem;
-    font: inherit;
-    font-size: 0.92rem;
-    color: var(--ink);
-    background: var(--bg);
-    border: 1px solid var(--rule);
-    border-radius: 7px;
-    padding: 0.5rem 0.65rem;
-  }
-  form textarea { resize: vertical; min-height: 4.5rem; line-height: 1.55; }
-  form :focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -1px;
-  }
-
-  /* One option row: a label wrapping a radio or checkbox. */
-  form label:has(> input[type="radio"]),
-  form label:has(> input[type="checkbox"]),
-  .choice {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.55rem;
-    font-size: 0.9rem;
-    font-weight: 400;
-    color: var(--ink-2);
-    cursor: pointer;
-  }
-  form label:has(> input[type="radio"]) + label,
-  form label:has(> input[type="checkbox"]) + label,
-  .choice + .choice { margin-top: 0.4rem; }
-  form input[type="radio"], form input[type="checkbox"] {
-    margin: 0.3rem 0 0;
-    flex: none;
-    accent-color: var(--accent);
-  }
-
-  form label:has(> input[type="range"]) {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    font-size: 0.9rem;
-    font-weight: 400;
-    color: var(--ink-2);
-  }
-  form input[type="range"] { flex: 1; min-width: 8rem; accent-color: var(--accent); }
-  [data-thread-page-range] {
-    flex: none;
-    min-width: 2.2rem;
-    text-align: right;
-    font-size: 0.85rem;
-    font-variant-numeric: tabular-nums;
-    color: var(--ink);
-  }
-
-  [data-thread-page-status] {
-    margin-top: 0.9rem;
-    font-size: 0.82rem;
-    line-height: 1.5;
-    color: var(--ink-3);
-  }
-  [data-thread-page-status][data-state="error"] { color: var(--flag); }
-  [data-thread-page-status][data-state="sent"] { color: var(--ok); }
-
-  @media print {
-    body { background: #fff; color: #000; }
-    .wrap { padding: 0; max-width: none; }
-    form { display: none; }
-  }
-  /* ====================================================================
-     FIVE WORLDS
-
-     A theme here is not a palette. It is a palette, a typeface, a shape
-     language, a way a screen arrives, an atmosphere, and — the part that
-     matters most — its own idea of what an interactive thing looks like.
-     Picking one changes how you choose and how you commit, not just what
-     it costs to look at.
-
-     Each theme declares both palettes at once as --l-* and --d-*; one
-     resolver below maps the live half onto the tokens the base stylesheet
-     already uses. The same declarations carry [data-world="x"], which is how
-     a card on screen 1 renders a fragment of a page in a world you have not
-     entered yet.
-     ==================================================================== */
-
-  /* ---- 1. paper — quiet document. Nothing to notice. ---- */
-  [data-theme="paper"], [data-world="paper"] {
-    --l-bg:#fbfbfa; --l-surface:#ffffff; --l-ink:#16181d; --l-ink-2:#4a5058;
-    --l-ink-3:#6c737c; --l-rule:#e3e4e6; --l-rule-soft:#eeeff0; --l-code:#f2f3f4;
-    --l-ah:222; --l-as:62; --l-al:48; --l-flag:#a8410f; --l-ok:#1f6b45;
-    --d-bg:#121316; --d-surface:#191b1f; --d-ink:#e9eaec; --d-ink-2:#b0b5bc;
-    --d-ink-3:#838a93; --d-rule:#2c2f35; --d-rule-soft:#232227; --d-code:#22242a;
-    --d-ah:222; --d-as:70; --d-al:74; --d-flag:#e8a37a; --d-ok:#79c69d;
-    --font-body: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
-    --font-head: var(--font-body);
-    --radius:10px; --rule-w:1px; --head-weight:640; --head-track:-0.021em;
-    --measure:34rem; --shadow:none; --label-case:uppercase; --caps-track:0.07em;
-    --h1-size:1.9rem; --h1-lh:1.2;
-  }
-
-  /* ---- 2. terminal — console. Everything on a grid, nothing rounded. ---- */
-  [data-theme="terminal"], [data-world="terminal"] {
-    --l-bg:#f6f6f2; --l-surface:#ffffff; --l-ink:#15201a; --l-ink-2:#3c4a42;
-    --l-ink-3:#646f69; --l-rule:#c9d2cb; --l-rule-soft:#e2e7e2; --l-code:#eaeee9;
-    --l-ah:150; --l-as:88; --l-al:26; --l-flag:#a33a10; --l-ok:#14663c;
-    --d-bg:#080b09; --d-surface:#0d120e; --d-ink:#cfe6d5; --d-ink-2:#94b39d;
-    --d-ink-3:#6b8573; --d-rule:#20301e; --d-rule-soft:#161f16; --d-code:#111811;
-    --d-ah:150; --d-as:64; --d-al:62; --d-flag:#e0a44f; --d-ok:#63d18e;
-    --font-body: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-    --font-head: var(--font-body);
-    --radius:0px; --rule-w:1px; --head-weight:700; --head-track:0em;
-    --measure:33rem; --shadow:none; --label-case:uppercase; --caps-track:0.14em;
-    --h1-size:1.6rem; --h1-lh:1.25;
-  }
-
-  /* ---- 3. atrium — daylight on paper. Warm, serif, things have weight. ---- */
-  [data-theme="atrium"], [data-world="atrium"] {
-    --l-bg:#f6f2e9; --l-surface:#fffdf8; --l-ink:#1e1a14; --l-ink-2:#4b4337;
-    --l-ink-3:#726958; --l-rule:#ddd5c4; --l-rule-soft:#ebe5d8; --l-code:#efe9db;
-    --l-ah:142; --l-as:34; --l-al:30; --l-flag:#8a4b18; --l-ok:#2c5f3f;
-    --d-bg:#16150f; --d-surface:#1f1d15; --d-ink:#f1ebdc; --d-ink-2:#c2b9a3;
-    --d-ink-3:#8f8672; --d-rule:#33301f; --d-rule-soft:#262418; --d-code:#242216;
-    --d-ah:130; --d-as:32; --d-al:66; --d-flag:#d99a5e; --d-ok:#8fc2a0;
-    --font-body: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
-    --font-head: var(--font-body);
-    --radius:14px; --rule-w:1px; --head-weight:600; --head-track:-0.008em;
-    --measure:38rem;
-    --shadow: 0 1px 2px rgba(40,30,10,.06), 0 10px 30px -14px rgba(40,30,10,.28);
-    --label-case:none; --caps-track:0.02em;
-    --h1-size:2.15rem; --h1-lh:1.15;
-  }
-
-  /* ---- 4. volume — depth. A lit scene with the page standing in it. ---- */
-  [data-theme="volume"], [data-world="volume"] {
-    --l-bg:#eef1f6; --l-surface:#ffffff; --l-ink:#0d1424; --l-ink-2:#3a4658;
-    --l-ink-3:#5e687b; --l-rule:#ccd4e2; --l-rule-soft:#e0e6ef; --l-code:#e6ebf3;
-    --l-ah:196; --l-as:78; --l-al:32; --l-flag:#9c4415; --l-ok:#136b58;
-    --d-bg:#080b12; --d-surface:#111823; --d-ink:#dfe8f5; --d-ink-2:#a3b2c8;
-    --d-ink-3:#74849b; --d-rule:#1e2a3c; --d-rule-soft:#151d2a; --d-code:#131b27;
-    --d-ah:190; --d-as:82; --d-al:62; --d-flag:#e2a06b; --d-ok:#4fc7ad;
-    --font-body: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
-    --font-head: var(--font-body);
-    --radius:6px; --rule-w:1px; --head-weight:700; --head-track:-0.03em;
-    --measure:34rem;
-    --shadow: 0 2px 4px rgba(0,0,0,.18), 0 22px 40px -20px rgba(0,0,0,.45);
-    --label-case:uppercase; --caps-track:0.11em;
-    --h1-size:2.1rem; --h1-lh:1.1;
-  }
-
-  /* ---- 5. bloom — shapes and colour. Big type, soft mass, round everything. ---- */
-  [data-theme="bloom"], [data-world="bloom"] {
-    --l-bg:#fdf7f4; --l-surface:#ffffff; --l-ink:#1d1226; --l-ink-2:#4c3a59;
-    --l-ink-3:#75647f; --l-rule:#ecdfe6; --l-rule-soft:#f5eef1; --l-code:#f6eef4;
-    --l-ah:330; --l-as:62; --l-al:42; --l-flag:#b03d24; --l-ok:#2f6b58;
-    --d-bg:#150e1c; --d-surface:#211729; --d-ink:#f4ecf6; --d-ink-2:#c0aecb;
-    --d-ink-3:#95839f; --d-rule:#33243d; --d-rule-soft:#261a2e; --d-code:#281c32;
-    --d-ah:326; --d-as:76; --d-al:72; --d-flag:#f0a184; --d-ok:#7fd0b4;
-    --font-body: "Avenir Next", Avenir, "Futura", ui-rounded, ui-sans-serif, -apple-system, system-ui, sans-serif;
-    --font-head: var(--font-body);
-    --radius:22px; --rule-w:1.5px; --head-weight:700; --head-track:-0.035em;
-    --measure:32rem;
-    --shadow: 0 2px 6px rgba(60,20,60,.06), 0 18px 40px -18px rgba(60,20,60,.22);
-    --label-case:none; --caps-track:0.03em;
-    --h1-size:2.6rem; --h1-lh:1.02;
-  }
-
-  /* ---- the resolver: which half of a palette is live ---- */
-
-  :root, [data-world] {
-    --bg:var(--l-bg); --surface:var(--l-surface); --ink:var(--l-ink);
-    --ink-2:var(--l-ink-2); --ink-3:var(--l-ink-3); --rule:var(--l-rule);
-    --rule-soft:var(--l-rule-soft); --code-bg:var(--l-code);
-    --ah:var(--l-ah); --as:var(--l-as); --al:var(--l-al);
-    --flag:var(--l-flag); --ok:var(--l-ok);
-  }
-  @media (prefers-color-scheme: dark) {
-    :root[data-mode="system"], :root[data-mode="system"] [data-world] {
-      --bg:var(--d-bg); --surface:var(--d-surface); --ink:var(--d-ink);
-      --ink-2:var(--d-ink-2); --ink-3:var(--d-ink-3); --rule:var(--d-rule);
-      --rule-soft:var(--d-rule-soft); --code-bg:var(--d-code);
-      --ah:var(--d-ah); --as:var(--d-as); --al:var(--d-al);
-      --flag:var(--d-flag); --ok:var(--d-ok);
-    }
-  }
-  :root[data-mode="dark"], :root[data-mode="dark"] [data-world] {
-    --bg:var(--d-bg); --surface:var(--d-surface); --ink:var(--d-ink);
-    --ink-2:var(--d-ink-2); --ink-3:var(--d-ink-3); --rule:var(--d-rule);
-    --rule-soft:var(--d-rule-soft); --code-bg:var(--d-code);
-    --ah:var(--d-ah); --as:var(--d-as); --al:var(--d-al);
-    --flag:var(--d-flag); --ok:var(--d-ok);
-  }
-
-  /* Accent is composed, so the hue slider moves one number and saturation and
-     lightness stay where the theme put them — which is what stops a dragged
-     hue quietly failing contrast. */
-  :root, [data-world] {
-    --accent: hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 1%));
-    --accent-soft: hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 1%) / 0.12);
-    --accent-line: hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 1%) / 0.42);
-  }
-
-  /* ---- motion, declared at its reduced value ----
-     Stillness is the default and movement is the enhancement, so a reader who
-     asked for less and a reader who said nothing get the same page. */
-  :root { --dur: 0ms; --slow: 0ms; --ease: cubic-bezier(.2,.75,.25,1); }
-  @media (prefers-reduced-motion: no-preference) {
-    :root { --dur: 220ms; --slow: 620ms; }
-  }
-
-  /* ---- density: two numbers the reader drags ---- */
-  :root { --space: 1; --size: 16.5px; }
-
-  body { font-family: var(--font-body); font-size: var(--size); }
-  h1, h2, h3, legend, .h { font-family: var(--font-head); }
-  /* The base sheet sizes the h1 through 'header.brief-head h1', which outranks a
-     bare 'h1' — so the world's own display scale has to be stated there too. */
-  header.brief-head h1, h1 {
-    font-size: var(--h1-size); line-height: var(--h1-lh);
-    font-weight: var(--head-weight); letter-spacing: var(--head-track);
-  }
-  h2 { font-weight: var(--head-weight); letter-spacing: var(--head-track); }
-  p, li { max-width: var(--measure); }
-
-  /* Prose stays inside --measure through 'p, li'; the page itself is wider so a
-     picker is not forced into one column. */
-  .wrap { max-width: calc(var(--measure) + 12rem);
-          padding: calc(3rem * var(--space)) 3rem calc(5rem * var(--space)); }
-  /* This rule sits after the base sheet's own narrow-screen padding and so
-     replaced it. On a 320 px screen that was 48 px of gutter each side — a
-     third of the width — until it was measured. */
-  @media (max-width: 40rem) {
-    .wrap { padding: calc(2.2rem * var(--space)) 1.15rem calc(4rem * var(--space)); }
-  }
-  main > * + * { margin-top: calc(1.05rem * var(--space)); }
-  h2 { margin-top: calc(2.4rem * var(--space)); }
-  h2 + * { margin-top: calc(0.8rem * var(--space)); }
-  .card { border-radius: var(--radius); box-shadow: var(--shadow);
-          padding: calc(1.1rem * var(--space)) 1.25rem; }
-  form { border-radius: var(--radius); box-shadow: var(--shadow); }
-  pre, code { border-radius: calc(var(--radius) * 0.35); }
-  th, .label { text-transform: var(--label-case); letter-spacing: var(--caps-track); }
-  hr, header.brief-head { border-color: var(--rule); }
-  header.brief-head { border-bottom-width: var(--rule-w); }
-
-  body { transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
-
-  /* ---- atmosphere -----------------------------------------------------
-     Every peak colour below is opaque and sits a few percent from its own
-     --bg, so the composite between them is bounded by two colours that can
-     both be measured. That is what makes an atmosphere layer checkable
-     rather than hoped about, and the page is complete with it off. */
-
-  [data-theme="paper"],    [data-world="paper"]    { --l-atmos-1:#fbfbfa; --l-atmos-2:#fbfbfa; --d-atmos-1:#121316; --d-atmos-2:#121316; }
-  [data-theme="terminal"], [data-world="terminal"] { --l-atmos-1:#f0f2ec; --l-atmos-2:#f2f4ef; --d-atmos-1:#0b110c; --d-atmos-2:#091009; }
-  [data-theme="atrium"],   [data-world="atrium"]   { --l-atmos-1:#fdf8ec; --l-atmos-2:#f2ecdf; --d-atmos-1:#1e1c13; --d-atmos-2:#100f0a; }
-  [data-theme="volume"],   [data-world="volume"]   { --l-atmos-1:#ffffff; --l-atmos-2:#e4e9f1; --d-atmos-1:#101927; --d-atmos-2:#04060a; }
-  [data-theme="bloom"],    [data-world="bloom"]    { --l-atmos-1:#fbe9f1; --l-atmos-2:#ebf1fd; --d-atmos-1:#241430; --d-atmos-2:#10182c; }
-
-  :root, [data-world] { --atmos-1:var(--l-atmos-1); --atmos-2:var(--l-atmos-2); }
-  @media (prefers-color-scheme: dark) {
-    :root[data-mode="system"], :root[data-mode="system"] [data-world] {
-      --atmos-1:var(--d-atmos-1); --atmos-2:var(--d-atmos-2);
-    }
-  }
-  :root[data-mode="dark"], :root[data-mode="dark"] [data-world] {
-    --atmos-1:var(--d-atmos-1); --atmos-2:var(--d-atmos-2);
-  }
-
-  html { background: var(--bg); }
-  body { background: none; }
-
-  .atmosphere { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
-  :root[data-atmos="off"] .atmosphere { display: none; }
-
-  :root[data-theme="paper"] .atmosphere { display: none; }
-
-  /* terminal: a faint character grid, because that is what it is made of */
-  :root[data-theme="terminal"] .atmosphere {
-    background-image:
-      linear-gradient(to right, var(--atmos-1) 1px, transparent 1px),
-      linear-gradient(to bottom, var(--atmos-1) 1px, transparent 1px);
-    background-size: 1.1rem 1.65rem;
-  }
-  /* atrium: light from the upper left, and the floor falling away */
-  :root[data-theme="atrium"] .atmosphere {
-    background:
-      radial-gradient(70rem 42rem at 12% -12%, var(--atmos-1), transparent 68%),
-      linear-gradient(to bottom, transparent 55%, var(--atmos-2));
-  }
-  /* volume: one light source and a hard vignette, so the page reads as an object */
-  :root[data-theme="volume"] .atmosphere {
-    background:
-      radial-gradient(46rem 34rem at 50% -8%, var(--atmos-1), transparent 62%),
-      radial-gradient(90rem 70rem at 50% 120%, var(--atmos-2), transparent 70%);
-  }
-  /* bloom: mass and colour, nothing representational */
-  :root[data-theme="bloom"] .atmosphere {
-    background:
-      radial-gradient(32rem 32rem at 8% 4%, var(--atmos-1), transparent 62%),
-      radial-gradient(28rem 28rem at 96% 22%, var(--atmos-2), transparent 60%),
-      radial-gradient(38rem 26rem at 40% 108%, var(--atmos-1), transparent 66%);
-  }
-
-
-  /* ====================================================================
-     THE WORLD, APPLIED TO A PAGE
-
-     Above this line is the design system: five worlds, one resolver. Below
-     it is how a page written in plain semantic HTML picks the current world
-     up — no class names, because the authoring rule is that a page is plain
-     HTML and the conventions live here.
-
-     To change the whole system's look, change one attribute on <html>:
-         data-theme="paper | terminal | atrium | volume | bloom"
-     ==================================================================== */
-
-  /* ---- choosing: how a picked option reads, per world ---------------- */
-
-  form label:has(> input[type="radio"]),
-  form label:has(> input[type="checkbox"]) {
-    flex-wrap: wrap;
-    padding: 0.28rem 0.5rem;
-    margin-left: -0.5rem;
-    border-radius: calc(var(--radius) * 0.6);
-    transition: transform var(--dur) var(--ease), background-color var(--dur) var(--ease),
-                box-shadow var(--dur) var(--ease), color var(--dur) var(--ease);
-  }
-  /* A hint belongs under the option it qualifies, not squeezed beside it. */
-  form label:has(> input[type="radio"]) > small,
-  form label:has(> input[type="checkbox"]) > small {
-    flex: 0 0 100%; margin-left: 1.35rem; margin-top: 0.2rem;
-  }
-  form label:has(input:checked) { color: var(--ink); }
-
-  :root[data-theme="paper"] form label:has(input:checked) {
-    box-shadow: inset 2px 0 0 var(--accent);
-  }
-
-  /* terminal draws its own control, because a native radio is not made of
-     characters and everything else in this world is */
-  :root[data-theme="terminal"] form input[type="radio"],
-  :root[data-theme="terminal"] form input[type="checkbox"] { position: absolute; opacity: 0; }
-  :root[data-theme="terminal"] form label:has(> input[type="radio"])::before,
-  :root[data-theme="terminal"] form label:has(> input[type="checkbox"])::before {
-    content: "[ ]"; flex: none; color: var(--ink-3); letter-spacing: -0.05em;
-  }
-  :root[data-theme="terminal"] form label:has(input:checked)::before {
-    content: "[\2588]"; color: var(--accent);
-  }
-  :root[data-theme="terminal"] form label:has(input:checked) { background: var(--rule-soft); }
-  :root[data-theme="terminal"] form label:has(> input[type="radio"]) > small,
-  :root[data-theme="terminal"] form label:has(> input[type="checkbox"]) > small { margin-left: 2.1rem; }
-
-  :root[data-theme="atrium"] form label:has(input:checked) {
-    background: var(--surface); transform: translateY(-2px); box-shadow: var(--shadow);
-  }
-
-  :root[data-theme="volume"] form fieldset { perspective: 900px; }
-  :root[data-theme="volume"] form label:has(input:checked) {
-    background: var(--surface); box-shadow: var(--shadow);
-    border-left: 2px solid var(--accent);
-    transform: rotateY(-2.2deg) translateZ(16px);
-  }
-
-  :root[data-theme="bloom"] form label:has(> input[type="radio"]),
-  :root[data-theme="bloom"] form label:has(> input[type="checkbox"]) {
-    border-radius: 99px; margin-left: 0; padding: 0.34rem 0.85rem;
-  }
-  :root[data-theme="bloom"] form label:has(input:checked) {
-    background: var(--accent); color: var(--bg);
-  }
-
-  /* ---- committing: the primary action in the world's own material -----
-     Scoped to a form's own children so the dictation button, which lives
-     inside a .voice-field, keeps its own shape. */
-
-  form > button, form > p > button {
-    font: inherit; font-size: 0.9rem; font-weight: 640; cursor: pointer;
-    color: var(--bg); background: var(--accent);
-    border: var(--rule-w) solid var(--accent);
-    border-radius: calc(var(--radius) * 0.7);
-    padding: 0.55rem 1.15rem;
-    transition: transform var(--dur) var(--ease), filter var(--dur) var(--ease),
-                box-shadow var(--dur) var(--ease);
-  }
-  form > button + button, form > p > button + button { margin-left: 0.45rem; }
-  form > button:first-of-type, form > p > button:first-of-type {
-    color: var(--bg); background: var(--accent); border-color: var(--accent);
-  }
-  /* A second button is the alternative, not a rival. */
-  form > button:not(:first-of-type), form > p > button:not(:first-of-type) {
-    color: var(--accent); background: transparent; border-color: var(--rule);
-  }
-  form > button:hover:not(:disabled), form > p > button:hover:not(:disabled) { filter: brightness(1.08); }
-  form > button:disabled, form > p > button:disabled { opacity: 0.5; cursor: default; filter: none; }
-
-  :root[data-theme="terminal"] form > button:first-of-type,
-  :root[data-theme="terminal"] form > p > button:first-of-type {
-    background: var(--surface); color: var(--accent); border-color: var(--rule);
-  }
-  :root[data-theme="terminal"] form > button:hover:not(:disabled),
-  :root[data-theme="terminal"] form > p > button:hover:not(:disabled) { border-color: var(--accent); }
-
-  :root[data-theme="atrium"] form > button:first-of-type,
-  :root[data-theme="atrium"] form > p > button:first-of-type { border-radius: 99px; box-shadow: var(--shadow); }
-
-  /* volume commits by pressing an object, so the button is one: a lit face
-     over a darker edge that the press pushes into the surface */
-  :root[data-theme="volume"] form > button:first-of-type,
-  :root[data-theme="volume"] form > p > button:first-of-type {
-    box-shadow: 0 2px 0 hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 0.6%)),
-                0 8px 16px -8px rgba(0, 0, 0, 0.55);
-  }
-  :root[data-theme="volume"] form > button:active:not(:disabled),
-  :root[data-theme="volume"] form > p > button:active:not(:disabled) {
-    transform: translateY(2px);
-    box-shadow: 0 0 0 hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 0.6%));
-  }
-
-  :root[data-theme="bloom"] form > button:first-of-type,
-  :root[data-theme="bloom"] form > p > button:first-of-type {
-    border-radius: 99px; padding: 0.6rem 1.35rem; font-weight: 700;
-  }
-`;
-
-// authoring.ts
-var DEFAULT_AGENT_INSTRUCTION = `# The page is the conversation
-
-The user does not read chat. Every turn you write or update one HTML page, they
-read it and reply from inside it, and their answer arrives as your next message.
-Everything they need must be on that page, and every action they might take must
-be possible from it \u2014 including the ones you would rather they did not choose. A
-page they cannot answer from is a dead end. Chat carries the link and one line.
-
-Start every turn with \`bb thread-page init\`. It prints the page path and link.
-Read an existing page before editing it; saving publishes it immediately and an
-open page reloads itself. Update it on every turn, including small ones. If init
-says SKIP this thread is a helper \u2014 answer in chat and stay off the page. When
-you spawn threads of your own, parent them to yourself so they stay helpers.
-
-## Every page ends with a way to answer
-
-Any <form> is wired automatically: answers arrive as your next message. Write
-plain semantic HTML \u2014 it is already styled, and there is nothing to remember.
-<fieldset><legend> names a group, a wrapping <label> names one control, <small>
-is a hint, and several <button name value> give one-click answers.
-
-Asking well is most of the work. Answering should cost a click, not a paragraph:
-buttons and radios for decisions, checkboxes for multi-select, free text only
-where the answer is genuinely open. A range needs a scale that means something
-and is easier to drag than to type \u2014 never a vague 1-to-5. Nothing is ever
-required and blank is a real answer, so ask for everything that would help and
-let them skip the rest. Always leave one open text field for what you failed to
-anticipate: your form is their only way to redirect you, and a form that permits
-only the answers you expect quietly takes the decision away from them.
-
-## What belongs on the page
-
-Only what they cannot skip: what you did, at the level they could explain it to
-someone else; decisions that are genuinely theirs, with the options and your
-recommendation; what only they can supply; anything they should sanity-check
-because a wrong assumption of yours would be costly.
-
-Every word necessary, nothing said twice. Each update leads with what changed and
-has to stand alone, because they answer from that version without scrolling back.
-Report failures, skipped steps and your own mistakes plainly. Conclusion first,
-detail only if it changes what they do.
-
-You own the work end to end: make the routine calls yourself, keep every file you
-touch correct as you go, and escalate to the page rather than to chat.
-
-## The home page
-
-One thread's page is the home page, and every other page shows a Sessions link
-back to it automatically \u2014 you never write that link yourself. Home is an
-ordinary page: it should list the user's sessions with the threads.snapshot
-capability and let them open, continue, or start one.
-
-If the user asks for a home page, or asks where their sessions are, run
-\`bb thread-page home\` in the thread that should own it and then build that page
-against \`bb thread-page guide\`. Check whether one already exists before making
-a second.
-
-A page needing more than prose and a form \u2014 a chart, a branch, cards to swipe, a
-file, live session control \u2014 runs \`bb thread-page guide\` first.`;
-var DEFAULT_PAGE_SEED = `<!doctype html>
-<html lang="en" data-theme="volume" data-mode="system" data-atmos="on">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>{{TITLE}}</title>
-  <style>${THEME_CSS}</style>
-</head>
-<body>
-  <div class="atmosphere" aria-hidden="true"></div>
-  <div class="wrap">
-
-  <header class="brief-head">
-    <h1>{{TITLE}}</h1>
-    <p class="brief-meta"><span>{{DATE}}</span></p>
-  </header>
-
-  <!--
-    Write inside the main element below. Plain semantic HTML is already styled:
-    h2, p, ul, table, form, fieldset/legend, a wrapping label, small, details.
-    Three class names exist: .card boxes an aside, .needs-you flags a block
-    that is blocked on the reader, .label is a small uppercase tag.
-
-    data-theme is paper | terminal | atrium | volume | bloom.
-    data-mode is system | light | dark. data-atmos is on | off.
-
-    Any extra CSS goes in one more style block, everything inside
-    @scope (main), and colour and shape from var(--token) only \u2014 never a hex.
-    That is what keeps a bespoke page correct in all five worlds and in dark.
-
-    For charts, multi-screen flows, files, activity, or bridge methods:
-      bb thread-page guide
-  -->
-  <main>
-    <p>Replace this with what changed and what you need from the reader.</p>
-
-    <form data-title="{{TITLE}}">
-      <label>Reply
-        <textarea name="reply" rows="4"></textarea>
-      </label>
-      <button name="action" value="Reply">Reply</button>
-    </form>
-  </main>
-
-  </div>
-</body>
-</html>
-`;
-function renderHomeSeed(template, now = /* @__PURE__ */ new Date()) {
-  const base = renderPageSeed(template, "Sessions", now);
-  const bodyStart = base.indexOf('  <header class="brief-head">');
-  const bodyEnd = base.indexOf("  </div>\n</body>");
-  if (bodyStart < 0 || bodyEnd < 0 || bodyEnd <= bodyStart) {
-    return base;
-  }
-  return base.slice(0, bodyStart) + DEFAULT_HOME_BODY + `
-  <style>${DEFAULT_HOME_STYLE}</style>
-  <script>${DEFAULT_HOME_SCRIPT}</script>
-
-` + base.slice(bodyEnd);
-}
-function renderPageSeed(template, title2, now = /* @__PURE__ */ new Date()) {
-  const date = now.toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "long",
-    year: "numeric"
-  });
-  return template.replaceAll("{{TITLE}}", escapeHtml(title2)).replaceAll("{{DATE}}", escapeHtml(date));
-}
-var AUTHORING_GUIDE = `# Thread Pages authoring guide
-
-Use the smallest page shape that makes the task easier. Plain semantic HTML is
-the default; a Thread Page may also be a complete HTML/CSS/JavaScript mini-app.
-Saving the file publishes it.
-
-## Built in
-
-- Every non-manual <form> replies to this thread. Add
-  data-thread-page-manual when your application owns submission.
-- Blank answers are valid. Fieldset legends and labels become answer names.
-- Multiple forms have independent pending and dirty state.
-- A clicked submit button leads the message as Action.
-- window.threadPage.setDirty(true|false) protects custom application state
-  from an automatic page reload.
-- window.threadPage.invoke(method, params) calls an enabled, validated BB
-  capability. Run context.get to discover the current capability roster.
-
-## What plain HTML already gives you
-
-The seed carries the design system, so semantic HTML is already styled. You do
-not need most of what follows; reach past prose only when the shape of the thing
-genuinely is not prose.
-
-  h2, p, ul, table    the page's type scale, rhythm, rules, tabular figures
-  form                a panel, wiring to this thread, a status line
-  fieldset + legend   a named group; the legend becomes the question
-  label wrapping one  the label becomes that answer's name
-  small in a label    a hint under the option
-  input type=range    a slider with a live value readout
-  input type=file     uploaded on submit, path sent to this thread
-  details/summary     detail on demand; add name="x" for an accordion
-  div class=card      a boxed aside
-  p class=needs-you   a flagged block, for what is blocked on the reader
-  span class=label    a small uppercase tag
-
-Three class names. That is the whole vocabulary; everything else is selected by
-what the element is.
-
-## The look is three attributes
-
-On <html>:
-
-  data-theme   paper | terminal | atrium | volume | bloom
-  data-mode    system | light | dark
-  data-atmos   on | off
-
-Each world sets a palette (both halves at once), a typeface, a shape language,
-an atmosphere layer, and its own idea of what choosing and committing look like.
-Changing the attribute reskins everything, including anything you built.
-
-## The escape hatch
-
-A page may carry one extra <style> block with two rules:
-
-  1. Everything inside @scope (main). The browser enforces it, so a page cannot
-     reach the shell.
-  2. Tokens only. No hex, no rgb(). Colour and shape come from var(--...).
-
-Rule 2 is what keeps a bespoke page inside the system: dark mode still works and
-switching world reskins your chart too. A page that writes #3b82f6 is wrong half
-the time and nobody notices until night.
-
-Tokens: --bg --surface --ink --ink-2 --ink-3 --rule --rule-soft --code-bg
---accent --accent-soft --accent-line --flag --ok --font-body --font-head
---radius --rule-w --shadow --measure --space --size --h1-size --label-case
---caps-track --dur --ease
-
-## Prefer native HTML first
-
-- details/summary (and details name="x") for disclosure and accordions.
-- input type="range" for an eyeballed scale; Thread Pages adds a live output.
-- CSS :has() for simple branches \u2014 real different content, not a hidden field.
-- overflow-x:auto plus scroll-snap for swipeable cards: a real swipe on a
-  phone, a scrollbar on a desktop, arrow keys on a keyboard, in four lines.
-- inline SVG for diagrams and charts; var(--accent) works inside it. Give a
-  zero a visible stub bar or the eye reads it as missing data.
-- animation-timeline: view() for scroll-linked motion, wrapped in
-  @media (prefers-reduced-motion: no-preference) so still is the default.
-- @starting-style with transition-behavior: allow-discrete for enter/exit.
-- dialog, popover, container queries, color-mix(), and view transitions when
-  they clarify the task.
-- Respect prefers-reduced-motion and keep every action keyboard reachable.
-  Never make something reachable only by pointer.
-
-## Before you save
-
-  grep -o '#[0-9a-fA-F]{3,8}' page.html   # inside your <style>: empty
-  grep -c '@scope (main)' page.html          # 1 if you added a <style>
-
-Then read it once at 320px wide, once in dark, once with reduced motion. Those
-three are where a page that looks finished stops being one.
-
-## Complete custom applications
-
-Inline CSS and JavaScript, Web Components, SVG/canvas, internal routes, and
-multi-step state are allowed inside the opaque sandbox. The page cannot read BB
-cookies, the mutation token, parent DOM, localStorage, raw SDK/API, CLI, or
-arbitrary files. Ordinary fetch and subresource networking are blocked unless a
-confined resource is explicitly supplied.
-
-Arbitrary JavaScript can still navigate its own sandboxed frame and encode
-page/input data in the URL. The open mini-app model trusts authored code with
-data already visible in its frame. Strong no-exfiltration requires a
-declarative/no-authored-JavaScript page.
-
-## The session hub, and the home page
-
-One page is the home page; \`bb thread-page home\` designates the current
-thread's. Every other page then shows a Sessions link back to it as chrome, so
-no page writes that link. Home is an ordinary page \u2014 give it whatever design
-suits, and render the list yourself:
-
-  const { threads } = await window.threadPage.invoke("threads.snapshot", { limit: 50 });
-  // each: id, title, projectId, parentThreadId, status, archived,
-  //       page: { available, revision }, updatedAtMs
-
-  await window.threadPage.invoke("threads.openPage", { threadId });   // its page
-  await window.threadPage.invoke("threads.openBb", { threadId });     // in bb
-  await window.threadPage.invoke("threads.continue", { threadId, prompt });
-  await window.threadPage.invoke("threads.spawn", { projectId, prompt });
-  await window.threadPage.invoke("threads.archive", { threadId });
-  await window.threadPage.invoke("threads.stop", { threadId });
-
-  const { projects } = await window.threadPage.invoke("projects.list", {});
-  const { providers } = await window.threadPage.invoke("providers.list");
-
-  // Folder picker, then create a project from the opaque selection token.
-  const { selection } = await window.threadPage.invoke("projects.browse", {});
-  if (selection) await window.threadPage.invoke("projects.create",
-    { selectionToken: selection.token, name: "My project" });
-
-  await window.threadPage.invoke("navigation.openExternal", { url, label });
-
-  // Small state that survives a reload, scoped to this page.
-  await window.threadPage.invoke("storage.set", { key: "wizard.step", value: 3 });
-  const state = await window.threadPage.invoke("storage.get", { key: "wizard.step" });
-
-Anything that changes another thread, archives, stops, creates a project, or
-leaves bb shows a confirmation in trusted chrome first. You do not build that
-and cannot word it; a declined action rejects with code "cancelled". Handle it.
-
-## Current bridge
-
-const context = await window.threadPage.invoke("context.get");
-const stop = window.threadPage.watch(
-  "thread.activity",
-  { limit: 8 },
-  (value) => renderActivity(value),
-  { intervalMs: 8000 }
-);
-
-await window.threadPage.invoke("thread.reply", {
-  title: "Diagram result",
-  mode: "queue", // or "steer"
-  result: { selectedNodes: ["a", "b"] },
-  idempotencyKey: "optional-stable-key"
-});
-
-Call stop() when a watched component unmounts. A page that never calls watch
-does no bridge polling.
-
-## Files the user sends you
-
-An automatic form may contain input type="file" (including multiple). On submit
-the bytes are uploaded first, stored under this thread's confined upload
-directory, and reported to you in the form message as:
-
-  $BB_THREAD_STORAGE/thread-page-uploads/<generated-name>
-
-Read them there with your normal tools. Each file must be under 24 MiB. Names
-are generated by the plugin, so a hostile page cannot choose a path. Uploads
-fail visibly on the page; they are never silently dropped.
-
-## Files you show the user
-
-Put sibling resources in:
-
-  $BB_THREAD_STORAGE/thread-page-assets/
-
-Reference them relatively (<img src="chart.png">, <link href="page.css">) or
-resolve one explicitly:
-
-  const url = window.threadPage.assetUrl("chart.png");
-
-The directory is exposed to the page as one temporary, path-shaped preview and
-is the only network origin the page's CSP allows. Names may use letters,
-digits, dot, dash, and underscore only, with no subdirectories. When the
-directory does not exist there is no asset base and assetUrl throws.
-
-## Design ownership
-
-The plugin does not impose a theme or component library. You may define any
-task-specific visual system. Prefer CSS custom properties with light/dark
-values so the page stays coherent, and test at a narrow mobile width.
-`;
-
-// bridge.ts
-var BRIDGE_PROTOCOL_VERSION = 1;
-var BRIDGE_MAX_ID_LENGTH = 96;
-var BRIDGE_MAX_METHOD_LENGTH = 96;
-var BRIDGE_MAX_PAGE_REVISION_LENGTH = 128;
-var BRIDGE_MAX_SERIALIZED_BYTES = 64 * 1024;
-var BRIDGE_MAX_JSON_DEPTH = 16;
-var BRIDGE_MAX_JSON_NODES = 1e4;
-var BRIDGE_MAX_CONFIRMATION_TTL_MS = 5 * 6e4;
-var BRIDGE_MAX_STORAGE_VALUE_BYTES = 32 * 1024;
-var MAX_ERROR_MESSAGE_LENGTH = 512;
-var MAX_PROMPT_LENGTH = 32 * 1024;
-var MAX_RESULT_TEXT_LENGTH = 64 * 1024;
-var MAX_TITLE_LENGTH = 240;
-var MAX_ITEMS = 200;
-var ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
-var METHOD_PATTERN = /^[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
-var ENTITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
-var OPAQUE_TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~:-]*$/;
-var STORAGE_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
-var UNSAFE_OBJECT_KEYS = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
-var BRIDGE_ERROR_CODES = [
-  "invalid_json",
-  "request_too_large",
-  "response_too_large",
-  "invalid_request",
-  "invalid_response",
-  "unsupported_version",
-  "unknown_method",
-  "invalid_params",
-  "stale_page",
-  "confirmation_required",
-  "confirmation_invalid",
-  "not_found",
-  "conflict",
-  "unavailable",
-  "cancelled",
-  "rate_limited",
-  "handler_error",
-  "invalid_result"
-];
-function valid(value) {
-  return { ok: true, value };
-}
-function invalid(path, message, code = "invalid_value") {
-  return { ok: false, issues: [{ code, path, message }] };
-}
-function contractFailure(code, message, issues) {
-  return {
-    ok: false,
-    error: { code, message: boundedErrorMessage(message) },
-    ...issues ? { issues } : {}
-  };
-}
-function boundedErrorMessage(message) {
-  const normalized = message.trim() || "Bridge request failed";
-  return normalized.length <= MAX_ERROR_MESSAGE_LENGTH ? normalized : `${normalized.slice(0, MAX_ERROR_MESSAGE_LENGTH - 1)}\u2026`;
-}
-function utf8Bytes(value) {
-  return new TextEncoder().encode(value).byteLength;
-}
-function pathForKey(parent, key) {
-  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? `${parent}.${key}` : `${parent}[${JSON.stringify(key)}]`;
-}
-function isCanonicalArrayIndex(key, length) {
-  if (!/^(0|[1-9][0-9]*)$/.test(key)) return false;
-  const index = Number(key);
-  return Number.isSafeInteger(index) && index >= 0 && index < length;
-}
-function validateJsonValue(input, limits = {}) {
-  const maxBytes = limits.maxBytes ?? BRIDGE_MAX_SERIALIZED_BYTES;
-  const maxDepth = limits.maxDepth ?? BRIDGE_MAX_JSON_DEPTH;
-  const maxNodes = limits.maxNodes ?? BRIDGE_MAX_JSON_NODES;
-  const ancestors = /* @__PURE__ */ new Set();
-  let nodes = 0;
-  function visit(value, path, depth) {
-    nodes += 1;
-    if (nodes > maxNodes) {
-      return {
-        code: "too_large",
-        path,
-        message: `JSON value exceeds ${maxNodes} nodes`
-      };
-    }
-    if (depth > maxDepth) {
-      return {
-        code: "too_deep",
-        path,
-        message: `JSON value exceeds depth ${maxDepth}`
-      };
-    }
-    if (value === null || typeof value === "string" || typeof value === "boolean") {
-      return null;
-    }
-    if (typeof value === "number") {
-      return Number.isFinite(value) ? null : {
-        code: "not_json_safe",
-        path,
-        message: "JSON numbers must be finite"
-      };
-    }
-    if (typeof value !== "object") {
-      return {
-        code: "not_json_safe",
-        path,
-        message: `Unsupported JSON value type: ${typeof value}`
-      };
-    }
-    if (ancestors.has(value)) {
-      return {
-        code: "not_json_safe",
-        path,
-        message: "Cyclic values are not JSON-safe"
-      };
-    }
-    ancestors.add(value);
+// src/serving/submit-route.ts
+function submitRoute(serving) {
+  return async (context) => {
+    let release = null;
     try {
-      if (Array.isArray(value)) {
-        const keys = Reflect.ownKeys(value);
-        for (const key of keys) {
-          if (typeof key === "symbol") {
-            return {
-              code: "not_json_safe",
-              path,
-              message: "Symbol properties are not JSON-safe"
-            };
-          }
-          if (key !== "length" && !isCanonicalArrayIndex(key, value.length)) {
-            return {
-              code: "not_json_safe",
-              path: pathForKey(path, key),
-              message: "Arrays may not have extra properties"
-            };
-          }
-        }
-        for (let index = 0; index < value.length; index += 1) {
-          if (!Object.prototype.hasOwnProperty.call(value, index)) {
-            return {
-              code: "not_json_safe",
-              path: `${path}[${index}]`,
-              message: "Sparse arrays are not JSON-safe"
-            };
-          }
-          const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-          if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
-            return {
-              code: "not_json_safe",
-              path: `${path}[${index}]`,
-              message: "Array entries must be enumerable data properties"
-            };
-          }
-          const issue2 = visit(descriptor.value, `${path}[${index}]`, depth + 1);
-          if (issue2) return issue2;
-        }
-        return null;
-      }
-      const prototype = Object.getPrototypeOf(value);
-      if (prototype !== Object.prototype && prototype !== null) {
-        return {
-          code: "not_json_safe",
-          path,
-          message: "Only plain objects are JSON-safe"
-        };
-      }
-      for (const key of Reflect.ownKeys(value)) {
-        if (typeof key === "symbol") {
-          return {
-            code: "not_json_safe",
-            path,
-            message: "Symbol properties are not JSON-safe"
-          };
-        }
-        if (UNSAFE_OBJECT_KEYS.has(key)) {
-          return {
-            code: "not_json_safe",
-            path: pathForKey(path, key),
-            message: "Unsafe object key"
-          };
-        }
-        const descriptor = Object.getOwnPropertyDescriptor(value, key);
-        if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
-          return {
-            code: "not_json_safe",
-            path: pathForKey(path, key),
-            message: "Object entries must be enumerable data properties"
-          };
-        }
-        const issue2 = visit(descriptor.value, pathForKey(path, key), depth + 1);
-        if (issue2) return issue2;
-      }
-      return null;
-    } catch {
-      return {
-        code: "not_json_safe",
-        path,
-        message: "Value could not be safely inspected"
-      };
+      const body = await readJsonBody(context, LIMITS.submissionBodyBytes);
+      const submission = parseSubmission(body);
+      if (!submission) throw new PageError("invalid_request", "Invalid submission");
+      const token = requireActionToken(serving, submission.actionToken);
+      if (submission.pageRevision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
+      release = acquireRate(serving, token.session);
+      const now = serving.now();
+      const fingerprint2 = sha256Hex(JSON.stringify({ revision: submission.pageRevision, title: submission.title, answers: submission.answers, files: submission.files }));
+      const remembered = serving.submissions.remember(
+        `${token.session}:${submission.submissionId}`,
+        fingerprint2,
+        async () => {
+          await eligibleSession(serving, token.session);
+          const page = await serving.pages.load(token.session);
+          if (page.stale) throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);
+          if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
+          const sent = await serving.host.sessions.send(token.session, formatSubmissionMessage(submission), "queue");
+          return { status: 200, body: { ok: true, delivery: sent.delivery } };
+        },
+        now
+      );
+      if (remembered.kind === "conflict") throw new PageError("conflict", "This submission id was already used with different answers");
+      const outcome = await remembered.outcome;
+      return jsonResponse(outcome.body, outcome.status);
+    } catch (error) {
+      return failureResponse(error, serving.host.log, "POST /submit", false);
     } finally {
-      ancestors.delete(value);
-    }
-  }
-  const issue = visit(input, "$", 0);
-  if (issue) return { ok: false, issues: [issue] };
-  let serialized;
-  try {
-    serialized = JSON.stringify(input);
-  } catch {
-    return invalid("$", "Value could not be serialized as JSON", "not_json_safe");
-  }
-  if (utf8Bytes(serialized) > maxBytes) {
-    return invalid(
-      "$",
-      `Serialized JSON exceeds ${maxBytes} bytes`,
-      "too_large"
-    );
-  }
-  return valid(JSON.parse(serialized));
-}
-function decodeJsonInput(input, sizeCode) {
-  let parsed = input;
-  if (typeof input === "string") {
-    if (utf8Bytes(input) > BRIDGE_MAX_SERIALIZED_BYTES) {
-      return contractFailure(sizeCode, "Bridge message is too large");
-    }
-    try {
-      parsed = JSON.parse(input);
-    } catch {
-      return contractFailure("invalid_json", "Bridge message is not valid JSON");
-    }
-  }
-  const json = validateJsonValue(parsed);
-  if (!json.ok) {
-    const tooLarge = json.issues.some((entry) => entry.code === "too_large");
-    return contractFailure(
-      tooLarge ? sizeCode : sizeCode === "request_too_large" ? "invalid_request" : "invalid_response",
-      tooLarge ? "Bridge message is too large" : "Bridge message is not strict JSON",
-      json.issues
-    );
-  }
-  return { ok: true, value: json.value };
-}
-function asObject(value, allowed, required, path = "$") {
-  if (value === null || Array.isArray(value) || typeof value !== "object") {
-    return invalid(path, "Expected an object", "invalid_type");
-  }
-  const allowedSet = new Set(allowed);
-  for (const key of Object.keys(value)) {
-    if (!allowedSet.has(key)) {
-      return invalid(pathForKey(path, key), "Unknown key", "unknown_key");
-    }
-  }
-  for (const key of required) {
-    if (!Object.prototype.hasOwnProperty.call(value, key)) {
-      return invalid(pathForKey(path, key), "Missing required key", "missing_key");
-    }
-  }
-  return valid(value);
-}
-function stringValue(value, path, options) {
-  if (typeof value !== "string") {
-    return invalid(path, "Expected a string", "invalid_type");
-  }
-  const min = options.min ?? 0;
-  if (value.length < min || value.length > options.max) {
-    return invalid(
-      path,
-      `${options.label ?? "String"} length must be ${min}\u2013${options.max}`,
-      "too_large"
-    );
-  }
-  if (options.pattern && !options.pattern.test(value)) {
-    return invalid(path, `${options.label ?? "String"} has an invalid format`);
-  }
-  return valid(value);
-}
-function booleanValue(value, path) {
-  return typeof value === "boolean" ? valid(value) : invalid(path, "Expected a boolean", "invalid_type");
-}
-function integerValue(value, path, min, max) {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) {
-    return invalid(path, `Expected an integer from ${min} to ${max}`);
-  }
-  return valid(value);
-}
-function enumValue(value, path, values) {
-  return typeof value === "string" && values.includes(value) ? valid(value) : invalid(path, `Expected one of: ${values.join(", ")}`);
-}
-function entityId(value, path) {
-  return stringValue(value, path, {
-    min: 1,
-    max: 128,
-    pattern: ENTITY_ID_PATTERN,
-    label: "Entity id"
-  });
-}
-function nullableEntityId(value, path) {
-  return value === null ? valid(null) : entityId(value, path);
-}
-function opaqueToken(value, path, max = 512) {
-  return stringValue(value, path, {
-    min: 1,
-    max,
-    pattern: OPAQUE_TOKEN_PATTERN,
-    label: "Opaque token"
-  });
-}
-function jsonValidator(parser) {
-  return (input) => {
-    const json = validateJsonValue(input);
-    return json.ok ? parser(json.value) : json;
-  };
-}
-function noParams(value) {
-  if (value === null) return valid(null);
-  const object = asObject(value, [], []);
-  return object.ok ? valid(null) : object;
-}
-function decodeBridgeRequest(input) {
-  const decoded = decodeJsonInput(input, "request_too_large");
-  if (!decoded.ok) return decoded;
-  const object = asObject(
-    decoded.value,
-    ["v", "id", "method", "params", "pageRevision"],
-    ["v", "id", "method", "params", "pageRevision"]
-  );
-  if (!object.ok) {
-    return contractFailure("invalid_request", "Invalid bridge request envelope", object.issues);
-  }
-  const value = object.value;
-  if (value.v !== BRIDGE_PROTOCOL_VERSION) {
-    return contractFailure("unsupported_version", "Unsupported bridge protocol version");
-  }
-  const id = stringValue(value.id, "$.id", {
-    min: 1,
-    max: BRIDGE_MAX_ID_LENGTH,
-    pattern: ID_PATTERN,
-    label: "Request id"
-  });
-  if (!id.ok) return contractFailure("invalid_request", "Invalid request id", id.issues);
-  const method = stringValue(value.method, "$.method", {
-    min: 3,
-    max: BRIDGE_MAX_METHOD_LENGTH,
-    pattern: METHOD_PATTERN,
-    label: "Method name"
-  });
-  if (!method.ok) {
-    return contractFailure("invalid_request", "Invalid method name", method.issues);
-  }
-  const revision = stringValue(value.pageRevision, "$.pageRevision", {
-    min: 1,
-    max: BRIDGE_MAX_PAGE_REVISION_LENGTH,
-    pattern: ID_PATTERN,
-    label: "Page revision"
-  });
-  if (!revision.ok) {
-    return contractFailure("invalid_request", "Invalid page revision", revision.issues);
-  }
-  return {
-    ok: true,
-    value: {
-      v: 1,
-      id: id.value,
-      method: method.value,
-      params: value.params,
-      pageRevision: revision.value
+      release?.();
     }
   };
-}
-function isBridgeErrorCode(value) {
-  return typeof value === "string" && BRIDGE_ERROR_CODES.includes(value);
-}
-function decodeBridgeResponse(input) {
-  const decoded = decodeJsonInput(input, "response_too_large");
-  if (!decoded.ok) return decoded;
-  if (decoded.value === null || Array.isArray(decoded.value) || typeof decoded.value !== "object") {
-    return contractFailure("invalid_response", "Invalid bridge response envelope");
-  }
-  const okValue = decoded.value.ok;
-  if (typeof okValue !== "boolean") {
-    return contractFailure("invalid_response", "Response ok flag must be boolean");
-  }
-  const expected = okValue ? asObject(decoded.value, ["v", "id", "ok", "result"], ["v", "id", "ok", "result"]) : asObject(decoded.value, ["v", "id", "ok", "error"], ["v", "id", "ok", "error"]);
-  if (!expected.ok) {
-    return contractFailure("invalid_response", "Invalid bridge response envelope", expected.issues);
-  }
-  if (expected.value.v !== 1) {
-    return contractFailure("unsupported_version", "Unsupported bridge protocol version");
-  }
-  const id = stringValue(expected.value.id, "$.id", {
-    min: 1,
-    max: BRIDGE_MAX_ID_LENGTH,
-    pattern: ID_PATTERN,
-    label: "Response id"
-  });
-  if (!id.ok) return contractFailure("invalid_response", "Invalid response id", id.issues);
-  if (okValue) {
-    return {
-      ok: true,
-      value: { v: 1, id: id.value, ok: true, result: expected.value.result }
-    };
-  }
-  const errorObject = asObject(expected.value.error, ["code", "message"], ["code", "message"], "$.error");
-  if (!errorObject.ok) {
-    return contractFailure("invalid_response", "Invalid bridge error", errorObject.issues);
-  }
-  if (!isBridgeErrorCode(errorObject.value.code)) {
-    return contractFailure("invalid_response", "Unknown bridge error code");
-  }
-  const message = stringValue(errorObject.value.message, "$.error.message", {
-    min: 1,
-    max: MAX_ERROR_MESSAGE_LENGTH,
-    label: "Error message"
-  });
-  if (!message.ok) {
-    return contractFailure("invalid_response", "Invalid bridge error message", message.issues);
-  }
-  return {
-    ok: true,
-    value: {
-      v: 1,
-      id: id.value,
-      ok: false,
-      error: { code: errorObject.value.code, message: message.value }
-    }
-  };
-}
-function safeResponseId(id) {
-  return typeof id === "string" && id.length >= 1 && id.length <= BRIDGE_MAX_ID_LENGTH && ID_PATTERN.test(id) ? id : "invalid";
-}
-function makeBridgeFailureResponse(id, code, message) {
-  return {
-    v: 1,
-    id: safeResponseId(id),
-    ok: false,
-    error: { code, message: boundedErrorMessage(message) }
-  };
-}
-function encodeBridgeResponse(response) {
-  const decoded = decodeBridgeResponse(response);
-  if (!decoded.ok) return decoded;
-  const serialized = JSON.stringify(decoded.value);
-  if (utf8Bytes(serialized) > BRIDGE_MAX_SERIALIZED_BYTES) {
-    return contractFailure("response_too_large", "Bridge response is too large");
-  }
-  return { ok: true, value: serialized };
-}
-var EFFECTS = [
-  "read",
-  "navigation",
-  "current-thread-write",
-  "cross-thread-write",
-  "destructive",
-  "device"
-];
-var EFFECTS_REQUIRING_CONFIRMATION = /* @__PURE__ */ new Set([
-  "cross-thread-write",
-  "destructive",
-  "device"
-]);
-function createCapabilityRegistry(specifications) {
-  const byMethod = /* @__PURE__ */ new Map();
-  const list = [];
-  for (const original of specifications) {
-    if (original.method.length < 3 || original.method.length > BRIDGE_MAX_METHOD_LENGTH || !METHOD_PATTERN.test(original.method)) {
-      throw new TypeError(`Invalid bridge capability method: ${original.method}`);
-    }
-    if (byMethod.has(original.method)) {
-      throw new TypeError(`Duplicate bridge capability method: ${original.method}`);
-    }
-    if (!EFFECTS.includes(original.effect)) {
-      throw new TypeError(`Invalid effect for ${original.method}`);
-    }
-    if (original.confirmation !== "none" && original.confirmation !== "trusted-outer") {
-      throw new TypeError(`Invalid confirmation policy for ${original.method}`);
-    }
-    if (EFFECTS_REQUIRING_CONFIRMATION.has(original.effect) && original.confirmation !== "trusted-outer") {
-      throw new TypeError(
-        `${original.method} must require trusted outer confirmation`
-      );
-    }
-    if (original.method === "projects.create" && original.confirmation !== "trusted-outer") {
-      throw new TypeError(
-        "projects.create must require trusted outer confirmation"
-      );
-    }
-    if (typeof original.description !== "string" || original.description.trim().length === 0 || original.description.length > 240) {
-      throw new TypeError(`Invalid description for ${original.method}`);
-    }
-    if (typeof original.validateParams !== "function" || typeof original.validateResult !== "function" || original.summarize !== void 0 && typeof original.summarize !== "function") {
-      throw new TypeError(`Invalid validators for ${original.method}`);
-    }
-    const specification = Object.freeze({ ...original });
-    byMethod.set(specification.method, specification);
-    list.push(specification);
-  }
-  const frozenList = Object.freeze(list.slice());
-  return Object.freeze({
-    get(method) {
-      return byMethod.get(method);
-    },
-    list() {
-      return frozenList;
-    }
-  });
-}
-var VALIDATED_INVOCATION = /* @__PURE__ */ Symbol("validated-thread-page-invocation");
-function resolveBridgeInvocation(input, registry = strictParityCapabilityRegistry, expectedPageRevision) {
-  const decoded = decodeBridgeRequest(input);
-  if (!decoded.ok) return decoded;
-  if (expectedPageRevision !== void 0 && decoded.value.pageRevision !== expectedPageRevision) {
-    return contractFailure("stale_page", "The Thread Page revision has changed");
-  }
-  const capability = registry.get(decoded.value.method);
-  if (!capability) {
-    return contractFailure("unknown_method", "Unknown Thread Page capability");
-  }
-  const params = capability.validateParams(decoded.value.params);
-  if (!params.ok) {
-    return contractFailure(
-      "invalid_params",
-      `Invalid parameters for ${capability.method}`,
-      params.issues
-    );
-  }
-  const normalizedParams = validateJsonValue(params.value);
-  if (!normalizedParams.ok) {
-    return contractFailure(
-      "invalid_params",
-      `Parameter validator for ${capability.method} produced non-JSON data`,
-      normalizedParams.issues
-    );
-  }
-  const invocation = {
-    request: decoded.value,
-    capability,
-    params: normalizedParams.value
-  };
-  Object.defineProperty(invocation, VALIDATED_INVOCATION, {
-    enumerable: false,
-    value: true
-  });
-  return { ok: true, value: Object.freeze(invocation) };
-}
-var TRUSTED_CONFIRMATION = /* @__PURE__ */ Symbol("trusted-outer-confirmation");
-var CONFIRMED_REQUEST = /* @__PURE__ */ Symbol("confirmed-request-fingerprint");
-function invocationFingerprint(invocation) {
-  return JSON.stringify({
-    id: invocation.request.id,
-    method: invocation.request.method,
-    params: invocation.request.params,
-    pageRevision: invocation.request.pageRevision
-  });
-}
-function createTrustedOuterConfirmation(invocation, options) {
-  if (invocation[VALIDATED_INVOCATION] !== true) {
-    throw new TypeError("Confirmation requires a validated bridge invocation");
-  }
-  if (!Number.isSafeInteger(options.confirmedAtMs) || !Number.isSafeInteger(options.expiresAtMs) || options.confirmedAtMs < 0 || options.expiresAtMs <= options.confirmedAtMs || options.expiresAtMs - options.confirmedAtMs > BRIDGE_MAX_CONFIRMATION_TTL_MS) {
-    throw new TypeError("Invalid trusted confirmation lifetime");
-  }
-  const generated = invocation.capability.summarize?.(invocation.params) ?? invocation.capability.description;
-  const summary = options.humanSummary ?? generated;
-  if (typeof summary !== "string" || summary.trim().length === 0 || summary.length > 512) {
-    throw new TypeError("Invalid trusted confirmation summary");
-  }
-  const confirmation = {
-    source: "trusted-outer",
-    requestId: invocation.request.id,
-    method: invocation.request.method,
-    pageRevision: invocation.request.pageRevision,
-    confirmedAtMs: options.confirmedAtMs,
-    expiresAtMs: options.expiresAtMs,
-    humanSummary: summary
-  };
-  Object.defineProperties(confirmation, {
-    [TRUSTED_CONFIRMATION]: { enumerable: false, value: true },
-    [CONFIRMED_REQUEST]: {
-      enumerable: false,
-      value: invocationFingerprint(invocation)
-    }
-  });
-  return Object.freeze(confirmation);
-}
-function authorizeBridgeInvocation(invocation, confirmation, nowMs) {
-  if (invocation.capability.confirmation === "none") {
-    return { ok: true, value: invocation };
-  }
-  if (typeof confirmation !== "object" || confirmation === null || confirmation[TRUSTED_CONFIRMATION] !== true) {
-    return contractFailure(
-      "confirmation_required",
-      "This action requires confirmation in trusted Thread Page chrome"
-    );
-  }
-  const trusted = confirmation;
-  if (!Number.isSafeInteger(nowMs) || nowMs < trusted.confirmedAtMs || nowMs >= trusted.expiresAtMs || trusted.requestId !== invocation.request.id || trusted.method !== invocation.request.method || trusted.pageRevision !== invocation.request.pageRevision || trusted[CONFIRMED_REQUEST] !== invocationFingerprint(invocation)) {
-    return contractFailure(
-      "confirmation_invalid",
-      "Trusted confirmation is expired or does not match this request"
-    );
-  }
-  return { ok: true, value: invocation };
-}
-function completeBridgeInvocation(invocation, result) {
-  const validated = invocation.capability.validateResult(result);
-  if (!validated.ok) {
-    return makeBridgeFailureResponse(
-      invocation.request.id,
-      "invalid_result",
-      `Invalid result for ${invocation.capability.method}`
-    );
-  }
-  const json = validateJsonValue(validated.value);
-  if (!json.ok) {
-    return makeBridgeFailureResponse(
-      invocation.request.id,
-      "invalid_result",
-      `Result validator for ${invocation.capability.method} produced non-JSON data`
-    );
-  }
-  const response = {
-    v: 1,
-    id: invocation.request.id,
-    ok: true,
-    result: json.value
-  };
-  const encoded = encodeBridgeResponse(response);
-  return encoded.ok ? response : makeBridgeFailureResponse(
-    invocation.request.id,
-    "response_too_large",
-    "Bridge response is too large"
-  );
-}
-function title(value, path) {
-  return stringValue(value, path, { max: MAX_TITLE_LENGTH, label: "Title" });
-}
-function prompt(value, path) {
-  return stringValue(value, path, {
-    min: 1,
-    max: MAX_PROMPT_LENGTH,
-    label: "Prompt"
-  });
-}
-function timestamp(value, path) {
-  return integerValue(value, path, 0, Number.MAX_SAFE_INTEGER);
-}
-function parseCapabilityDescriptor(value, path) {
-  const object = asObject(value, ["method", "effect", "confirmation"], ["method", "effect", "confirmation"], path);
-  if (!object.ok) return object;
-  const method = stringValue(object.value.method, `${path}.method`, {
-    min: 3,
-    max: BRIDGE_MAX_METHOD_LENGTH,
-    pattern: METHOD_PATTERN,
-    label: "Method name"
-  });
-  if (!method.ok) return method;
-  const effect = enumValue(object.value.effect, `${path}.effect`, EFFECTS);
-  if (!effect.ok) return effect;
-  const confirmation = enumValue(
-    object.value.confirmation,
-    `${path}.confirmation`,
-    ["none", "trusted-outer"]
-  );
-  if (!confirmation.ok) return confirmation;
-  return valid({ method: method.value, effect: effect.value, confirmation: confirmation.value });
-}
-function parseContextResult(value) {
-  const root = asObject(value, ["protocolVersion", "thread", "page", "capabilities"], ["protocolVersion", "thread", "page", "capabilities"]);
-  if (!root.ok) return root;
-  if (root.value.protocolVersion !== 1) return invalid("$.protocolVersion", "Expected protocol version 1");
-  const thread = asObject(root.value.thread, ["id", "title", "projectId"], ["id", "title", "projectId"], "$.thread");
-  if (!thread.ok) return thread;
-  const threadId = entityId(thread.value.id, "$.thread.id");
-  if (!threadId.ok) return threadId;
-  const threadTitle = title(thread.value.title, "$.thread.title");
-  if (!threadTitle.ok) return threadTitle;
-  const projectId = nullableEntityId(thread.value.projectId, "$.thread.projectId");
-  if (!projectId.ok) return projectId;
-  const page = asObject(root.value.page, ["revision", "readOnly"], ["revision", "readOnly"], "$.page");
-  if (!page.ok) return page;
-  const revision = stringValue(page.value.revision, "$.page.revision", {
-    min: 1,
-    max: BRIDGE_MAX_PAGE_REVISION_LENGTH,
-    pattern: ID_PATTERN,
-    label: "Page revision"
-  });
-  if (!revision.ok) return revision;
-  const readOnly = booleanValue(page.value.readOnly, "$.page.readOnly");
-  if (!readOnly.ok) return readOnly;
-  if (!Array.isArray(root.value.capabilities) || root.value.capabilities.length > 64) {
-    return invalid("$.capabilities", "Expected at most 64 capabilities");
-  }
-  const capabilities = [];
-  for (let index = 0; index < root.value.capabilities.length; index += 1) {
-    const item = parseCapabilityDescriptor(root.value.capabilities[index], `$.capabilities[${index}]`);
-    if (!item.ok) return item;
-    capabilities.push(item.value);
-  }
-  return valid({
-    protocolVersion: 1,
-    thread: { id: threadId.value, title: threadTitle.value, projectId: projectId.value },
-    page: { revision: revision.value, readOnly: readOnly.value },
-    capabilities
-  });
-}
-function parseActivityParams(value) {
-  const object = asObject(value, ["limit"], []);
-  if (!object.ok) return object;
-  const limit = object.value.limit === void 0 ? valid(8) : integerValue(object.value.limit, "$.limit", 1, 20);
-  return limit.ok ? valid({ limit: limit.value }) : limit;
-}
-function parseActivityItem(value, path) {
-  const object = asObject(
-    value,
-    ["kind", "done", "atMs", "label", "text"],
-    ["kind", "done", "atMs", "label", "text"],
-    path
-  );
-  if (!object.ok) return object;
-  const kind = stringValue(object.value.kind, path + ".kind", {
-    min: 1,
-    max: 80,
-    label: "Activity kind"
-  });
-  if (!kind.ok) return kind;
-  const done = booleanValue(object.value.done, path + ".done");
-  if (!done.ok) return done;
-  const atMs = timestamp(object.value.atMs, path + ".atMs");
-  if (!atMs.ok) return atMs;
-  const label = stringValue(object.value.label, path + ".label", {
-    min: 1,
-    max: 80,
-    label: "Activity label"
-  });
-  if (!label.ok) return label;
-  const text = stringValue(object.value.text, path + ".text", {
-    max: 200,
-    label: "Activity text"
-  });
-  if (!text.ok) return text;
-  return valid({
-    kind: kind.value,
-    done: done.value,
-    atMs: atMs.value,
-    label: label.value,
-    text: text.value
-  });
-}
-function parseActivityResult(value) {
-  const object = asObject(
-    value,
-    ["state", "updatedAtMs", "items"],
-    ["state", "updatedAtMs", "items"]
-  );
-  if (!object.ok) return object;
-  const state = enumValue(
-    object.value.state,
-    "$.state",
-    ["working", "idle", "waiting", "failed", "stopped"]
-  );
-  if (!state.ok) return state;
-  const updatedAtMs = timestamp(object.value.updatedAtMs, "$.updatedAtMs");
-  if (!updatedAtMs.ok) return updatedAtMs;
-  if (!Array.isArray(object.value.items) || object.value.items.length > 20) {
-    return invalid("$.items", "Expected at most 20 activity items");
-  }
-  const items = [];
-  for (let index = 0; index < object.value.items.length; index += 1) {
-    const item = parseActivityItem(
-      object.value.items[index],
-      "$.items[" + index + "]"
-    );
-    if (!item.ok) return item;
-    items.push(item.value);
-  }
-  return valid({ state: state.value, updatedAtMs: updatedAtMs.value, items });
-}
-function parseSnapshotParams(value) {
-  const object = asObject(value, ["projectId", "includeArchived", "limit", "cursor"], []);
-  if (!object.ok) return object;
-  const projectId = object.value.projectId === void 0 ? valid(null) : nullableEntityId(object.value.projectId, "$.projectId");
-  if (!projectId.ok) return projectId;
-  const includeArchived = object.value.includeArchived === void 0 ? valid(false) : booleanValue(object.value.includeArchived, "$.includeArchived");
-  if (!includeArchived.ok) return includeArchived;
-  const limit = object.value.limit === void 0 ? valid(100) : integerValue(object.value.limit, "$.limit", 1, MAX_ITEMS);
-  if (!limit.ok) return limit;
-  const cursor = object.value.cursor === void 0 || object.value.cursor === null ? valid(null) : opaqueToken(object.value.cursor, "$.cursor");
-  if (!cursor.ok) return cursor;
-  return valid({ projectId: projectId.value, includeArchived: includeArchived.value, limit: limit.value, cursor: cursor.value });
-}
-function parseThreadSnapshotItem(value, path) {
-  const object = asObject(value, ["id", "title", "projectId", "parentThreadId", "status", "archived", "page", "updatedAtMs"], ["id", "title", "projectId", "parentThreadId", "status", "archived", "page", "updatedAtMs"], path);
-  if (!object.ok) return object;
-  const id = entityId(object.value.id, `${path}.id`);
-  if (!id.ok) return id;
-  const itemTitle = title(object.value.title, `${path}.title`);
-  if (!itemTitle.ok) return itemTitle;
-  const projectId = nullableEntityId(object.value.projectId, `${path}.projectId`);
-  if (!projectId.ok) return projectId;
-  const parentThreadId = nullableEntityId(object.value.parentThreadId, `${path}.parentThreadId`);
-  if (!parentThreadId.ok) return parentThreadId;
-  const status = enumValue(object.value.status, `${path}.status`, ["idle", "active", "waiting", "failed", "stopped"]);
-  if (!status.ok) return status;
-  const archived = booleanValue(object.value.archived, `${path}.archived`);
-  if (!archived.ok) return archived;
-  const page = asObject(object.value.page, ["available", "revision"], ["available", "revision"], `${path}.page`);
-  if (!page.ok) return page;
-  const available = booleanValue(page.value.available, `${path}.page.available`);
-  if (!available.ok) return available;
-  const revision = page.value.revision === null ? valid(null) : stringValue(page.value.revision, `${path}.page.revision`, { min: 1, max: BRIDGE_MAX_PAGE_REVISION_LENGTH, pattern: ID_PATTERN, label: "Page revision" });
-  if (!revision.ok) return revision;
-  const updatedAtMs = timestamp(object.value.updatedAtMs, `${path}.updatedAtMs`);
-  if (!updatedAtMs.ok) return updatedAtMs;
-  return valid({ id: id.value, title: itemTitle.value, projectId: projectId.value, parentThreadId: parentThreadId.value, status: status.value, archived: archived.value, page: { available: available.value, revision: revision.value }, updatedAtMs: updatedAtMs.value });
-}
-function parseSnapshotResult(value) {
-  const object = asObject(value, ["threads", "nextCursor", "generatedAtMs"], ["threads", "nextCursor", "generatedAtMs"]);
-  if (!object.ok) return object;
-  if (!Array.isArray(object.value.threads) || object.value.threads.length > MAX_ITEMS) return invalid("$.threads", `Expected at most ${MAX_ITEMS} threads`);
-  const threads = [];
-  for (let index = 0; index < object.value.threads.length; index += 1) {
-    const item = parseThreadSnapshotItem(object.value.threads[index], `$.threads[${index}]`);
-    if (!item.ok) return item;
-    threads.push(item.value);
-  }
-  const nextCursor = object.value.nextCursor === null ? valid(null) : opaqueToken(object.value.nextCursor, "$.nextCursor");
-  if (!nextCursor.ok) return nextCursor;
-  const generatedAtMs = timestamp(object.value.generatedAtMs, "$.generatedAtMs");
-  if (!generatedAtMs.ok) return generatedAtMs;
-  return valid({ threads, nextCursor: nextCursor.value, generatedAtMs: generatedAtMs.value });
-}
-function parseReplyParams(value) {
-  const object = asObject(value, ["result", "mode", "title", "idempotencyKey"], ["result"]);
-  if (!object.ok) return object;
-  const result = validateJsonValue(object.value.result);
-  if (!result.ok) return result;
-  const mode = object.value.mode === void 0 ? valid("queue") : enumValue(object.value.mode, "$.mode", ["queue", "steer"]);
-  if (!mode.ok) return mode;
-  const replyTitle = object.value.title === void 0 ? void 0 : title(object.value.title, "$.title");
-  if (replyTitle && !replyTitle.ok) return replyTitle;
-  const idempotencyKey = object.value.idempotencyKey === void 0 ? void 0 : stringValue(object.value.idempotencyKey, "$.idempotencyKey", { min: 1, max: BRIDGE_MAX_ID_LENGTH, pattern: ID_PATTERN, label: "Idempotency key" });
-  if (idempotencyKey && !idempotencyKey.ok) return idempotencyKey;
-  return valid({ result: result.value, mode: mode.value, ...replyTitle ? { title: replyTitle.value } : {}, ...idempotencyKey ? { idempotencyKey: idempotencyKey.value } : {} });
-}
-function parseDeliveryResult(value) {
-  const object = asObject(value, ["delivery", "duplicate"], ["delivery", "duplicate"]);
-  if (!object.ok) return object;
-  const delivery = enumValue(object.value.delivery, "$.delivery", ["started", "queued", "steered"]);
-  if (!delivery.ok) return delivery;
-  const duplicate = booleanValue(object.value.duplicate, "$.duplicate");
-  if (!duplicate.ok) return duplicate;
-  return valid({ delivery: delivery.value, duplicate: duplicate.value });
-}
-function parseContinueParams(value) {
-  const object = asObject(value, ["threadId", "prompt", "mode"], ["threadId", "prompt"]);
-  if (!object.ok) return object;
-  const threadId = entityId(object.value.threadId, "$.threadId");
-  if (!threadId.ok) return threadId;
-  const text = prompt(object.value.prompt, "$.prompt");
-  if (!text.ok) return text;
-  const mode = object.value.mode === void 0 ? valid("queue") : enumValue(object.value.mode, "$.mode", ["queue", "steer"]);
-  if (!mode.ok) return mode;
-  return valid({ threadId: threadId.value, prompt: text.value, mode: mode.value });
-}
-function parseContinueResult(value) {
-  const object = asObject(value, ["threadId", "delivery", "duplicate"], ["threadId", "delivery", "duplicate"]);
-  if (!object.ok) return object;
-  const threadId = entityId(object.value.threadId, "$.threadId");
-  if (!threadId.ok) return threadId;
-  const delivery = parseDeliveryResult({ delivery: object.value.delivery, duplicate: object.value.duplicate });
-  if (!delivery.ok) return delivery;
-  return valid({ threadId: threadId.value, ...delivery.value });
-}
-function optionalSafeName(value, path, max = 160) {
-  return stringValue(value, path, { min: 1, max, pattern: /^[^\u0000-\u001f\u007f]+$/, label: "Name" });
-}
-function parseSpawnParams(value) {
-  const object = asObject(value, ["projectId", "prompt", "title", "providerId", "model", "reasoningLevel"], ["projectId", "prompt"]);
-  if (!object.ok) return object;
-  const projectId = entityId(object.value.projectId, "$.projectId");
-  if (!projectId.ok) return projectId;
-  const text = prompt(object.value.prompt, "$.prompt");
-  if (!text.ok) return text;
-  const threadTitle = object.value.title === void 0 ? void 0 : title(object.value.title, "$.title");
-  if (threadTitle && !threadTitle.ok) return threadTitle;
-  const providerId = object.value.providerId === void 0 ? void 0 : entityId(object.value.providerId, "$.providerId");
-  if (providerId && !providerId.ok) return providerId;
-  const model = object.value.model === void 0 ? void 0 : optionalSafeName(object.value.model, "$.model");
-  if (model && !model.ok) return model;
-  const reasoningLevel = object.value.reasoningLevel === void 0 ? void 0 : entityId(object.value.reasoningLevel, "$.reasoningLevel");
-  if (reasoningLevel && !reasoningLevel.ok) return reasoningLevel;
-  return valid({ projectId: projectId.value, prompt: text.value, ...threadTitle ? { title: threadTitle.value } : {}, ...providerId ? { providerId: providerId.value } : {}, ...model ? { model: model.value } : {}, ...reasoningLevel ? { reasoningLevel: reasoningLevel.value } : {} });
-}
-function parseThreadTarget(value) {
-  const object = asObject(value, ["threadId"], ["threadId"]);
-  if (!object.ok) return object;
-  const threadId = entityId(object.value.threadId, "$.threadId");
-  return threadId.ok ? valid({ threadId: threadId.value }) : threadId;
-}
-function parseBooleanResult(key, value) {
-  const object = asObject(value, [key], [key]);
-  if (!object.ok) return object;
-  const flag = booleanValue(object.value[key], `$.${key}`);
-  if (!flag.ok) return flag;
-  if (key === "opened") return valid({ opened: flag.value });
-  if (key === "archived") return valid({ archived: flag.value });
-  return valid({ stopped: flag.value });
-}
-function parseExternalHttpUrl(value, path) {
-  const bounded = stringValue(value, path, {
-    min: 1,
-    max: 2048,
-    pattern: /^[^\u0000-\u0020\u007f]+$/,
-    label: "External URL"
-  });
-  if (!bounded.ok) return bounded;
-  let parsed;
-  try {
-    parsed = new URL(bounded.value);
-  } catch {
-    return invalid(path, "Expected an absolute http or https URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:" || !parsed.hostname || parsed.username !== "" || parsed.password !== "") {
-    return invalid(path, "Expected an absolute http or https URL without credentials");
-  }
-  return valid(bounded.value);
-}
-function parseOpenExternalParams(value) {
-  const object = asObject(value, ["url", "label"], ["url"]);
-  if (!object.ok) return object;
-  const url = parseExternalHttpUrl(object.value.url, "$.url");
-  if (!url.ok) return url;
-  const label = object.value.label === void 0 ? void 0 : stringValue(object.value.label, "$.label", {
-    min: 1,
-    max: 160,
-    label: "Target label"
-  });
-  if (label && !label.ok) return label;
-  return valid({ url: url.value, ...label ? { label: label.value } : {} });
-}
-function parseProjectChoice(value, path) {
-  const object = asObject(value, ["id", "name", "kind"], ["id", "name", "kind"], path);
-  if (!object.ok) return object;
-  const id = entityId(object.value.id, `${path}.id`);
-  if (!id.ok) return id;
-  const name = title(object.value.name, `${path}.name`);
-  if (!name.ok) return name;
-  const kind = enumValue(object.value.kind, `${path}.kind`, ["standard", "personal"]);
-  if (!kind.ok) return kind;
-  return valid({ id: id.value, name: name.value, kind: kind.value });
-}
-function parseProjectsResult(value) {
-  const object = asObject(value, ["projects"], ["projects"]);
-  if (!object.ok) return object;
-  if (!Array.isArray(object.value.projects) || object.value.projects.length > MAX_ITEMS) return invalid("$.projects", `Expected at most ${MAX_ITEMS} projects`);
-  const projects = [];
-  for (let index = 0; index < object.value.projects.length; index += 1) {
-    const item = parseProjectChoice(object.value.projects[index], `$.projects[${index}]`);
-    if (!item.ok) return item;
-    projects.push(item.value);
-  }
-  return valid({ projects });
-}
-function parseBrowseParams(value) {
-  const object = asObject(value, ["startProjectId"], []);
-  if (!object.ok) return object;
-  const startProjectId = object.value.startProjectId === void 0 || object.value.startProjectId === null ? valid(null) : entityId(object.value.startProjectId, "$.startProjectId");
-  return startProjectId.ok ? valid({ startProjectId: startProjectId.value }) : startProjectId;
-}
-function parseBrowseResult(value) {
-  const object = asObject(value, ["selection"], ["selection"]);
-  if (!object.ok) return object;
-  if (object.value.selection === null) return valid({ selection: null });
-  const selection = asObject(object.value.selection, ["token", "displayPath", "hostName"], ["token", "displayPath", "hostName"], "$.selection");
-  if (!selection.ok) return selection;
-  const token = opaqueToken(selection.value.token, "$.selection.token");
-  if (!token.ok) return token;
-  const displayPath = stringValue(selection.value.displayPath, "$.selection.displayPath", { min: 1, max: 1024, label: "Display path" });
-  if (!displayPath.ok) return displayPath;
-  const hostName = title(selection.value.hostName, "$.selection.hostName");
-  if (!hostName.ok) return hostName;
-  return valid({ selection: { token: token.value, displayPath: displayPath.value, hostName: hostName.value } });
-}
-function parseCreateProjectParams(value) {
-  const object = asObject(value, ["selectionToken", "name"], ["selectionToken"]);
-  if (!object.ok) return object;
-  const selectionToken = opaqueToken(object.value.selectionToken, "$.selectionToken");
-  if (!selectionToken.ok) return selectionToken;
-  const name = object.value.name === void 0 ? void 0 : title(object.value.name, "$.name");
-  if (name && !name.ok) return name;
-  return valid({ selectionToken: selectionToken.value, ...name ? { name: name.value } : {} });
-}
-function parseProviderChoice(value, path) {
-  const object = asObject(value, ["id", "displayName", "available", "models"], ["id", "displayName", "available", "models"], path);
-  if (!object.ok) return object;
-  const id = entityId(object.value.id, `${path}.id`);
-  if (!id.ok) return id;
-  const displayName = title(object.value.displayName, `${path}.displayName`);
-  if (!displayName.ok) return displayName;
-  const available = booleanValue(object.value.available, `${path}.available`);
-  if (!available.ok) return available;
-  if (!Array.isArray(object.value.models) || object.value.models.length > MAX_ITEMS) return invalid(`${path}.models`, `Expected at most ${MAX_ITEMS} models`);
-  const models = [];
-  for (let index = 0; index < object.value.models.length; index += 1) {
-    const model = asObject(object.value.models[index], ["id", "displayName"], ["id", "displayName"], `${path}.models[${index}]`);
-    if (!model.ok) return model;
-    const modelId = optionalSafeName(model.value.id, `${path}.models[${index}].id`);
-    if (!modelId.ok) return modelId;
-    const modelName = title(model.value.displayName, `${path}.models[${index}].displayName`);
-    if (!modelName.ok) return modelName;
-    models.push({ id: modelId.value, displayName: modelName.value });
-  }
-  return valid({ id: id.value, displayName: displayName.value, available: available.value, models });
-}
-function parseProvidersResult(value) {
-  const object = asObject(value, ["providers"], ["providers"]);
-  if (!object.ok) return object;
-  if (!Array.isArray(object.value.providers) || object.value.providers.length > 64) return invalid("$.providers", "Expected at most 64 providers");
-  const providers = [];
-  for (let index = 0; index < object.value.providers.length; index += 1) {
-    const item = parseProviderChoice(object.value.providers[index], `$.providers[${index}]`);
-    if (!item.ok) return item;
-    providers.push(item.value);
-  }
-  return valid({ providers });
-}
-function parseStorageKey(value, path = "$.key") {
-  return stringValue(value, path, { min: 1, max: 128, pattern: STORAGE_KEY_PATTERN, label: "Storage key" });
-}
-function parseStorageGetParams(value) {
-  const object = asObject(value, ["key"], ["key"]);
-  if (!object.ok) return object;
-  const key = parseStorageKey(object.value.key);
-  return key.ok ? valid({ key: key.value }) : key;
-}
-function parseStorageGetResult(value) {
-  if (value === null || Array.isArray(value) || typeof value !== "object" || typeof value.found !== "boolean") return invalid("$.found", "Expected a boolean found flag");
-  const object = value.found ? asObject(value, ["found", "value"], ["found", "value"]) : asObject(value, ["found"], ["found"]);
-  if (!object.ok) return object;
-  if (!value.found) return valid({ found: false });
-  const stored = validateJsonValue(object.value.value, { maxBytes: BRIDGE_MAX_STORAGE_VALUE_BYTES, maxDepth: 12 });
-  return stored.ok ? valid({ found: true, value: stored.value }) : stored;
-}
-function parseStorageSetParams(value) {
-  const object = asObject(value, ["key", "value"], ["key", "value"]);
-  if (!object.ok) return object;
-  const key = parseStorageKey(object.value.key);
-  if (!key.ok) return key;
-  const stored = validateJsonValue(object.value.value, { maxBytes: BRIDGE_MAX_STORAGE_VALUE_BYTES, maxDepth: 12 });
-  if (!stored.ok) return stored;
-  return valid({ key: key.value, value: stored.value });
-}
-function parseStoredResult(value) {
-  const object = asObject(value, ["stored"], ["stored"]);
-  if (!object.ok) return object;
-  const stored = booleanValue(object.value.stored, "$.stored");
-  return stored.ok ? valid({ stored: stored.value }) : stored;
-}
-function parseVoiceParams(value) {
-  const object = asObject(value, ["language", "prompt", "maxDurationSeconds"], []);
-  if (!object.ok) return object;
-  const language = object.value.language === void 0 ? void 0 : stringValue(object.value.language, "$.language", { min: 2, max: 64, pattern: /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/, label: "Language" });
-  if (language && !language.ok) return language;
-  const voicePrompt = object.value.prompt === void 0 ? void 0 : stringValue(object.value.prompt, "$.prompt", { max: 1e3, label: "Transcription prompt" });
-  if (voicePrompt && !voicePrompt.ok) return voicePrompt;
-  const maxDurationSeconds = object.value.maxDurationSeconds === void 0 ? valid(120) : integerValue(object.value.maxDurationSeconds, "$.maxDurationSeconds", 1, 120);
-  if (!maxDurationSeconds.ok) return maxDurationSeconds;
-  return valid({ ...language ? { language: language.value } : {}, ...voicePrompt ? { prompt: voicePrompt.value } : {}, maxDurationSeconds: maxDurationSeconds.value });
-}
-function parseVoiceResult(value) {
-  const object = asObject(value, ["text"], ["text"]);
-  if (!object.ok) return object;
-  const text = stringValue(object.value.text, "$.text", { max: MAX_RESULT_TEXT_LENGTH, label: "Transcription" });
-  return text.ok ? valid({ text: text.value }) : text;
-}
-function excerpt(text) {
-  const singleLine = text.replace(/\s+/g, " ").trim();
-  return singleLine.length <= 80 ? singleLine : `${singleLine.slice(0, 79)}\u2026`;
-}
-var strictParitySpecs = [
-  {
-    method: "context.get",
-    description: "Read the current Thread Page context and capability roster.",
-    effect: "read",
-    confirmation: "none",
-    validateParams: jsonValidator(noParams),
-    validateResult: jsonValidator(parseContextResult)
-  },
-  {
-    method: "thread.activity",
-    description: "Read this thread's current state and recent presented activity.",
-    effect: "read",
-    confirmation: "none",
-    validateParams: jsonValidator(parseActivityParams),
-    validateResult: jsonValidator(parseActivityResult)
-  },
-  {
-    method: "threads.snapshot",
-    description: "Read a bounded, projected snapshot of threads and page status.",
-    effect: "read",
-    confirmation: "none",
-    validateParams: jsonValidator(parseSnapshotParams),
-    validateResult: jsonValidator(parseSnapshotResult)
-  },
-  {
-    method: "thread.reply",
-    description: "Reply to the Thread Page's owning thread.",
-    effect: "current-thread-write",
-    confirmation: "none",
-    validateParams: jsonValidator(parseReplyParams),
-    validateResult: jsonValidator(parseDeliveryResult)
-  },
-  {
-    method: "threads.continue",
-    description: "Send a prompt to another existing thread.",
-    effect: "cross-thread-write",
-    confirmation: "trusted-outer",
-    summarize: (params) => `Continue thread ${params.threadId}: ${excerpt(params.prompt)}`,
-    validateParams: jsonValidator(parseContinueParams),
-    validateResult: jsonValidator(parseContinueResult)
-  },
-  {
-    method: "threads.spawn",
-    description: "Start a visible root thread in a selected project.",
-    effect: "cross-thread-write",
-    confirmation: "trusted-outer",
-    summarize: (params) => `Start a thread in ${params.projectId}: ${excerpt(params.prompt)}`,
-    validateParams: jsonValidator(parseSpawnParams),
-    validateResult: jsonValidator((value) => {
-      const object = asObject(value, ["threadId"], ["threadId"]);
-      if (!object.ok) return object;
-      const threadId = entityId(object.value.threadId, "$.threadId");
-      return threadId.ok ? valid({ threadId: threadId.value }) : threadId;
-    })
-  },
-  {
-    method: "threads.openPage",
-    description: "Open another Thread Page using trusted client navigation.",
-    effect: "navigation",
-    confirmation: "none",
-    summarize: (params) => `Open the Thread Page for ${params.threadId}`,
-    validateParams: jsonValidator(parseThreadTarget),
-    validateResult: jsonValidator((value) => parseBooleanResult("opened", value))
-  },
-  {
-    method: "threads.openBb",
-    description: "Open a thread in the bb application.",
-    effect: "navigation",
-    confirmation: "none",
-    summarize: (params) => `Open thread ${params.threadId} in bb`,
-    validateParams: jsonValidator(parseThreadTarget),
-    validateResult: jsonValidator((value) => parseBooleanResult("opened", value))
-  },
-  {
-    method: "threads.stop",
-    description: "Stop the selected thread's active provider runtime.",
-    effect: "destructive",
-    confirmation: "trusted-outer",
-    summarize: (params) => `Stop thread ${params.threadId}`,
-    validateParams: jsonValidator(parseThreadTarget),
-    validateResult: jsonValidator((value) => parseBooleanResult("stopped", value))
-  },
-  {
-    method: "threads.archive",
-    description: "Archive a selected thread.",
-    effect: "destructive",
-    confirmation: "trusted-outer",
-    summarize: (params) => `Archive thread ${params.threadId}`,
-    validateParams: jsonValidator(parseThreadTarget),
-    validateResult: jsonValidator((value) => parseBooleanResult("archived", value))
-  },
-  {
-    method: "navigation.openExternal",
-    description: "Open an external http or https URL through trusted client chrome.",
-    effect: "navigation",
-    confirmation: "trusted-outer",
-    summarize: (params) => {
-      const target = new URL(params.url);
-      return `Open ${params.label ? `\u201C${params.label}\u201D at ` : ""}${target.origin}`;
-    },
-    validateParams: jsonValidator(parseOpenExternalParams),
-    validateResult: jsonValidator((value) => parseBooleanResult("opened", value))
-  },
-  {
-    method: "projects.list",
-    description: "Read safe project choices without host or path details.",
-    effect: "read",
-    confirmation: "none",
-    validateParams: jsonValidator(noParams),
-    validateResult: jsonValidator(parseProjectsResult)
-  },
-  {
-    method: "projects.browse",
-    description: "Open a trusted folder picker and return an opaque selection token.",
-    effect: "device",
-    confirmation: "trusted-outer",
-    summarize: () => "Choose a project folder on this device",
-    validateParams: jsonValidator(parseBrowseParams),
-    validateResult: jsonValidator(parseBrowseResult)
-  },
-  {
-    method: "projects.create",
-    description: "Create a project from a trusted folder-picker selection.",
-    effect: "cross-thread-write",
-    confirmation: "trusted-outer",
-    summarize: (params) => `Create project ${params.name ? `\u201C${params.name}\u201D` : "from the selected folder"}`,
-    validateParams: jsonValidator(parseCreateProjectParams),
-    validateResult: jsonValidator((value) => {
-      const object = asObject(value, ["project"], ["project"]);
-      if (!object.ok) return object;
-      const project = parseProjectChoice(object.value.project, "$.project");
-      return project.ok ? valid({ project: project.value }) : project;
-    })
-  },
-  {
-    method: "providers.list",
-    description: "Read available provider and model choices.",
-    effect: "read",
-    confirmation: "none",
-    validateParams: jsonValidator(noParams),
-    validateResult: jsonValidator(parseProvidersResult)
-  },
-  {
-    method: "storage.get",
-    description: "Read small JSON state scoped to the owning Thread Page.",
-    effect: "read",
-    confirmation: "none",
-    validateParams: jsonValidator(parseStorageGetParams),
-    validateResult: jsonValidator(parseStorageGetResult)
-  },
-  {
-    method: "storage.set",
-    description: "Write small JSON state scoped to the owning Thread Page.",
-    effect: "current-thread-write",
-    confirmation: "none",
-    validateParams: jsonValidator(parseStorageSetParams),
-    validateResult: jsonValidator(parseStoredResult)
-  },
-  {
-    method: "voice.captureAndTranscribe",
-    description: "Record and transcribe voice through trusted client chrome.",
-    effect: "device",
-    confirmation: "trusted-outer",
-    summarize: () => "Allow this Thread Page to record and transcribe voice",
-    validateParams: jsonValidator(parseVoiceParams),
-    validateResult: jsonValidator(parseVoiceResult)
-  }
-];
-var strictParityCapabilityRegistry = createCapabilityRegistry(strictParitySpecs);
-function capabilityDescriptors(registry = strictParityCapabilityRegistry) {
-  return registry.list().map(({ method, effect, confirmation }) => ({
-    method,
-    effect,
-    confirmation
-  }));
 }
 
-// server.ts
-var MAX_SUBMISSION_BYTES = 64 * 1024;
-var ASSET_DIRNAME = "thread-page-assets";
-var ASSET_PREVIEW_TTL_MS = 10 * 60 * 1e3;
-var MAX_CACHE_VALUE_BYTES = 240 * 1024;
-var MAX_MEMORY_CACHE_BYTES = 8 * 1024 * 1024;
-var MAX_MEMORY_CACHE_ENTRIES = 32;
-var SUBMISSION_TTL_MS = 5 * 60 * 1e3;
-var MAX_RECENT_SUBMISSIONS = 512;
-var MAX_BRIDGE_BODY_BYTES = BRIDGE_MAX_SERIALIZED_BYTES + 8 * 1024;
-var SIGNING_KEY_KV_KEY = "page-signing-key:v2";
-var ENABLED_BRIDGE_METHODS = /* @__PURE__ */ new Set([
-  "context.get",
-  "thread.activity",
-  "thread.reply",
-  "threads.snapshot",
-  "projects.list",
-  "providers.list",
-  "threads.continue",
-  "threads.spawn",
-  "threads.archive",
-  "threads.stop",
-  "threads.openPage",
-  "threads.openBb",
-  "navigation.openExternal",
-  "storage.get",
-  "storage.set",
-  "projects.browse",
-  "projects.create"
-]);
-var SELECTION_TTL_MS = 10 * 60 * 1e3;
-var enabledBridgeRegistry = createCapabilityRegistry(
-  strictParityCapabilityRegistry.list().filter((capability) => ENABLED_BRIDGE_METHODS.has(capability.method))
-);
-var PageNotFoundError = class extends Error {
-  constructor() {
-    super("Thread page has not been initialized");
-    this.name = "PageNotFoundError";
-  }
-};
-var PageTooLargeError = class extends Error {
-  constructor() {
-    super(`Thread page exceeds ${MAX_PAGE_BYTES} bytes`);
-    this.name = "PageTooLargeError";
-  }
-};
-var PageUnavailableError = class extends Error {
-  constructor(options) {
-    super("Thread page source is unavailable", options);
-    this.name = "PageUnavailableError";
-  }
-};
-function isValidThreadId(value) {
-  return value !== null && /^[A-Za-z0-9_-]{3,128}$/.test(value);
-}
-function errorText(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-function recordValue(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
-}
-var ACTIVITY_LABELS = {
-  agentMessage: ["Writing", "Wrote"],
-  reasoning: ["Thinking", "Thought"]
-};
-function activityState(thread) {
-  const runtime = recordValue(thread.runtime);
-  const display = typeof runtime?.displayStatus === "string" ? runtime.displayStatus : typeof thread.status === "string" ? thread.status : "idle";
-  if (["active", "starting", "provisioning", "stopping"].includes(display)) {
-    return "working";
-  }
-  if (display === "error") return "failed";
-  if (thread.hasPendingInteraction === true) return "waiting";
-  return "idle";
-}
-function activityItems(events, limit) {
-  const out = [];
-  for (const rawEvent of events) {
-    const event = recordValue(rawEvent);
-    if (!event) continue;
-    const type = event.type;
-    if (type !== "item/started" && type !== "item/completed") continue;
-    const done = type === "item/completed";
-    const data = recordValue(event.data);
-    const item = recordValue(data?.item) ?? data;
-    if (!item || typeof item.type !== "string") continue;
-    const presentation = recordValue(item.presentation);
-    const labels = recordValue(presentation?.label);
-    const presented = labels?.[done ? "completed" : "pending"];
-    const fallback = ACTIVITY_LABELS[item.type];
-    const label = typeof presented === "string" ? presented : fallback ? fallback[done ? 1 : 0] : null;
-    if (!label) continue;
-    const detail = presentation?.title ?? item.command ?? item.text ?? item.name ?? "";
-    const atMs = typeof event.createdAt === "number" && Number.isFinite(event.createdAt) ? Math.max(0, Math.trunc(event.createdAt)) : 0;
-    out.push({
-      kind: item.type.slice(0, 80),
-      done,
-      atMs,
-      label: label.trim().slice(0, 80) || (done ? "Completed" : "Working"),
-      text: String(detail).replace(/\s+/g, " ").trim().slice(0, 200)
-    });
-  }
-  out.reverse();
-  return out.slice(-limit);
-}
-function snapshotStatus(thread) {
-  const state = activityState(thread);
-  if (state === "working") return "active";
-  if (state === "failed") return "failed";
-  if (state === "waiting") return "waiting";
-  return "idle";
-}
-function isMissingFileError(error) {
-  if (error && typeof error === "object") {
-    const record = error;
-    if (record.code === "ENOENT" || record.status === 404) return true;
-  }
-  return /\b(enoent|not found|does not exist|no such file)\b/i.test(
-    errorText(error)
-  );
-}
-function storageRoot(storageRootPath) {
-  return storageRootPath.replace(/[\\/]+$/, "");
-}
-function pagePath(storageRootPath) {
-  return `${storageRoot(storageRootPath)}/${PAGE_FILENAME}`;
-}
-function assetDirPath(storageRootPath) {
-  return `${storageRoot(storageRootPath)}/${ASSET_DIRNAME}`;
-}
-function uploadDirPath(storageRootPath) {
-  return `${storageRoot(storageRootPath)}/${UPLOAD_DIRNAME}`;
-}
-function cacheKey(threadId) {
-  return `cache:${threadId}`;
-}
-function isEligibleThread(thread) {
-  return thread.visibility === "visible" && thread.parentThreadId === null && thread.sourceThreadId === null && thread.archivedAt === null && thread.deletedAt === null;
-}
-function isCachedPage(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const entry = value;
-  return typeof entry.fragment === "string" && Buffer.byteLength(entry.fragment, "utf8") <= MAX_PAGE_BYTES && typeof entry.hash === "string" && /^[a-f0-9]{64}$/.test(entry.hash) && sha256Text(entry.fragment) === entry.hash && typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt);
-}
-function createPageStore(bb) {
-  const memory = /* @__PURE__ */ new Map();
-  let memoryBytes = 0;
-  function cacheBytes(page) {
-    return Buffer.byteLength(page.fragment, "utf8") + 128;
-  }
-  function retain(threadId, page) {
-    const existing = memory.get(threadId);
-    if (existing) {
-      memoryBytes -= cacheBytes(existing);
-      memory.delete(threadId);
-    }
-    memory.set(threadId, page);
-    memoryBytes += cacheBytes(page);
-    while (memory.size > MAX_MEMORY_CACHE_ENTRIES || memoryBytes > MAX_MEMORY_CACHE_BYTES) {
-      const oldest = memory.keys().next().value;
-      if (!oldest) break;
-      const removed = memory.get(oldest);
-      memory.delete(oldest);
-      if (removed) memoryBytes -= cacheBytes(removed);
-    }
-  }
-  async function remember(threadId, page) {
-    const previous = memory.get(threadId);
-    retain(threadId, page);
-    if (previous?.hash === page.hash) return;
-    if (Buffer.byteLength(JSON.stringify(page), "utf8") > MAX_CACHE_VALUE_BYTES) {
-      bb.log.debug(
-        `Thread Page ${threadId} is too large for the durable offline cache`
-      );
-      try {
-        await bb.storage.kv.delete(cacheKey(threadId));
-      } catch (error) {
-        bb.log.warn(
-          `Could not clear obsolete offline cache for ${threadId}: ${errorText(error)}`
-        );
-      }
-      return;
-    }
+// src/serving/upload-route.ts
+import { randomBytes as randomBytes3 } from "node:crypto";
+var BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+function uploadRoute(serving) {
+  const maxBody = Math.ceil(LIMITS.uploadFileBytes * 4 / 3) + 8192;
+  return async (context) => {
+    let release = null;
     try {
-      await bb.storage.kv.set(cacheKey(threadId), page);
+      const body = await readJsonBody(context, maxBody);
+      if (!body || typeof body !== "object" || Array.isArray(body)) throw new PageError("invalid_request", "Invalid upload envelope");
+      const envelope = body;
+      const token = requireActionToken(serving, envelope.actionToken);
+      if (typeof envelope.content !== "string" || !BASE64.test(envelope.content)) throw new PageError("invalid_request", "Attachment content must be base64");
+      release = acquireRate(serving, token.session);
+      await eligibleSession(serving, token.session);
+      const page = await serving.pages.load(token.session);
+      if (page.stale) throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);
+      const bytes = Buffer.from(envelope.content, "base64");
+      if (bytes.byteLength === 0) throw new PageError("invalid_request", "The file is empty");
+      if (bytes.byteLength > LIMITS.uploadFileBytes) throw new PageError("request_too_large", `Attachments must be at most ${mebibytes(LIMITS.uploadFileBytes)}`);
+      const name = uploadFileName(typeof envelope.name === "string" ? envelope.name : "upload", serving.now(), randomBytes3(3).toString("hex"));
+      const location = await serving.host.sessions.storage(token.session);
+      const outcome = await serving.host.files.write(location, `${UPLOAD_DIR}/${name}`, bytes, { onlyIfAbsent: true });
+      if (outcome !== "written") throw new PageError("conflict", "The attachment could not be stored under a fresh name; try again");
+      return jsonResponse({ ok: true, name, path: `${UPLOAD_DIR}/${name}`, sizeBytes: bytes.byteLength });
     } catch (error) {
-      bb.log.warn(
-        `Could not update offline cache for ${threadId}: ${errorText(error)}`
-      );
+      return failureResponse(error, serving.host.log, "POST /upload", false);
+    } finally {
+      release?.();
     }
-  }
-  async function cached(threadId) {
-    const resident = memory.get(threadId);
-    if (resident) {
-      retain(threadId, resident);
-      return resident;
-    }
-    try {
-      const stored = await bb.storage.kv.get(cacheKey(threadId));
-      if (!isCachedPage(stored)) return null;
-      retain(threadId, stored);
-      return stored;
-    } catch (error) {
-      bb.log.warn(
-        `Could not read offline cache for ${threadId}: ${errorText(error)}`
-      );
-      return null;
-    }
-  }
-  async function load(threadId, signal) {
-    try {
-      const location = await bb.sdk.threads.storageLocation({
-        threadId,
-        signal
-      });
-      const file = await bb.sdk.files.read({
-        hostId: location.hostId,
-        path: pagePath(location.storageRootPath),
-        rootPath: location.storageRootPath,
-        signal
-      });
-      if (file.contentEncoding !== "utf8") {
-        throw new Error("Thread page is not UTF-8 text");
-      }
-      if (file.sizeBytes > MAX_PAGE_BYTES || Buffer.byteLength(file.content, "utf8") > MAX_PAGE_BYTES) {
-        throw new PageTooLargeError();
-      }
-      const hash = /^[a-f0-9]{64}$/i.test(file.sha256) ? file.sha256.toLowerCase() : sha256Text(file.content);
-      const page = {
-        fragment: file.content,
-        hash,
-        updatedAt: file.modifiedAtMs ?? Date.now()
-      };
-      await remember(threadId, page);
-      return { ...page, stale: false };
-    } catch (error) {
-      if (error instanceof PageTooLargeError) throw error;
-      if (isMissingFileError(error)) throw new PageNotFoundError();
-      const fallback = await cached(threadId);
-      if (fallback) return { ...fallback, stale: true };
-      throw new PageUnavailableError({ cause: error });
-    }
-  }
-  return { load, remember };
+  };
 }
-async function getSigningKey(bb) {
+
+// src/serving/routes.ts
+function registerRoutes(bb, serving) {
+  const dispatch = createDispatcher(serving, ALL_HANDLERS);
+  bb.http.route("GET", "/page", shellRoute(serving), { auth: "local" });
+  bb.http.route("GET", "/document", documentRoute(serving), { auth: "local" });
+  bb.http.route("GET", "/home", homeRoute(serving), { auth: "local" });
+  bb.http.route("POST", "/submit", submitRoute(serving), { auth: "local" });
+  bb.http.route("POST", "/upload", uploadRoute(serving), { auth: "local" });
+  bb.http.route("POST", "/bridge", bridgeRoute(dispatch), { auth: "local" });
+}
+
+// src/serving/signing-key.ts
+import { randomBytes as randomBytes4 } from "node:crypto";
+var KEY = "signing-key:v3";
+async function loadSigningKey(host) {
   try {
-    const stored = await bb.storage.kv.get(SIGNING_KEY_KV_KEY);
+    const stored = await host.kv.get(KEY);
     if (typeof stored === "string" && /^[A-Za-z0-9_-]{43}$/.test(stored)) {
       const decoded = Buffer.from(stored, "base64url");
       if (decoded.byteLength === 32) return decoded;
     }
   } catch (error) {
-    bb.log.warn(`Could not read viewer signing key: ${errorText(error)}`);
+    host.log.warn(`signing key: could not read the stored key: ${errorText(error)}`);
   }
-  const generated = randomBytes(32);
+  const generated = randomBytes4(32);
   try {
-    await bb.storage.kv.set(SIGNING_KEY_KV_KEY, generated.toString("base64url"));
+    await host.kv.set(KEY, generated.toString("base64url"));
   } catch (error) {
-    bb.log.warn(
-      `Viewer sessions will reset on plugin reload: ${errorText(error)}`
-    );
+    host.log.warn(`signing key: could not persist; open pages will need a reload after the next plugin reload: ${errorText(error)}`);
   }
   return generated;
 }
-function commonHeaders() {
-  return new Headers({
-    "cache-control": "no-store, max-age=0",
-    "content-type": "text/html; charset=utf-8",
-    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
-    "referrer-policy": "no-referrer",
-    "x-content-type-options": "nosniff"
-  });
-}
-function outerHeaders(nonce) {
-  const headers = commonHeaders();
-  headers.set(
-    "content-security-policy",
-    [
-      "default-src 'none'",
-      "base-uri 'none'",
-      "connect-src 'self'",
-      "form-action 'none'",
-      "frame-ancestors 'self'",
-      "frame-src 'self'",
-      `script-src 'nonce-${nonce}'`,
-      `style-src 'nonce-${nonce}'`
-    ].join("; ")
-  );
-  return headers;
-}
-function assetCspSource(assetBase, requestUrl) {
-  if (!assetBase) return null;
-  try {
-    return new URL(assetBase, requestUrl).href;
-  } catch {
-    return null;
-  }
-}
-function documentHeaders(_nonce, page, assetBase, activity) {
-  const headers = commonHeaders();
-  const assetSource = assetBase ? ` ${assetBase}` : "";
-  headers.set(
-    "content-security-policy",
-    [
-      "default-src 'none'",
-      // The injected <base> must be allowed, but only for the confined preview.
-      assetBase ? `base-uri ${assetBase}` : "base-uri 'none'",
-      "connect-src 'none'",
-      "form-action 'none'",
-      "frame-ancestors 'self'",
-      "frame-src 'none'",
-      "object-src 'none'",
-      `img-src data: blob:${assetSource}`,
-      `media-src data: blob:${assetSource}`,
-      `font-src data:${assetSource}`,
-      "sandbox allow-scripts allow-forms",
-      `script-src 'unsafe-inline'${assetSource}`,
-      "script-src-attr 'unsafe-inline'",
-      `style-src 'unsafe-inline'${assetSource}`,
-      "style-src-attr 'unsafe-inline'"
-    ].join("; ")
-  );
-  if (page) {
-    headers.set("etag", etagForHash(page.hash));
-    headers.set("x-thread-page-stale", String(page.stale));
-    if (activity) headers.set("x-thread-page-activity", activity);
-    headers.set("x-thread-page-updated-at", String(page.updatedAt));
-  }
-  return headers;
-}
-function jsonResponse(value, status = 200) {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: {
-      "cache-control": "no-store, max-age=0",
-      "content-type": "application/json; charset=utf-8",
-      "x-content-type-options": "nosniff"
-    }
-  });
-}
-function parseBridgeEnvelope(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const input = value;
-  const keys = Object.keys(input);
-  const allowed = /* @__PURE__ */ new Set(["actionToken", "request", "confirmation"]);
-  if (keys.length < 2 || keys.length > 3 || !keys.includes("actionToken") || !keys.includes("request") || keys.some((key) => !allowed.has(key)) || typeof input.actionToken !== "string" || input.actionToken.length > 4096) {
-    return null;
-  }
-  const confirmation = input.confirmation;
-  if (confirmation !== void 0 && confirmation !== null && (typeof confirmation !== "string" || confirmation.length > 4096)) {
-    return null;
-  }
-  return {
-    actionToken: input.actionToken,
-    request: input.request,
-    confirmation: typeof confirmation === "string" ? confirmation : null
+
+// src/plugin.ts
+async function createPlugin(bb, options = {}) {
+  const settings = await defineSettings(bb);
+  const host = options.host ?? createBbHost(bb);
+  const signingKey = await loadSigningKey(host);
+  const routeBase = `/api/v1/plugins/${bb.pluginId}/http`;
+  const site = options.site ? options.site(routeBase) : createCoreStorageSite(routeBase, (session) => `/api/v1/threads/${encodeURIComponent(session)}/thread-storage/files/`);
+  const serving = {
+    host,
+    pages: createPageStore(host),
+    settings,
+    signingKey,
+    site,
+    routeBase,
+    registry: capabilityRegistry,
+    rate: createRateLimiter(),
+    submissions: createOutcomeMemory(),
+    replies: createOutcomeMemory(),
+    selections: createSelectionStore(),
+    hostSessionUrl: (session) => `/threads/${encodeURIComponent(session)}`,
+    now: options.now ?? (() => Date.now())
   };
-}
-function requestIdFrom(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value.id : void 0;
-}
-function bridgeFailureStatus(code) {
-  if (code === "unknown_method") return 404;
-  if (code === "stale_page" || code === "conflict") return 409;
-  if (code === "unavailable") return 503;
-  if (code === "handler_error" || code === "invalid_result") return 500;
-  return 400;
-}
-function stableJsonStringify(value) {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableJsonStringify(item)).join(",")}]`;
-  }
-  return `{${Object.keys(value).sort().map(
-    (key) => `${JSON.stringify(key)}:${stableJsonStringify(value[key])}`
-  ).join(",")}}`;
-}
-function errorPage(message, status) {
-  const nonce = randomBytes(18).toString("base64url");
-  const headers = documentHeaders(nonce);
-  return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thread Page</title><style nonce="${nonce}">body{max-width:42rem;margin:4rem auto;padding:0 1rem;font:16px/1.5 system-ui;color:CanvasText;background:Canvas}h1{font-size:1.4rem}</style></head><body><main><h1>Thread Page</h1><p>${escapeHtml(message)}</p></main></body></html>`,
-    { status, headers }
-  );
-}
-function errorStatus(error) {
-  if (error instanceof PageNotFoundError) return 404;
-  if (error instanceof PageTooLargeError) return 413;
-  return 503;
-}
-function publicMessage(error) {
-  if (error instanceof PageNotFoundError) {
-    return "This thread has no page yet. Run `bb thread-page init` in the thread first.";
-  }
-  if (error instanceof PageTooLargeError) {
-    return `The thread page is larger than ${MAX_PAGE_BYTES / 1024} KiB.`;
-  }
-  return "The thread page is unavailable. Reconnect its source host and try again.";
-}
-function parseIfNoneMatch(value) {
-  if (!value) return [];
-  return value.split(",").map((item) => item.trim());
-}
-async function threadPagesPlugin(bb) {
-  const settings = bb.settings.define({
-    agentInstructions: {
-      type: "boolean",
-      label: "Agent initialization hint",
-      description: "Tell each new agent session to initialize and directly edit its Thread Page.",
-      default: false
-    },
-    workingLabel: {
-      type: "string",
-      label: "Working indicator text",
-      description: "Shown in the page header while the thread is mid-turn, so a reader knows a new version is coming. Blank hides the indicator.",
-      default: "Working \u2014 this is the last saved version"
-    },
-    homeThreadId: {
-      type: "string",
-      label: "Home page thread",
-      description: "Thread whose page is the home page every other page links back to. Set it with `bb thread-page home`.",
-      default: ""
-    },
-    pageSeedHtml: {
-      type: "string",
-      label: "New-page HTML seed",
-      description: "Full HTML used only when bb thread-page init creates a missing page. {{TITLE}} is escaped and replaced.",
-      experimental_multiline: true,
-      default: DEFAULT_PAGE_SEED
-    },
-    agentInstructionText: {
-      type: "string",
-      label: "Agent instruction",
-      description: "Short instruction injected into eligible new sessions when Agent initialization hint is enabled.",
-      experimental_multiline: true,
-      default: DEFAULT_AGENT_INSTRUCTION
-    }
-  });
-  let currentSettings = await settings.get();
-  settings.onChange((next) => {
-    currentSettings = next;
-  });
+  const effectiveInstruction = () => {
+    const current = settings.current();
+    return current.agentInstructions && current.agentInstructionText.trim() ? current.agentInstructionText : null;
+  };
   bb.agents.configure((context) => {
-    const base = { tools: [], skills: [] };
-    const isRootOwnerThread = context.thread.parentThreadId === null && context.thread.sourceThreadId === null && context.origin.kind === null;
-    return currentSettings.agentInstructions && isRootOwnerThread ? {
-      ...base,
-      instructions: currentSettings.agentInstructionText
-    } : base;
+    const instruction = effectiveInstruction();
+    const root = context.thread.parentThreadId === null && context.thread.sourceThreadId === null && context.origin.kind === null;
+    return instruction && root ? { tools: [], skills: [], instructions: instruction } : { tools: [], skills: [] };
   });
-  const signingKey = await getSigningKey(bb);
-  const pages = createPageStore(bb);
-  const baseRoute = `/api/v1/plugins/${bb.pluginId}/http`;
-  const folderSelections = /* @__PURE__ */ new Map();
-  function pruneSelections(now) {
-    for (const [token, selection] of folderSelections) {
-      if (selection.expiresAt <= now) folderSelections.delete(token);
-    }
-    while (folderSelections.size > 32) {
-      const oldest = folderSelections.keys().next().value;
-      if (oldest === void 0) break;
-      folderSelections.delete(oldest);
-    }
-  }
-  let cachedOrigin = null;
-  async function publicOrigin() {
-    const now = Date.now();
-    if (cachedOrigin && now - cachedOrigin.at < 3e4) {
-      return cachedOrigin.origin;
-    }
-    let origin = null;
-    try {
-      const status = await bb.sdk.plugins.callRpc({
-        pluginId: "connect",
-        method: "status",
-        input: null,
-        // The Connect contract validates its own output; we only read two
-        // fields, so an identity schema keeps zod out of this plugin.
-        outputSchema: {
-          parse: (value) => value
-        }
-      });
-      if (status && status.state === "connected" && typeof status.url === "string") {
-        origin = new URL(status.url).origin;
-      }
-    } catch {
-      origin = null;
-    }
-    cachedOrigin = origin === null ? null : { at: now, origin };
-    return origin;
-  }
-  async function pageAvailability(threadId) {
-    try {
-      const page = await pages.load(threadId);
-      return { available: true, revision: page.hash };
-    } catch {
-      return { available: false, revision: null };
-    }
-  }
-  const assetPreviews = /* @__PURE__ */ new Map();
-  async function assetBaseUrl(threadId, signal) {
-    const now = Date.now();
-    const cached = assetPreviews.get(threadId);
-    if (cached && cached.expiresAtMs - 3e4 > now) return cached.baseUrl;
-    try {
-      const location = await bb.sdk.threads.storageLocation({
-        threadId,
-        signal
-      });
-      const rootPath = assetDirPath(location.storageRootPath);
-      const listed = await bb.sdk.files.list({
-        hostId: location.hostId,
-        path: rootPath,
-        limit: 1,
-        signal
-      });
-      if (!listed) return null;
-      const preview = await bb.sdk.files.createPreview({
-        hostId: location.hostId,
-        rootPath,
-        ttlMs: ASSET_PREVIEW_TTL_MS,
-        signal
-      });
-      const baseUrl = preview.baseUrl.endsWith("/") ? preview.baseUrl : `${preview.baseUrl}/`;
-      assetPreviews.set(threadId, {
-        baseUrl,
-        expiresAtMs: preview.expiresAtMs
-      });
-      if (assetPreviews.size > 64) {
-        for (const [key, value] of assetPreviews) {
-          if (value.expiresAtMs <= now) assetPreviews.delete(key);
-        }
-      }
-      return baseUrl;
-    } catch {
-      return null;
-    }
-  }
-  const recentSubmissions = /* @__PURE__ */ new Map();
-  const recentReplies = /* @__PURE__ */ new Map();
-  const viewerRates = /* @__PURE__ */ new Map();
-  function acquireViewerRequest(threadId, actionToken, now) {
-    for (const [key2, entry2] of viewerRates) {
-      if (entry2.inFlight === 0 && now - entry2.touchedAt > VIEWER_TOKEN_TTL_MS) {
-        viewerRates.delete(key2);
-      }
-    }
-    const key = `${threadId}:${sha256Text(actionToken)}`;
-    const current = viewerRates.get(key);
-    const entry = current ?? { windowStartedAt: now, accepted: 0, inFlight: 0, touchedAt: now };
-    if (now - entry.windowStartedAt >= 6e4) {
-      entry.windowStartedAt = now;
-      entry.accepted = 0;
-    }
-    if (entry.inFlight >= 4 || entry.accepted >= 30) return null;
-    entry.accepted += 1;
-    entry.inFlight += 1;
-    entry.touchedAt = now;
-    viewerRates.set(key, entry);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      entry.inFlight = Math.max(0, entry.inFlight - 1);
-      entry.touchedAt = Date.now();
-    };
-  }
-  function pruneSubmissions(now) {
-    for (const [key, entry] of recentSubmissions) {
-      if (entry.expiresAt <= now) recentSubmissions.delete(key);
-    }
-    while (recentSubmissions.size >= MAX_RECENT_SUBMISSIONS) {
-      const oldest = recentSubmissions.keys().next().value;
-      if (!oldest) break;
-      recentSubmissions.delete(oldest);
-    }
-  }
-  function pruneReplies(now) {
-    for (const [key, entry] of recentReplies) {
-      if (entry.expiresAt <= now) recentReplies.delete(key);
-    }
-    while (recentReplies.size >= MAX_RECENT_SUBMISSIONS) {
-      const oldest = recentReplies.keys().next().value;
-      if (!oldest) break;
-      recentReplies.delete(oldest);
-    }
-  }
-  bb.cli.register({
-    name: "thread-page",
-    summary: "Initialize the directly editable HTML page for the current thread",
-    commands: [
-      {
-        name: "init",
-        summary: "Create the current thread's page if it does not exist",
-        usage: "bb thread-page init"
-      },
-      {
-        name: "guide",
-        summary: "Print the optional authoring and bridge guide",
-        usage: "bb thread-page guide"
-      },
-      {
-        name: "home",
-        summary: "Make this thread's page the home page every page links to",
-        usage: "bb thread-page home [--clear]"
-      }
-    ],
-    async run(argv, context) {
-      if (argv.length === 1 && argv[0] === "guide") {
-        return { exitCode: 0, stdout: `${AUTHORING_GUIDE}
-` };
-      }
-      if (argv[0] === "home") {
-        if (argv.length === 2 && argv[1] === "--clear") {
-          await settings.experimental_set({ homeThreadId: null });
-          return {
-            exitCode: 0,
-            stdout: "home: cleared \u2014 pages no longer show a Sessions link\n"
-          };
-        }
-        if (argv.length !== 1) {
-          return {
-            exitCode: 2,
-            stderr: "Usage: bb thread-page home [--clear]\n"
-          };
-        }
-        if (!context.threadId) {
-          return {
-            exitCode: 2,
-            stderr: "Run `bb thread-page home` from the thread that should be home.\n"
-          };
-        }
-        await settings.experimental_set({ homeThreadId: context.threadId });
-        let wrote = false;
-        try {
-          const location = await bb.sdk.threads.storageLocation({
-            threadId: context.threadId,
-            signal: context.signal
-          });
-          const home = renderHomeSeed(currentSettings.pageSeedHtml);
-          const write = await bb.sdk.files.write({
-            hostId: location.hostId,
-            path: pagePath(location.storageRootPath),
-            rootPath: location.storageRootPath,
-            content: home,
-            createParents: true,
-            expectedSha256: null,
-            mode: 384
-          });
-          if (write.outcome === "written") {
-            wrote = true;
-            await pages.remember(context.threadId, {
-              fragment: home,
-              hash: /^[a-f0-9]{64}$/i.test(write.sha256) ? write.sha256.toLowerCase() : sha256Text(home),
-              updatedAt: Date.now()
-            });
-          }
-        } catch (error) {
-          bb.log.warn(
-            `Could not seed the home page for ${context.threadId}: ${errorText(error)}`
-          );
-        }
-        const origin = await publicOrigin();
-        const homeRoute = `${baseRoute}/home`;
-        return {
-          exitCode: 0,
-          stdout: [
-            `home: ${context.threadId}`,
-            `link: [Sessions](${origin ? `${origin}${homeRoute}` : homeRoute})`,
-            "Every other page now shows a Sessions link back to this one.",
-            wrote ? "state: NEW \u2014 a session hub grouped by project was written for you. Adjust it like any page." : "state: EXISTING \u2014 this thread already had a page; it was left alone. It should list threads with threads.snapshot.",
-            ""
-          ].join("\n")
-        };
-      }
-      if (argv.length !== 1 || argv[0] !== "init") {
-        return {
-          exitCode: 2,
-          stderr: "Usage: bb thread-page <init|guide|home>\n"
-        };
-      }
-      if (!context.threadId) {
-        return {
-          exitCode: 0,
-          stdout: "state: SKIP \u2014 no current root thread; answer normally without creating a page.\n"
-        };
-      }
-      try {
-        const thread = await bb.sdk.threads.get({
-          threadId: context.threadId,
-          signal: context.signal
-        });
-        if (!isEligibleThread(thread)) {
-          return {
-            exitCode: 0,
-            stdout: "state: SKIP \u2014 not a current root owner thread; answer normally without creating a page.\n"
-          };
-        }
-        const location = await bb.sdk.threads.storageLocation({
-          threadId: context.threadId,
-          signal: context.signal
-        });
-        const absolutePath = pagePath(location.storageRootPath);
-        const title2 = thread.title ?? thread.titleFallback ?? "Thread Page";
-        const fragment = renderPageSeed(currentSettings.pageSeedHtml, title2);
-        if (Buffer.byteLength(fragment, "utf8") > MAX_PAGE_BYTES) {
-          throw new PageTooLargeError();
-        }
-        const write = await bb.sdk.files.write({
-          hostId: location.hostId,
-          path: absolutePath,
-          rootPath: location.storageRootPath,
-          content: fragment,
-          createParents: true,
-          expectedSha256: null,
-          mode: 384
-        });
-        let state;
-        if (write.outcome === "written") {
-          state = "created";
-          await pages.remember(context.threadId, {
-            fragment,
-            hash: /^[a-f0-9]{64}$/i.test(write.sha256) ? write.sha256.toLowerCase() : sha256Text(fragment),
-            updatedAt: Date.now()
-          });
-        } else {
-          state = "existing";
-          await pages.load(context.threadId, context.signal);
-        }
-        const route = `${baseRoute}/page?threadId=${encodeURIComponent(context.threadId)}`;
-        const origin = await publicOrigin();
-        const link = origin ? `${origin}${route}` : route;
-        return {
-          exitCode: 0,
-          stdout: [
-            `page: ${absolutePath}`,
-            `link: [Open the Thread Page](${link})`,
-            state === "created" ? "state: NEW \u2014 seeded; make this HTML app fit the task, keep a response path, then reply in chat only with the link." : "state: EXISTING \u2014 read before editing; update the HTML app every turn, keep a response path, then reply in chat only with the link.",
-            "guide: bb thread-page guide  (only when the page needs custom UI, files, activity, or bridge methods)",
-            ""
-          ].join("\n")
-        };
-      } catch (error) {
-        return {
-          exitCode: 1,
-          stderr: `Could not initialize Thread Page: ${errorText(error)}
-`
-        };
-      }
-    }
-  });
-  bb.http.route(
-    "GET",
-    "/page",
-    async (context) => {
-      const threadId = new URL(context.req.url).searchParams.get("threadId");
-      if (!isValidThreadId(threadId)) {
-        return errorPage("A valid threadId query parameter is required.", 400);
-      }
-      try {
-        const thread = await bb.sdk.threads.get({ threadId });
-        if (!isEligibleThread(thread)) {
-          return errorPage("Thread Pages are available only for current root threads.", 404);
-        }
-        const page = await pages.load(threadId);
-        const now = Date.now();
-        const renderPayload = {
-          v: 2,
-          scope: "render",
-          threadId,
-          pageHash: page.hash,
-          iat: now,
-          exp: now + VIEWER_TOKEN_TTL_MS
-        };
-        const actionPayload = {
-          ...renderPayload,
-          scope: "action"
-        };
-        const renderToken = signPageToken(renderPayload, signingKey);
-        const actionToken = signPageToken(actionPayload, signingKey);
-        const documentUrl = `${baseRoute}/document?render=${encodeURIComponent(renderToken)}`;
-        const nonce = randomBytes(18).toString("base64url");
-        const title2 = thread.title ?? thread.titleFallback ?? "Thread Page";
-        const html = renderOuterPage({
-          nonce,
-          title: title2,
-          actionToken,
-          pageHash: page.hash,
-          expiresAt: renderPayload.exp,
-          documentUrl,
-          submitUrl: `${baseRoute}/submit`,
-          uploadUrl: `${baseRoute}/upload`,
-          bridgeUrl: `${baseRoute}/bridge`,
-          pageUrlTemplate: `${baseRoute}/page?threadId=__THREAD__`,
-          bbThreadUrlTemplate: `/threads/__THREAD__`,
-          // The home link is chrome, so every page gets it without the agent
-          // writing one. Home itself gets no link back to itself.
-          homeUrl: isValidThreadId(currentSettings.homeThreadId.trim()) && currentSettings.homeThreadId.trim() !== threadId ? `${baseRoute}/home` : null,
-          working: activityState(thread) === "working",
-          workingLabel: currentSettings.workingLabel,
-          stale: page.stale
-        });
-        return new Response(html, { status: 200, headers: outerHeaders(nonce) });
-      } catch (error) {
-        return errorPage(publicMessage(error), errorStatus(error));
-      }
-    },
-    { auth: "local" }
-  );
-  bb.http.route(
-    "GET",
-    "/home",
-    async () => {
-      const homeThreadId = currentSettings.homeThreadId.trim();
-      if (!isValidThreadId(homeThreadId)) {
-        return errorPage(
-          "No home page is set yet. Run `bb thread-page home` in the thread whose page should be home.",
-          404
-        );
-      }
-      return new Response(null, {
-        status: 302,
-        headers: {
-          location: `${baseRoute}/page?threadId=${encodeURIComponent(homeThreadId)}`,
-          "cache-control": "no-store, max-age=0"
-        }
-      });
-    },
-    { auth: "local" }
-  );
-  const serveDocument = async (context) => {
-    const renderToken = new URL(context.req.url).searchParams.get("render");
-    const payload = renderToken ? verifyPageToken(renderToken, signingKey, "render") : null;
-    if (!payload) return errorPage("This page session is invalid or expired.", 401);
-    try {
-      const thread = await bb.sdk.threads.get({ threadId: payload.threadId });
-      if (!isEligibleThread(thread)) {
-        return errorPage("This thread no longer has an active Thread Page.", 404);
-      }
-      const page = await pages.load(payload.threadId);
-      const nonce = randomBytes(18).toString("base64url");
-      const assetBase = await assetBaseUrl(payload.threadId);
-      const headers = documentHeaders(
-        nonce,
-        page,
-        assetCspSource(assetBase, context.req.url),
-        activityState(thread)
-      );
-      const etag = etagForHash(page.hash);
-      const ifNoneMatch = context.req.header("if-none-match");
-      const matches = parseIfNoneMatch(ifNoneMatch).some(
-        (candidate) => candidate === etag || candidate === "*"
-      );
-      if (matches) return new Response(null, { status: 304, headers });
-      if (ifNoneMatch) return new Response(null, { status: 200, headers });
-      if (page.hash !== payload.pageHash) {
-        return errorPage("This page changed. Reload the outer Thread Page.", 409);
-      }
-      const html = renderDocument({
-        fragment: page.fragment,
-        nonce,
-        pageHash: page.hash,
-        stale: page.stale,
-        assetBase
-      });
-      return new Response(html, { status: 200, headers });
-    } catch (error) {
-      return errorPage(publicMessage(error), errorStatus(error));
-    }
-  };
-  bb.http.route("GET", "/document", serveDocument, { auth: "local" });
-  bb.http.route(
-    "POST",
-    "/upload",
-    async (context) => {
-      const maxBodyBytes = Math.ceil(MAX_UPLOAD_BYTES * 4 / 3) + 4096;
-      const declared = Number(context.req.header("content-length") ?? "0");
-      if (Number.isFinite(declared) && declared > maxBodyBytes) {
-        return jsonResponse(
-          { ok: false, error: "Attachments must be smaller than 24 MiB" },
-          413
-        );
-      }
-      let envelope;
-      try {
-        const decoded = await context.req.json();
-        if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
-          throw new Error("not an object");
-        }
-        envelope = decoded;
-      } catch {
-        return jsonResponse({ ok: false, error: "Invalid JSON body" }, 400);
-      }
-      const actionToken = typeof envelope.actionToken === "string" ? envelope.actionToken : "";
-      const action = actionToken.length > 0 && actionToken.length <= 4096 ? verifyPageToken(actionToken, signingKey, "action") : null;
-      if (!action) {
-        return jsonResponse(
-          { ok: false, error: "Page session is invalid or expired" },
-          401
-        );
-      }
-      if (typeof envelope.content !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(envelope.content) || envelope.content.length > maxBodyBytes) {
-        return jsonResponse(
-          { ok: false, error: "Attachment content must be base64" },
-          400
-        );
-      }
-      const now = Date.now();
-      const releaseRequest = acquireViewerRequest(
-        action.threadId,
-        actionToken,
-        now
-      );
-      if (!releaseRequest) {
-        return jsonResponse(
-          { ok: false, error: "Too many Thread Page requests; try again shortly" },
-          429
-        );
-      }
-      try {
-        const thread = await bb.sdk.threads.get({ threadId: action.threadId });
-        if (!isEligibleThread(thread)) {
-          return jsonResponse(
-            { ok: false, error: "This thread no longer accepts attachments" },
-            409
-          );
-        }
-        const body = Buffer.from(envelope.content, "base64");
-        if (body.byteLength === 0) {
-          return jsonResponse({ ok: false, error: "The file is empty" }, 400);
-        }
-        if (body.byteLength > MAX_UPLOAD_BYTES) {
-          return jsonResponse(
-            { ok: false, error: "Attachments must be smaller than 24 MiB" },
-            413
-          );
-        }
-        const name = safeUploadName(
-          typeof envelope.name === "string" ? envelope.name : "upload"
-        );
-        const stamp = new Date(now).toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
-        const unique = randomBytes(3).toString("hex");
-        const filename = `${stamp}-${unique}-${name}`;
-        const location = await bb.sdk.threads.storageLocation({
-          threadId: action.threadId
-        });
-        const directory = uploadDirPath(location.storageRootPath);
-        await bb.sdk.files.write({
-          hostId: location.hostId,
-          path: `${directory}/${filename}`,
-          rootPath: location.storageRootPath,
-          content: body.toString("base64"),
-          contentEncoding: "base64",
-          createParents: true,
-          expectedSha256: null,
-          mode: 384
-        });
-        return jsonResponse({
-          ok: true,
-          name: filename,
-          path: `${UPLOAD_DIRNAME}/${filename}`,
-          sizeBytes: body.byteLength
-        });
-      } catch (error) {
-        bb.log.warn(
-          `Could not store a Thread Page upload for ${action.threadId}: ${errorText(error)}`
-        );
-        return jsonResponse(
-          { ok: false, error: "The attachment could not be stored" },
-          503
-        );
-      } finally {
-        releaseRequest();
-      }
-    },
-    { auth: "local" }
-  );
-  bb.http.route(
-    "POST",
-    "/submit",
-    async (context) => {
-      const contentLength = Number(context.req.header("content-length") ?? "0");
-      if (Number.isFinite(contentLength) && contentLength > MAX_SUBMISSION_BYTES) {
-        return jsonResponse({ ok: false, error: "Submission is too large" }, 413);
-      }
-      let raw;
-      let decoded;
-      try {
-        raw = await context.req.text();
-        if (Buffer.byteLength(raw, "utf8") > MAX_SUBMISSION_BYTES) {
-          return jsonResponse({ ok: false, error: "Submission is too large" }, 413);
-        }
-        decoded = JSON.parse(raw);
-      } catch {
-        return jsonResponse({ ok: false, error: "Invalid JSON body" }, 400);
-      }
-      const submission = parseSubmission(decoded);
-      if (!submission) {
-        return jsonResponse({ ok: false, error: "Invalid submission" }, 400);
-      }
-      const action = verifyPageToken(
-        submission.actionToken,
-        signingKey,
-        "action"
-      );
-      if (!action) {
-        return jsonResponse(
-          { ok: false, error: "Page session is invalid or expired" },
-          401
-        );
-      }
-      if (submission.pageHash !== action.pageHash) {
-        return jsonResponse(
-          { ok: false, error: "This form belongs to an older page revision" },
-          409
-        );
-      }
-      const now = Date.now();
-      const releaseRequest = acquireViewerRequest(
-        action.threadId,
-        submission.actionToken,
-        now
-      );
-      if (!releaseRequest) {
-        return jsonResponse(
-          { ok: false, error: "Too many Thread Page requests; try again shortly" },
-          429
-        );
-      }
-      try {
-        pruneSubmissions(now);
-        const dedupeKey = `${action.threadId}:${submission.submissionId}`;
-        const fingerprint = sha256Text(
-          JSON.stringify({
-            pageHash: submission.pageHash,
-            title: submission.title,
-            answers: submission.answers,
-            files: submission.files
-          })
-        );
-        const existing = recentSubmissions.get(dedupeKey);
-        if (existing) {
-          if (existing.fingerprint !== fingerprint) {
-            return jsonResponse(
-              { ok: false, error: "Submission ID was reused with different answers" },
-              409
-            );
-          }
-          const repeated = await existing.outcome;
-          return jsonResponse(repeated.body, repeated.status);
-        }
-        const outcome = (async () => {
-          try {
-            const thread = await bb.sdk.threads.get({ threadId: action.threadId });
-            if (!isEligibleThread(thread)) {
-              return {
-                body: {
-                  ok: false,
-                  error: "This thread no longer accepts Thread Page responses"
-                },
-                status: 409
-              };
-            }
-            const page = await pages.load(action.threadId);
-            if (page.stale) {
-              return {
-                body: {
-                  ok: false,
-                  error: "The source host is offline; this cached page is read-only"
-                },
-                status: 503
-              };
-            }
-            if (page.hash !== action.pageHash) {
-              return {
-                body: {
-                  ok: false,
-                  error: "This page changed; reload it before responding"
-                },
-                status: 409
-              };
-            }
-            const sent = await bb.sdk.threads.send({
-              threadId: action.threadId,
-              mode: "queue-if-active",
-              input: [
-                {
-                  type: "text",
-                  text: formatSubmissionMessage(submission),
-                  mentions: []
-                }
-              ]
-            });
-            return {
-              body: { ok: true, delivery: sent.delivery },
-              status: 200
-            };
-          } catch (error) {
-            bb.log.warn(
-              `Could not deliver Thread Page submission to ${action.threadId}: ${errorText(error)}`
-            );
-            return {
-              body: {
-                ok: false,
-                error: "Could not deliver the response to this thread"
-              },
-              status: 503
-            };
-          }
-        })();
-        recentSubmissions.set(dedupeKey, {
-          expiresAt: now + SUBMISSION_TTL_MS,
-          fingerprint,
-          outcome
-        });
-        const delivered = await outcome;
-        return jsonResponse(delivered.body, delivered.status);
-      } finally {
-        releaseRequest();
-      }
-    },
-    { auth: "local" }
-  );
-  bb.http.route(
-    "POST",
-    "/bridge",
-    async (context) => {
-      const contentLength = Number(context.req.header("content-length") ?? "0");
-      if (Number.isFinite(contentLength) && contentLength > MAX_BRIDGE_BODY_BYTES) {
-        return jsonResponse(
-          makeBridgeFailureResponse(
-            void 0,
-            "request_too_large",
-            "Bridge request is too large"
-          ),
-          413
-        );
-      }
-      let decoded;
-      try {
-        const raw = await context.req.text();
-        if (Buffer.byteLength(raw, "utf8") > MAX_BRIDGE_BODY_BYTES) {
-          return jsonResponse(
-            makeBridgeFailureResponse(
-              void 0,
-              "request_too_large",
-              "Bridge request is too large"
-            ),
-            413
-          );
-        }
-        decoded = JSON.parse(raw);
-      } catch {
-        return jsonResponse(
-          makeBridgeFailureResponse(
-            void 0,
-            "invalid_json",
-            "Invalid JSON body"
-          ),
-          400
-        );
-      }
-      const envelope = parseBridgeEnvelope(decoded);
-      if (!envelope) {
-        return jsonResponse(
-          makeBridgeFailureResponse(
-            void 0,
-            "invalid_request",
-            "Invalid bridge envelope"
-          ),
-          400
-        );
-      }
-      const requestId = requestIdFrom(envelope.request);
-      const action = verifyPageToken(
-        envelope.actionToken,
-        signingKey,
-        "action"
-      );
-      if (!action) {
-        return jsonResponse(
-          makeBridgeFailureResponse(
-            requestId,
-            "invalid_request",
-            "Page action session is invalid or expired"
-          ),
-          401
-        );
-      }
-      const releaseRequest = acquireViewerRequest(
-        action.threadId,
-        envelope.actionToken,
-        Date.now()
-      );
-      if (!releaseRequest) {
-        return jsonResponse(
-          makeBridgeFailureResponse(
-            requestId,
-            "rate_limited",
-            "Too many Thread Page requests; try again shortly"
-          ),
-          429
-        );
-      }
-      try {
-        const resolved = resolveBridgeInvocation(
-          envelope.request,
-          enabledBridgeRegistry,
-          action.pageHash
-        );
-        if (!resolved.ok) {
-          return jsonResponse(
-            makeBridgeFailureResponse(
-              requestId,
-              resolved.error.code,
-              resolved.error.message
-            ),
-            bridgeFailureStatus(resolved.error.code)
-          );
-        }
-        const nowForAuth = Date.now();
-        let confirmation = null;
-        if (resolved.value.capability.confirmation === "trusted-outer") {
-          const paramsHash = sha256Text(
-            stableJsonStringify(resolved.value.request.params)
-          );
-          if (envelope.confirmation === null) {
-            const summary = (resolved.value.capability.summarize?.(
-              resolved.value.params
-            ) ?? resolved.value.capability.description).slice(0, 512);
-            const challenge = signConfirmationChallenge(
-              {
-                v: 2,
-                scope: "confirm",
-                threadId: action.threadId,
-                pageHash: action.pageHash,
-                requestId: resolved.value.request.id,
-                method: resolved.value.request.method,
-                paramsHash,
-                summary,
-                iat: nowForAuth,
-                exp: nowForAuth + CONFIRMATION_TTL_MS
-              },
-              signingKey
-            );
-            return jsonResponse(
-              {
-                confirm: {
-                  requestId: resolved.value.request.id,
-                  summary,
-                  challenge
-                }
-              },
-              401
-            );
-          }
-          const verified = verifyConfirmationChallenge(
-            envelope.confirmation,
-            signingKey,
-            nowForAuth
-          );
-          if (!verified || verified.threadId !== action.threadId || verified.pageHash !== action.pageHash || verified.requestId !== resolved.value.request.id || verified.method !== resolved.value.request.method || verified.paramsHash !== paramsHash) {
-            return jsonResponse(
-              makeBridgeFailureResponse(
-                requestId,
-                "confirmation_invalid",
-                "Confirmation is expired or does not match this request"
-              ),
-              bridgeFailureStatus("confirmation_invalid")
-            );
-          }
-          confirmation = createTrustedOuterConfirmation(resolved.value, {
-            confirmedAtMs: verified.iat,
-            expiresAtMs: verified.exp,
-            humanSummary: verified.summary
-          });
-        }
-        const authorized = authorizeBridgeInvocation(
-          resolved.value,
-          confirmation,
-          nowForAuth
-        );
-        if (!authorized.ok) {
-          return jsonResponse(
-            makeBridgeFailureResponse(
-              requestId,
-              authorized.error.code,
-              authorized.error.message
-            ),
-            bridgeFailureStatus(authorized.error.code)
-          );
-        }
-        const invocation = authorized.value;
-        try {
-          const thread = await bb.sdk.threads.get({ threadId: action.threadId });
-          if (!isEligibleThread(thread)) {
-            return jsonResponse(
-              makeBridgeFailureResponse(
-                invocation.request.id,
-                "conflict",
-                "This thread no longer accepts Thread Page actions"
-              ),
-              409
-            );
-          }
-          const page = await pages.load(action.threadId);
-          if (page.hash !== action.pageHash) {
-            return jsonResponse(
-              makeBridgeFailureResponse(
-                invocation.request.id,
-                "stale_page",
-                "The Thread Page revision has changed"
-              ),
-              409
-            );
-          }
-          if (invocation.request.method === "context.get") {
-            const response2 = completeBridgeInvocation(invocation, {
-              protocolVersion: 1,
-              thread: {
-                id: thread.id,
-                title: (thread.title ?? thread.titleFallback ?? "Thread Page").slice(
-                  0,
-                  240
-                ),
-                projectId: thread.projectId ?? null
-              },
-              page: { revision: page.hash, readOnly: page.stale },
-              capabilities: capabilityDescriptors(enabledBridgeRegistry)
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          if (invocation.request.method === "thread.activity") {
-            const params2 = invocation.params;
-            const events = await bb.sdk.threads.events.list({
-              threadId: action.threadId,
-              order: "desc",
-              limit: "80",
-              types: ["item/started", "item/completed"]
-            });
-            const response2 = completeBridgeInvocation(invocation, {
-              state: activityState(thread),
-              updatedAtMs: Math.max(0, Math.trunc(thread.updatedAt)),
-              items: activityItems(events, params2.limit)
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          if (invocation.request.method === "projects.list") {
-            const projects = await bb.sdk.projects.list({
-              includePersonal: true
-            });
-            const response2 = completeBridgeInvocation(invocation, {
-              projects: projects.slice(0, 64).map((project) => ({
-                id: project.id,
-                name: project.name,
-                kind: project.kind === "personal" ? "personal" : "standard"
-              }))
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          if (invocation.request.method === "threads.snapshot") {
-            const params2 = invocation.params;
-            const query = {
-              ...params2.projectId ? { projectId: params2.projectId } : {},
-              limit: params2.limit
-            };
-            const live = await bb.sdk.threads.list(query);
-            const archived = params2.includeArchived ? await bb.sdk.threads.list({ ...query, archived: true }).catch(() => []) : [];
-            const seen = /* @__PURE__ */ new Set();
-            const listed = [...live, ...archived].filter((item) => {
-              if (seen.has(item.id)) return false;
-              seen.add(item.id);
-              return true;
-            }).slice(0, params2.limit);
-            const threads = await Promise.all(
-              listed.map(async (item) => ({
-                id: item.id,
-                title: item.title ?? item.titleFallback ?? "Untitled",
-                projectId: item.projectId ?? null,
-                parentThreadId: item.parentThreadId ?? null,
-                status: snapshotStatus(
-                  item
-                ),
-                archived: item.archivedAt !== null,
-                page: await pageAvailability(item.id),
-                updatedAtMs: Math.max(0, Math.trunc(item.updatedAt))
-              }))
-            );
-            const response2 = completeBridgeInvocation(invocation, {
-              threads,
-              nextCursor: null,
-              generatedAtMs: Date.now()
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          if (invocation.request.method === "threads.continue") {
-            const params2 = invocation.params;
-            if (params2.threadId === action.threadId) {
-              return jsonResponse(
-                makeBridgeFailureResponse(
-                  invocation.request.id,
-                  "invalid_params",
-                  "Use thread.reply for this page's own thread"
-                ),
-                400
-              );
-            }
-            const target = await bb.sdk.threads.get({ threadId: params2.threadId }).catch(() => null);
-            if (!target || target.deletedAt !== null) {
-              return jsonResponse(
-                makeBridgeFailureResponse(
-                  invocation.request.id,
-                  "not_found",
-                  "That thread is not available"
-                ),
-                404
-              );
-            }
-            const wasActive2 = target.status === "active" || target.status === "starting";
-            const sent = await bb.sdk.threads.send({
-              threadId: params2.threadId,
-              mode: params2.mode === "steer" ? "steer-if-active" : "queue-if-active",
-              input: [{ type: "text", text: params2.prompt, mentions: [] }]
-            });
-            const response2 = completeBridgeInvocation(invocation, {
-              threadId: params2.threadId,
-              delivery: sent.delivery === "queued" ? "queued" : params2.mode === "steer" && wasActive2 ? "steered" : "started",
-              duplicate: false
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          if (invocation.request.method === "projects.browse") {
-            const location = await bb.sdk.threads.storageLocation({
-              threadId: action.threadId
-            });
-            const picked = await bb.sdk.hosts.pickFolder({
-              hostId: location.hostId,
-              clientHostId: location.hostId
-            });
-            if (!picked.path) {
-              const response3 = completeBridgeInvocation(invocation, {
-                selection: null
-              });
-              return jsonResponse(response3, response3.ok ? 200 : 500);
-            }
-            const host = await bb.sdk.hosts.get({ hostId: location.hostId }).catch(() => null);
-            const token = `sel.${randomBytes(18).toString("base64url")}`;
-            pruneSelections(Date.now());
-            folderSelections.set(token, {
-              expiresAt: Date.now() + SELECTION_TTL_MS,
-              threadId: action.threadId,
-              hostId: location.hostId,
-              path: picked.path
-            });
-            const response2 = completeBridgeInvocation(invocation, {
-              selection: {
-                token,
-                displayPath: picked.path.replace(/^\/Users\/[^/]+/, "~"),
-                hostName: host?.name ?? "this device"
-              }
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          if (invocation.request.method === "projects.create") {
-            const params2 = invocation.params;
-            pruneSelections(Date.now());
-            const selection = folderSelections.get(params2.selectionToken);
-            if (!selection || selection.threadId !== action.threadId) {
-              return jsonResponse(
-                makeBridgeFailureResponse(
-                  invocation.request.id,
-                  "not_found",
-                  "That folder selection has expired; choose the folder again"
-                ),
-                404
-              );
-            }
-            folderSelections.delete(params2.selectionToken);
-            const created = await bb.sdk.projects.create({
-              name: params2.name ?? selection.path.split("/").pop() ?? "New project",
-              hostId: selection.hostId,
-              path: selection.path
-            });
-            const response2 = completeBridgeInvocation(invocation, {
-              project: {
-                id: created.id,
-                name: created.name,
-                kind: created.kind === "personal" ? "personal" : "standard"
-              }
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          if (invocation.request.method === "storage.get" || invocation.request.method === "storage.set") {
-            const params2 = invocation.params;
-            const key = `state:${action.threadId}:${params2.key}`;
-            if (invocation.request.method === "storage.get") {
-              const stored = await bb.storage.kv.get(key);
-              const response3 = completeBridgeInvocation(
-                invocation,
-                stored === void 0 ? { found: false } : { found: true, value: stored }
-              );
-              return jsonResponse(response3, response3.ok ? 200 : 500);
-            }
-            await bb.storage.kv.set(key, params2.value ?? null);
-            const response2 = completeBridgeInvocation(invocation, {
-              stored: true
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          if (invocation.request.method === "providers.list") {
-            const providers = await bb.sdk.providers.list();
-            const models = await bb.sdk.providers.models().catch(() => []);
-            const byProvider = /* @__PURE__ */ new Map();
-            for (const model of models) {
-              const providerId = typeof model.providerId === "string" ? model.providerId : null;
-              const id = typeof model.id === "string" ? model.id : null;
-              if (!providerId || !id) continue;
-              const list = byProvider.get(providerId) ?? [];
-              if (list.length < 32) {
-                list.push({
-                  id,
-                  displayName: typeof model.displayName === "string" ? model.displayName : id
-                });
-              }
-              byProvider.set(providerId, list);
-            }
-            const response2 = completeBridgeInvocation(invocation, {
-              providers: providers.slice(0, 64).map((provider) => {
-                const id = String(provider.id ?? "");
-                return {
-                  id,
-                  displayName: String(
-                    provider.displayName ?? provider.name ?? id
-                  ),
-                  available: provider.available !== false,
-                  models: byProvider.get(id) ?? []
-                };
-              })
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          if (invocation.request.method === "threads.spawn") {
-            const params2 = invocation.params;
-            const spawned = await bb.sdk.threads.spawn({
-              projectId: params2.projectId,
-              prompt: params2.prompt,
-              ...params2.title ? { title: params2.title } : {},
-              ...params2.providerId ? { providerId: params2.providerId } : {},
-              ...params2.model ? { model: params2.model } : {},
-              ...params2.reasoningLevel ? { reasoningLevel: params2.reasoningLevel } : {},
-              // A thread the user asked a page to start is theirs, so it is a
-              // visible root rather than a hidden helper of this thread.
-              visibility: "visible"
-            });
-            const response2 = completeBridgeInvocation(invocation, {
-              threadId: spawned.id
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          if (invocation.request.method === "threads.archive" || invocation.request.method === "threads.stop") {
-            const params2 = invocation.params;
-            const destructive = invocation.request.method === "threads.stop";
-            if (destructive && params2.threadId === action.threadId) {
-              return jsonResponse(
-                makeBridgeFailureResponse(
-                  invocation.request.id,
-                  "invalid_params",
-                  "A page cannot stop its own thread"
-                ),
-                400
-              );
-            }
-            const target = await bb.sdk.threads.get({ threadId: params2.threadId }).catch(() => null);
-            if (!target || target.deletedAt !== null) {
-              return jsonResponse(
-                makeBridgeFailureResponse(
-                  invocation.request.id,
-                  "not_found",
-                  "That thread is not available"
-                ),
-                404
-              );
-            }
-            if (destructive) {
-              await bb.sdk.threads.stop({ threadId: params2.threadId });
-              const response3 = completeBridgeInvocation(invocation, {
-                stopped: true
-              });
-              return jsonResponse(response3, response3.ok ? 200 : 500);
-            }
-            await bb.sdk.threads.archive({ threadId: params2.threadId });
-            const response2 = completeBridgeInvocation(invocation, {
-              archived: true
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          if (page.stale) {
-            return jsonResponse(
-              makeBridgeFailureResponse(
-                invocation.request.id,
-                "unavailable",
-                "The source host is offline; this cached page is read-only"
-              ),
-              503
-            );
-          }
-          const params = invocation.params;
-          const dedupeKey = `${action.threadId}:${params.idempotencyKey ?? invocation.request.id}`;
-          const fingerprint = sha256Text(
-            stableJsonStringify({
-              pageRevision: page.hash,
-              result: params.result,
-              mode: params.mode,
-              ...params.title === void 0 ? {} : { title: params.title }
-            })
-          );
-          const now = Date.now();
-          pruneReplies(now);
-          const existing = recentReplies.get(dedupeKey);
-          if (existing) {
-            if (existing.fingerprint !== fingerprint) {
-              return jsonResponse(
-                makeBridgeFailureResponse(
-                  invocation.request.id,
-                  "conflict",
-                  "Idempotency key was reused with a different reply"
-                ),
-                409
-              );
-            }
-            const repeated = await existing.outcome;
-            const response2 = completeBridgeInvocation(invocation, {
-              ...repeated,
-              duplicate: true
-            });
-            return jsonResponse(response2, response2.ok ? 200 : 500);
-          }
-          const wasActive = thread.status === "active" || thread.status === "starting";
-          const outcome = (async () => {
-            const sent = await bb.sdk.threads.send({
-              threadId: action.threadId,
-              mode: params.mode === "steer" ? "steer-if-active" : "queue-if-active",
-              input: [
-                {
-                  type: "text",
-                  text: formatThreadReplyMessage(params.title, params.result),
-                  mentions: []
-                }
-              ]
-            });
-            const delivery = sent.delivery === "queued" ? "queued" : params.mode === "steer" && wasActive ? "steered" : "started";
-            return { delivery, duplicate: false };
-          })();
-          recentReplies.set(dedupeKey, {
-            expiresAt: now + SUBMISSION_TTL_MS,
-            fingerprint,
-            outcome
-          });
-          let delivered;
-          try {
-            delivered = await outcome;
-          } catch (error) {
-            if (recentReplies.get(dedupeKey)?.outcome === outcome) {
-              recentReplies.delete(dedupeKey);
-            }
-            throw error;
-          }
-          const response = completeBridgeInvocation(invocation, delivered);
-          return jsonResponse(response, response.ok ? 200 : 500);
-        } catch (error) {
-          bb.log.warn(
-            `Could not execute Thread Page bridge request for ${action.threadId}: ${errorText(error)}`
-          );
-          return jsonResponse(
-            makeBridgeFailureResponse(
-              invocation.request.id,
-              "handler_error",
-              "Could not execute the Thread Page action"
-            ),
-            503
-          );
-        }
-      } finally {
-        releaseRequest();
-      }
-    },
-    { auth: "local" }
-  );
+  registerRoutes(bb, serving);
+  registerCli(bb, { serving, guide: buildGuide(capabilityRegistry, site), effectiveInstruction });
+  return serving;
+}
+
+// server.ts
+async function threadPagesPlugin(bb) {
+  await createPlugin(bb);
 }
 export {
-  ENABLED_BRIDGE_METHODS,
   threadPagesPlugin as default
 };
 //# sourceMappingURL=server.js.map

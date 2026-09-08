@@ -1,15 +1,8 @@
 /**
- * The Thread Pages design system.
- *
- * Five worlds, each declaring both palettes at once as --l-* and --d-*, with one
- * resolver publishing the live half onto the tokens the rest of the sheet uses.
- * A page picks one with data-theme on <html> and needs no class names: every
- * rule keys off semantic structure (fieldset/legend, a wrapping label, small,
- * button), so plain HTML is already styled.
- *
- * This is carried into each new page by the seed rather than injected at render
- * time, so a page owns its own look and a plugin update never restyles work the
- * user already read.
+ * The design system carried by the default seed: five worlds, each with a
+ * light and a dark palette, keyed off semantic HTML. Reviewed from the
+ * prototype, not redesigned (RW-16). A page owns its copy and may change
+ * any rule. spec R4.36, R4.37
  */
 export const THEME_CSS = String.raw`
   :root {

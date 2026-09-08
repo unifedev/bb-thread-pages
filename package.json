@@ -1,7 +1,7 @@
 {
   "name": "@unifedev/thread-pages",
-  "version": "0.3.2",
-  "description": "Thread Pages for bb: every agent session gets one directly editable HTML page you can answer from, on any device.",
+  "version": "1.0.0",
+  "description": "Thread Pages for bb: every agent session gets one directly editable HTML page you can read and answer from, on any device.",
   "license": "MIT",
   "author": "Bartosz",
   "repository": {
@@ -23,37 +23,47 @@
   "type": "module",
   "private": false,
   "engines": {
-    "bb": ">=0.40",
-    "bbPluginSdk": ">=0.4.21"
+    "bb": ">=0.42",
+    "bbPluginSdk": ">=0.4.47"
   },
   "scripts": {
-    "build": "bb plugin build",
+    "build:runtime": "node scripts/build-runtime.mjs",
+    "build": "npm run build:runtime && bb plugin build",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "npm run build:runtime && npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "parse5": "^8.0.1"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.4.47",
+    "@get-bb/plugin-sdk": "^0.4.47",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/jsdom": "^21.1.7",
     "@types/node": "^22.10.0",
-    "bb-app": "0.40.0",
+    "bb-app": "0.42.1",
+    "better-sqlite3": "^12.0.0",
     "cron-parser": "^5.5.0",
+    "esbuild": "^0.28.2",
+    "hono": "^4.13.7",
+    "jsdom": "^30.0.1",
     "typescript": "^5.7.2",
-    "vitest": "^3.0.0"
+    "vitest": "^5.0.0",
+    "zod": "^4.3.6"
   },
   "bb": {
     "name": "Thread Pages",
-    "description": "Host one directly editable HTML mini-app for each thread.",
+    "description": "Host one directly editable HTML page per session, served as a site the reader can answer from.",
     "branding": {
       "icon": "FileText"
     },
     "server": "./server.ts",
     "skills": []
   },
-  "dependencies": {
-    "parse5": "^8.0.1"
-  },
   "files": [
-    "*.ts",
-    "!*.test.ts",
+    "server.ts",
+    "src/**/*.ts",
+    "!src/**/*.test.ts",
     "dist/server.js",
     "dist/server.meta.json",
     "README.md",
