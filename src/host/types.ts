@@ -15,6 +15,10 @@ export interface SessionRecord {
   readonly archived: boolean;
   readonly deleted: boolean;
   readonly updatedAtMs: number;
+  /** When the session last asked for the reader's attention (a turn ended, a question). */
+  readonly attentionAtMs: number;
+  /** Whether the reader has not looked since the last attention. */
+  readonly unread: boolean;
   /** The host's environment identity for `sessions.start` reuse; never shown to a page. */
   readonly environmentId: string | null;
 }
@@ -22,6 +26,8 @@ export interface SessionRecord {
 export interface SessionListQuery {
   readonly projectId?: string;
   readonly archived: boolean;
+  /** Only sessions without a parent, the way the host's own sidebar lists them. */
+  readonly rootsOnly: boolean;
   readonly offset: number;
   readonly limit: number;
 }

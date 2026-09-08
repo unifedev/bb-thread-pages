@@ -39,7 +39,7 @@ interface Cursor {
 }
 
 function queryKey(params: SnapshotParams): string {
-  return `${params.projectId ?? ""}|${params.includeArchived ? 1 : 0}`;
+  return `${params.projectId ?? ""}|${params.includeArchived ? 1 : 0}|${params.includeChildren ? 1 : 0}`;
 }
 
 export function encodeCursor(cursor: Cursor): string {
@@ -97,10 +97,13 @@ export const sessionsSnapshot = handler<SnapshotParams, unknown>({
       const rows = await serving.host.sessions.list({
         ...(params.projectId ? { projectId: params.projectId } : {}),
         archived: phase === "archived",
+        rootsOnly: !params.includeChildren,
         offset,
         limit: want + 1,
       });
-      const visible = rows.filter((row) => row.visibility === "visible" && !row.deleted);
+      const visible = rows.filter(
+        (row) => row.visibility === "visible" && !row.deleted && row.archived === (phase === "archived") && (params.includeChildren || row.parentId === null),
+      );
       const more = rows.length > want;
       collected.push(...visible.slice(0, want));
       offset += Math.min(rows.length, want);
@@ -125,6 +128,8 @@ export const sessionsSnapshot = handler<SnapshotParams, unknown>({
       archived: record.archived,
       page: { available: availability.get(record.id) === true, revision: availability.get(record.id) ? serving.pages.knownRevision(record.id) : null },
       updatedAtMs: record.updatedAtMs,
+      attentionAtMs: record.attentionAtMs,
+      unread: record.unread,
     }));
     return { result: { sessions, nextCursor: next ? encodeCursor(next) : null, generatedAtMs: serving.now() } };
   },

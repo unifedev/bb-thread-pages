@@ -2,6 +2,7 @@ import type { CapabilityRegistry } from "../domain/capabilities/registry.ts";
 import { LIMITS, kibibytes, mebibytes } from "../domain/limits.ts";
 import { ENTRY_FILE, UPLOAD_DIR } from "../pages/layout.ts";
 import type { SiteStrategy } from "../pages/site.ts";
+import { starterHubForGuide } from "./starter-hub.ts";
 
 /**
  * The authoring guide, printed by `bb thread-page guide`. Assembled from
@@ -285,112 +286,28 @@ is a session dedicated to it, so nothing else ever rewrites it.
 1. In the session that should own it (start one for the purpose if you are
    mid-task), run \`bb thread-page home\`. It prints the link every page will
    carry.
-2. Replace <main> in that session's index.html with a hub like the one
-   below, then stop. The page stays put because its buttons start fresh
-   sessions or open other pages; nothing messages this session.
+2. Replace <main> in that session's index.html with the starter hub below,
+   then stop. The page stays put because its buttons open other pages or
+   start fresh sessions; nothing messages this session.
 3. Tell the reader the link and that the hub is theirs to change: they can
    ask this session to regroup, restyle or add jobs any time.
 
 ### A starter hub
 
-Complete and working as written; drop it into <main>. It lists sessions by
-project, opens a page or the session in bb, starts work in a project, and
-keeps the reader's collapsed groups in \`storage\`.
+Complete and working as written; drop it into <main>. It follows what the
+reader already sees in bb: no archived sessions, sub-agents hidden, the
+sessions that need them first (working, waiting, failed, unread), five recent
+per project then "Show more", one line per session, search with "/", and
+Stop, Archive and start-a-session with the confirmations handled. Views and
+collapsed projects persist in \`storage\`. It widens the page for the list;
+that is allowed — the page owns its stylesheet.
 
-    <p class="brief-meta"><span data-count>Loading…</span></p>
-    <p data-error class="needs-you" hidden></p>
-    <div data-groups></div>
+${starterHubForGuide()}
 
-    <style>
-    @scope (main) {
-      details { margin-top: 1.25rem; }
-      summary { cursor: pointer; font-weight: 600; }
-      .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; padding: .5rem 0; border-top: var(--rule-w) solid var(--rule-soft); }
-      .row .name { flex: 1 1 14rem; }
-      .row .state { font-size: .8rem; color: var(--ink-3); }
-      .starter { margin-top: .75rem; }
-      .starter textarea { width: 100%; min-height: 3.5rem; }
-    }
-    </style>
-
-    <script>
-    (async () => {
-      const tp = window.threadPage;
-      const groupsEl = document.querySelector("[data-groups]");
-      const errorEl = document.querySelector("[data-error]");
-      const countEl = document.querySelector("[data-count]");
-      const el = (tag, text, cls) => { const n = document.createElement(tag); if (text) n.textContent = text; if (cls) n.className = cls; return n; };
-      const fail = (message) => { errorEl.hidden = false; errorEl.textContent = message; };
-
-      async function loadOpen() {
-        try { const r = await tp.invoke("storage.get", { key: "home.open" }); return r.found ? r.value : {}; } catch { return {}; }
-      }
-
-      function actionButton(label, run) {
-        const b = el("button", label); b.type = "button";
-        b.addEventListener("click", async () => {
-          b.disabled = true;
-          try { await run(); }
-          catch (e) { if (e.code !== "cancelled") fail(e.code + ": " + e.message); }
-          finally { b.disabled = false; }
-        });
-        return b;
-      }
-
-      function renderRow(s) {
-        const row = el("div", "", "row");
-        row.append(el("span", s.title, "name"), el("span", s.status, "state"));
-        if (s.page.available) row.append(actionButton("Page", () => tp.invoke("pages.open", { sessionId: s.id })));
-        row.append(actionButton("Open in bb", () => tp.invoke("sessions.openHost", { sessionId: s.id })));
-        if (s.status === "working") row.append(actionButton("Stop", () => tp.invoke("sessions.stop", { sessionId: s.id })));
-        return row;
-      }
-
-      function renderStarter(project) {
-        const box = el("details", "", "starter");
-        box.append(el("summary", "Start a session in " + project.name));
-        const text = el("textarea"); text.placeholder = "What should it do? Say what to report and what not to change.";
-        const say = el("p", "", "state");
-        const go = actionButton("Start", async () => {
-          const prompt = text.value.trim();
-          if (!prompt) { say.textContent = "Say what it should do."; return; }
-          say.textContent = "Waiting for your confirmation…";
-          try { await tp.invoke("sessions.start", { projectId: project.id, prompt }); say.textContent = "Started."; text.value = ""; await load(); }
-          catch (e) { say.textContent = e.code === "cancelled" ? "Nothing started." : e.message; }
-        });
-        box.append(text, go, say);
-        return box;
-      }
-
-      async function load() {
-        try {
-          errorEl.hidden = true;
-          const [{ projects }, { sessions }, open] = await Promise.all([
-            tp.invoke("projects.list"), tp.invoke("sessions.snapshot", { limit: 200 }), loadOpen(),
-          ]);
-          groupsEl.textContent = "";
-          for (const project of projects) {
-            const mine = sessions.filter((s) => s.projectId === project.id).sort((a, b) => b.updatedAtMs - a.updatedAtMs);
-            const group = el("details"); group.open = open[project.id] !== false;
-            group.addEventListener("toggle", () => { open[project.id] = group.open; tp.invoke("storage.set", { key: "home.open", value: open }).catch(() => {}); });
-            group.append(el("summary", project.name + " · " + mine.length));
-            for (const s of mine) group.append(renderRow(s));
-            group.append(renderStarter(project));
-            groupsEl.append(group);
-          }
-          countEl.textContent = sessions.length + " sessions · updated " + new Date().toLocaleTimeString();
-        } catch (e) { fail(e.message); }
-      }
-
-      await load();
-      tp.watch("session.activity", { limit: 1 }, () => load(), { intervalMs: 20000 });
-    })();
-    </script>
-
-Refresh on a button or a slow watch, not on a tight timer: the page shares a
-rate budget of ${LIMITS.ratePerMinute} requests a minute with its own forms. Grouping is
-yours to change: a group can be any set of projects, and \`data-theme\` on a
-group's element can give it its own look.`;
+Refresh on a slow watch, not a tight timer: the page shares a rate budget of
+${LIMITS.ratePerMinute} requests a minute with its own forms. Grouping is yours to change: a
+group can be any set of projects, and \`data-theme\` on a group's element can
+give it its own look.`;
 
 const accessibility = () => `## Before you save
 

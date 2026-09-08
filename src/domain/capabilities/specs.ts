@@ -109,6 +109,7 @@ export type SnapshotParams = s.Infer<typeof snapshotParams>;
 const snapshotParams = s.object({
   projectId: s.optional(s.nullable(entityId("Project id"))),
   includeArchived: s.withDefault(s.boolean(), false),
+  includeChildren: s.withDefault(s.boolean(), false),
   limit: s.withDefault(s.integer(1, LIMITS.snapshotMax, "Limit"), LIMITS.snapshotDefault),
   cursor: s.optional(s.nullable(s.string({ min: 1, max: 512, pattern: /^[A-Za-z0-9._~:-]+$/, label: "Cursor" }))),
 });
@@ -122,6 +123,8 @@ export const sessionSummary = s.object({
   archived: s.boolean(),
   page: s.object({ available: s.boolean(), revision: s.nullable(s.string({ min: 64, max: 64, pattern: /^[a-f0-9]{64}$/ })) }),
   updatedAtMs: timestamp,
+  attentionAtMs: timestamp,
+  unread: s.boolean(),
 });
 export type SessionSummary = s.Infer<typeof sessionSummary>;
 
@@ -140,8 +143,8 @@ export const sessionsSnapshot = spec({
     }),
   ),
   doc: {
-    params: `\`{ projectId?, includeArchived?, limit?, cursor? }\` — \`limit\` 1 to ${LIMITS.snapshotMax}, default ${LIMITS.snapshotDefault}; pass the previous result's \`nextCursor\` to continue.`,
-    result: "`{ sessions: [{ id, title, projectId, parentSessionId, status, archived, page: { available, revision }, updatedAtMs }], nextCursor, generatedAtMs }`. `page.revision` is known for pages this host has served recently and `null` otherwise.",
+    params: `\`{ projectId?, includeArchived?, includeChildren?, limit?, cursor? }\` — \`limit\` 1 to ${LIMITS.snapshotMax}, default ${LIMITS.snapshotDefault}; pass the previous result's \`nextCursor\` to continue. By default only root sessions are listed, the way the host's own sidebar shows them; \`includeChildren: true\` adds sub-agent sessions (with \`parentSessionId\` set).`,
+    result: "`{ sessions: [{ id, title, projectId, parentSessionId, status, archived, unread, attentionAtMs, updatedAtMs, page: { available, revision } }], nextCursor, generatedAtMs }`. `unread` means the session asked for the reader's attention (a turn ended, a question) after they last looked at it — the same mark the host's sidebar shows; `attentionAtMs` is when. `page.revision` is known for pages this host has served recently and `null` otherwise.",
     notes: "No message bodies or agent output are included.",
   },
 });

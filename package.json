@@ -1,6 +1,6 @@
 {
   "name": "@unifedev/thread-pages",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Thread Pages for bb: every agent session gets one directly editable HTML page you can read and answer from, on any device.",
   "license": "MIT",
   "author": "Bartosz",

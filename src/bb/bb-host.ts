@@ -39,6 +39,8 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
       archived: thread.archivedAt !== null && thread.archivedAt !== undefined,
       deleted: thread.deletedAt !== null && thread.deletedAt !== undefined,
       updatedAtMs: typeof thread.updatedAt === "number" ? Math.max(0, Math.trunc(thread.updatedAt)) : 0,
+      attentionAtMs: typeof thread.latestAttentionAt === "number" ? Math.max(0, Math.trunc(thread.latestAttentionAt)) : 0,
+      unread: unreadOf(thread),
       environmentId: typeof thread.environmentId === "string" ? thread.environmentId : null,
     };
   }
@@ -64,7 +66,9 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
       async list(query) {
         const rows = (await bb.sdk.threads.list({
           ...(query.projectId ? { projectId: query.projectId } : {}),
-          ...(query.archived ? { archived: true } : {}),
+          // bb lists archived and live threads together unless told which; always say.
+          archived: query.archived,
+          ...(query.rootsOnly ? { hasParent: false } : {}),
           limit: query.limit,
           offset: query.offset,
         })) as unknown;
@@ -235,6 +239,13 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
     log: bb.log,
   };
   return host;
+}
+
+/** bb marks a thread unread when it asked for attention after the reader last looked. */
+function unreadOf(thread: Record<string, unknown>): boolean {
+  const attention = typeof thread.latestAttentionAt === "number" ? thread.latestAttentionAt : 0;
+  const read = typeof thread.lastReadAt === "number" ? thread.lastReadAt : null;
+  return attention > 0 && (read === null || read < attention);
 }
 
 function defaultHostId(sources: unknown): string | null {

@@ -54,6 +54,10 @@ describe("the authoring guide", () => {
     }
     expect(section).toContain('e.code === "cancelled"');
     expect(section).not.toMatch(/window\.(open|prompt|alert|confirm)/);
+    for (const method of ["sessions.snapshot", "projects.list", "pages.open", "sessions.openHost", "sessions.stop", "sessions.archive", "sessions.start", "storage.get", "storage.set"]) {
+      expect(section).toContain(`"${method}"`);
+    }
+    expect(section).toContain("unread");
   });
 
   it("tells the truth about own-file fetch per site strategy", () => {

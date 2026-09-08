@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.2 — 2026-09-08
+
+The home page matches what the reader sees in bb, and the starter hub is
+built for finding a session fast.
+
+- `sessions.snapshot` lists root sessions only by default (`includeChildren:
+  true` adds sub-agents), and every session carries `unread` and
+  `attentionAtMs` — bb's own unread mark and when it asked for attention.
+  A deliberate widening under D4 (RW-18).
+- The starter hub: sticky search (press `/`), "Needs you" (working, waiting,
+  failed, unread) and "All" views, projects that need the reader first, five
+  recent per project then "Show 10 more" (bb's sidebar rule), one dense line
+  per session that opens its page (or the session in bb), Stop, Archive,
+  start a session per project, unread in bold.
+
 ## 1.0.1 — 2026-09-08
 
 Onboarding: how a home page comes to exist is now said in the product, not

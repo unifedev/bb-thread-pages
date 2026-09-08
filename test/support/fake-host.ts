@@ -40,6 +40,8 @@ export function sessionRecord(overrides: Partial<SessionRecord> & { id: string }
     archived: false,
     deleted: false,
     updatedAtMs: 1_700_000_000_000,
+    attentionAtMs: 1_700_000_000_000,
+    unread: false,
     environmentId: "env_a",
     ...overrides,
   };
@@ -76,7 +78,10 @@ export function createFakeHost(): { host: SessionHost; state: FakeHostState } {
       },
       async list(query) {
         record("sessions.list", query);
-        const all = [...state.sessions.values()].filter((session) => session.archived === query.archived && (!query.projectId || session.projectId === query.projectId));
+        const all = [...state.sessions.values()].filter(
+          // Like bb: an archived filter is honoured, but the fake also leaks archived rows into live queries for one id to prove the handler guards.
+          (session) => (session.archived === query.archived || session.id === "thr_leak") && (!query.projectId || session.projectId === query.projectId) && (!query.rootsOnly || session.parentId === null),
+        );
         return all.slice(query.offset, query.offset + query.limit);
       },
       async send(id, text, mode) {

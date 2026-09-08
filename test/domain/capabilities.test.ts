@@ -87,7 +87,7 @@ describe("parameter validation", () => {
 
   it("applies documented defaults", () => {
     expect(ok("session.activity", {})).toEqual({ limit: LIMITS.activityDefault });
-    expect(ok("sessions.snapshot", {})).toEqual({ includeArchived: false, limit: LIMITS.snapshotDefault });
+    expect(ok("sessions.snapshot", {})).toEqual({ includeArchived: false, includeChildren: false, limit: LIMITS.snapshotDefault });
     expect(ok("session.reply", { result: { a: 1 } })).toEqual({ result: { a: 1 }, mode: "queue" });
     expect(ok("sessions.start", { projectId: "proj_a", prompt: "go" })).toEqual({ projectId: "proj_a", prompt: "go", environment: "project-default" });
     expect(ok("sessions.start", { projectId: "proj_a", prompt: "go", environment: { sameAs: "thr_x" } })).toMatchObject({ environment: { sameAs: "thr_x" } });

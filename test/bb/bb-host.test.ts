@@ -12,12 +12,12 @@ describe("bb adapter", () => {
   it("projects a thread into a session record and asks about pending interactions only when idle", async () => {
     const { host, fake } = hostWith({
       threads: {
-        get: async () => makeThreadResponse({ id: "thr_a", title: null, titleFallback: "Fallback", projectId: "proj_a", environmentId: "env_1", visibility: "visible", parentThreadId: null, sourceThreadId: null, archivedAt: null, deletedAt: null, updatedAt: 42 }),
+        get: async () => makeThreadResponse({ id: "thr_a", title: null, titleFallback: "Fallback", projectId: "proj_a", environmentId: "env_1", visibility: "visible", parentThreadId: null, sourceThreadId: null, archivedAt: null, deletedAt: null, updatedAt: 42, lastReadAt: 40, latestAttentionAt: 41 }),
         interactions: { list: async () => [{ id: "i1" }] as never },
       },
     });
     const session = await host.sessions.get("thr_a");
-    expect(session).toEqual({ id: "thr_a", title: "Fallback", projectId: "proj_a", state: "waiting", visibility: "visible", parentId: null, forkOfId: null, archived: false, deleted: false, updatedAtMs: 42, environmentId: "env_1" });
+    expect(session).toEqual({ id: "thr_a", title: "Fallback", projectId: "proj_a", state: "waiting", visibility: "visible", parentId: null, forkOfId: null, archived: false, deleted: false, updatedAtMs: 42, attentionAtMs: 41, unread: true, environmentId: "env_1" });
     expect(fake.harness.inspection.sdk.callsTo("threads.interactions.list")).toHaveLength(1);
   });
 
@@ -80,9 +80,11 @@ describe("bb adapter", () => {
     const { host, fake } = hostWith({
       threads: { list: async () => [{ ...makeThreadResponse({ id: "thr_1" }), hasPendingInteraction: true }] as never },
     });
-    const rows = await host.sessions.list({ archived: true, offset: 5, limit: 10 });
+    const rows = await host.sessions.list({ archived: true, rootsOnly: true, offset: 5, limit: 10 });
     expect(rows[0]?.state).toBe("waiting");
-    expect(fake.harness.inspection.sdk.callsTo("threads.list")[0]![0]).toEqual({ archived: true, limit: 10, offset: 5 });
+    expect(fake.harness.inspection.sdk.callsTo("threads.list")[0]![0]).toEqual({ archived: true, hasParent: false, limit: 10, offset: 5 });
+    await host.sessions.list({ archived: false, rootsOnly: false, offset: 0, limit: 10 });
+    expect(fake.harness.inspection.sdk.callsTo("threads.list")[1]![0]).toEqual({ archived: false, limit: 10, offset: 0 });
   });
 });
 

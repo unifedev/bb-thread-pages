@@ -60,10 +60,11 @@ describe("reads", () => {
   it("sessions.snapshot projects, reports page availability, honours the cap and pages with a real cursor", async () => {
     for (let index = 0; index < 5; index += 1) fixture.state.sessions.set(`thr_x${index}`, sessionRecord({ id: `thr_x${index}`, archived: index === 4 }));
     fixture.state.sessions.set("thr_hidden", sessionRecord({ id: "thr_hidden", visibility: "hidden" }));
+    fixture.state.sessions.set("thr_kid", sessionRecord({ id: "thr_kid", parentId: "thr_a", unread: true }));
     const page1 = (await call("sessions.snapshot", { limit: 3 })).body.response!.result as { sessions: { id: string; page: { available: boolean } }[]; nextCursor: string | null };
     expect(page1.sessions).toHaveLength(3);
     expect(page1.nextCursor).not.toBeNull();
-    expect(Object.keys(page1.sessions[0]!).sort()).toEqual(["archived", "id", "page", "parentSessionId", "projectId", "status", "title", "updatedAtMs"]);
+    expect(Object.keys(page1.sessions[0]!).sort()).toEqual(["archived", "attentionAtMs", "id", "page", "parentSessionId", "projectId", "status", "title", "unread", "updatedAtMs"]);
     expect(page1.sessions.find((entry) => entry.id === "thr_a")?.page.available).toBe(true);
     expect(page1.sessions.find((entry) => entry.id === "thr_b")?.page.available).toBe(false);
     const page2 = (await call("sessions.snapshot", { limit: 3, cursor: page1.nextCursor })).body.response!.result as { sessions: { id: string }[]; nextCursor: string | null };
@@ -71,6 +72,14 @@ describe("reads", () => {
     expect(new Set(all).size).toBe(all.length);
     expect(all).not.toContain("thr_hidden");
     expect(all).not.toContain("thr_x4");
+    expect(all).not.toContain("thr_kid");
+    const withChildren = (await call("sessions.snapshot", { limit: 50, includeChildren: true })).body.response!.result as { sessions: { id: string; parentSessionId: string | null; unread: boolean }[] };
+    const kid = withChildren.sessions.find((entry) => entry.id === "thr_kid");
+    expect(kid).toMatchObject({ parentSessionId: "thr_a", unread: true });
+    // A host that returns archived rows in a live query must not leak them into the live phase.
+    fixture.state.sessions.set("thr_leak", sessionRecord({ id: "thr_leak", archived: true }));
+    const live = (await call("sessions.snapshot", { limit: 50 })).body.response!.result as { sessions: { id: string }[] };
+    expect(live.sessions.map((entry) => entry.id)).not.toContain("thr_leak");
     const withArchived = (await call("sessions.snapshot", { limit: 50, includeArchived: true })).body.response!.result as { sessions: { id: string; archived: boolean }[] };
     expect(withArchived.sessions.find((entry) => entry.id === "thr_x4")?.archived).toBe(true);
     const wrongCursor = await call("sessions.snapshot", { limit: 3, cursor: page1.nextCursor, includeArchived: true });
