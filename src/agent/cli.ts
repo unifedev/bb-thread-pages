@@ -98,6 +98,17 @@ async function ensurePage(deps: CliDeps, id: string, title: string): Promise<{ a
   return { absolutePath: entryPath(location.rootPath), state, legacy, problem };
 }
 
+/** Tells the agent whether the reader has a home page, and how one comes to exist. */
+async function homeLine(deps: CliDeps, current: string): Promise<string> {
+  const home = deps.serving.settings.current().homeSessionId;
+  if (isSessionId(home)) {
+    return home === current
+      ? "home: this page is the home page; every other page links back to it."
+      : `home: ${await link(deps, homeUrl(deps.serving.routeBase))}  (every page links back to it; you never write that link)`;
+  }
+  return "home: none set. If the reader wants one place to see and steer their sessions, run `bb thread-page home` in a session dedicated to it and build the hub from `bb thread-page guide` §The home page.";
+}
+
 async function init(deps: CliDeps, context: PluginCliContext): Promise<PluginCliResult> {
   const current = await currentSession(deps, context);
   if ("skip" in current) return skipLine(current.skip);
@@ -111,6 +122,7 @@ async function init(deps: CliDeps, context: PluginCliContext): Promise<PluginCli
       : "state: EXISTING — read it before editing; update it this turn, keep a way to answer, then reply in chat with the link and one line.",
     `site: files beside ${ENTRY_FILE} are served relatively (nested paths included); ${UPLOAD_DIR}/ holds what the reader attaches.`,
     "guide: bb thread-page guide  (files, charts, live session state, starting sessions, links, limits)",
+    await homeLine(deps, current.id),
   ];
   if (problem) lines.push(`warning: the existing page cannot be served — ${problem}`);
   if (legacy) lines.push(`note: a ${LEGACY_ENTRY_FILE} from the previous plugin version is beside it; it is not served. Move what you want from it into ${ENTRY_FILE}.`);

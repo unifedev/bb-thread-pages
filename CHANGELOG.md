@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.1 — 2026-09-08
+
+Onboarding: how a home page comes to exist is now said in the product, not
+only in the README.
+
+- `init` ends with a `home:` line — the link, or "none set" and the one
+  sentence that says how to make one.
+- The standing instruction gains a short "The home page" paragraph.
+- The guide's §The home page is a three-step recipe with a complete, working
+  starter hub (projects grouped, page and bb links, stop, start a session with
+  `cancelled` handled, collapsed groups kept in `storage`).
+- `/home` without a home explains what to ask an agent.
+
 ## 1.0.0 — 2026-09-08
 
 A rewrite against the specification in `unife-bb-plugin/spec`. Nothing from

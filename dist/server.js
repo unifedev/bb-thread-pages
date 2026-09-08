@@ -1062,6 +1062,13 @@ async function ensurePage(deps, id, title2) {
   const legacy = await serving.host.files.exist(location.hostId, [legacyEntryPath(location.rootPath)]).then((existence) => existence[legacyEntryPath(location.rootPath)] === true).catch(() => false);
   return { absolutePath: entryPath(location.rootPath), state, legacy, problem };
 }
+async function homeLine(deps, current) {
+  const home3 = deps.serving.settings.current().homeSessionId;
+  if (isSessionId(home3)) {
+    return home3 === current ? "home: this page is the home page; every other page links back to it." : `home: ${await link(deps, homeUrl(deps.serving.routeBase))}  (every page links back to it; you never write that link)`;
+  }
+  return "home: none set. If the reader wants one place to see and steer their sessions, run `bb thread-page home` in a session dedicated to it and build the hub from `bb thread-page guide` \xA7The home page.";
+}
 async function init(deps, context) {
   const current = await currentSession(deps, context);
   if ("skip" in current) return skipLine(current.skip);
@@ -1072,7 +1079,8 @@ async function init(deps, context) {
     `link: [Open the Thread Page](${url})`,
     state === "created" ? "state: NEW \u2014 seeded; make this page fit the task, keep a way to answer, then reply in chat with the link and one line." : "state: EXISTING \u2014 read it before editing; update it this turn, keep a way to answer, then reply in chat with the link and one line.",
     `site: files beside ${ENTRY_FILE} are served relatively (nested paths included); ${UPLOAD_DIR}/ holds what the reader attaches.`,
-    "guide: bb thread-page guide  (files, charts, live session state, starting sessions, links, limits)"
+    "guide: bb thread-page guide  (files, charts, live session state, starting sessions, links, limits)",
+    await homeLine(deps, current.id)
   ];
   if (problem) lines.push(`warning: the existing page cannot be served \u2014 ${problem}`);
   if (legacy) lines.push(`note: a ${LEGACY_ENTRY_FILE} from the previous plugin version is beside it; it is not served. Move what you want from it into ${ENTRY_FILE}.`);
@@ -1394,19 +1402,120 @@ One page is home; every other page shows a "\u2190 Sessions" link back to it in
 chrome you never write. \`bb thread-page home\` sets the pointer for the
 current session (\`--clear\` removes it) and creates the plain seed if the
 session has no page yet; it never touches an existing page. Home is an
-ordinary page \u2014 a session hub is one an agent builds:
+ordinary page \u2014 a hub is one an agent builds, and the right place to build it
+is a session dedicated to it, so nothing else ever rewrites it.
 
-    const { sessions } = await invoke("sessions.snapshot", { limit: 100, includeArchived: false });
-    const { projects } = await invoke("projects.list");
-    // group by projectId, render rows, then per row:
-    //   pages.open { sessionId }      sessions.openHost { sessionId }
-    //   sessions.send { sessionId, prompt }   sessions.stop / sessions.archive
-    // and per project: sessions.start { projectId, prompt }
-    // keep grouping in storage.set { key: "home.groups", value }
+### Setting one up, step by step
 
-Refresh the list with \`watch("session.activity", { limit: 1 }, \u2026)\` or on a
-button, not on a tight timer: the page shares a rate budget of
-${LIMITS.ratePerMinute} requests a minute with its own forms.`;
+1. In the session that should own it (start one for the purpose if you are
+   mid-task), run \`bb thread-page home\`. It prints the link every page will
+   carry.
+2. Replace <main> in that session's index.html with a hub like the one
+   below, then stop. The page stays put because its buttons start fresh
+   sessions or open other pages; nothing messages this session.
+3. Tell the reader the link and that the hub is theirs to change: they can
+   ask this session to regroup, restyle or add jobs any time.
+
+### A starter hub
+
+Complete and working as written; drop it into <main>. It lists sessions by
+project, opens a page or the session in bb, starts work in a project, and
+keeps the reader's collapsed groups in \`storage\`.
+
+    <p class="brief-meta"><span data-count>Loading\u2026</span></p>
+    <p data-error class="needs-you" hidden></p>
+    <div data-groups></div>
+
+    <style>
+    @scope (main) {
+      details { margin-top: 1.25rem; }
+      summary { cursor: pointer; font-weight: 600; }
+      .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; padding: .5rem 0; border-top: var(--rule-w) solid var(--rule-soft); }
+      .row .name { flex: 1 1 14rem; }
+      .row .state { font-size: .8rem; color: var(--ink-3); }
+      .starter { margin-top: .75rem; }
+      .starter textarea { width: 100%; min-height: 3.5rem; }
+    }
+    </style>
+
+    <script>
+    (async () => {
+      const tp = window.threadPage;
+      const groupsEl = document.querySelector("[data-groups]");
+      const errorEl = document.querySelector("[data-error]");
+      const countEl = document.querySelector("[data-count]");
+      const el = (tag, text, cls) => { const n = document.createElement(tag); if (text) n.textContent = text; if (cls) n.className = cls; return n; };
+      const fail = (message) => { errorEl.hidden = false; errorEl.textContent = message; };
+
+      async function loadOpen() {
+        try { const r = await tp.invoke("storage.get", { key: "home.open" }); return r.found ? r.value : {}; } catch { return {}; }
+      }
+
+      function actionButton(label, run) {
+        const b = el("button", label); b.type = "button";
+        b.addEventListener("click", async () => {
+          b.disabled = true;
+          try { await run(); }
+          catch (e) { if (e.code !== "cancelled") fail(e.code + ": " + e.message); }
+          finally { b.disabled = false; }
+        });
+        return b;
+      }
+
+      function renderRow(s) {
+        const row = el("div", "", "row");
+        row.append(el("span", s.title, "name"), el("span", s.status, "state"));
+        if (s.page.available) row.append(actionButton("Page", () => tp.invoke("pages.open", { sessionId: s.id })));
+        row.append(actionButton("Open in bb", () => tp.invoke("sessions.openHost", { sessionId: s.id })));
+        if (s.status === "working") row.append(actionButton("Stop", () => tp.invoke("sessions.stop", { sessionId: s.id })));
+        return row;
+      }
+
+      function renderStarter(project) {
+        const box = el("details", "", "starter");
+        box.append(el("summary", "Start a session in " + project.name));
+        const text = el("textarea"); text.placeholder = "What should it do? Say what to report and what not to change.";
+        const say = el("p", "", "state");
+        const go = actionButton("Start", async () => {
+          const prompt = text.value.trim();
+          if (!prompt) { say.textContent = "Say what it should do."; return; }
+          say.textContent = "Waiting for your confirmation\u2026";
+          try { await tp.invoke("sessions.start", { projectId: project.id, prompt }); say.textContent = "Started."; text.value = ""; await load(); }
+          catch (e) { say.textContent = e.code === "cancelled" ? "Nothing started." : e.message; }
+        });
+        box.append(text, go, say);
+        return box;
+      }
+
+      async function load() {
+        try {
+          errorEl.hidden = true;
+          const [{ projects }, { sessions }, open] = await Promise.all([
+            tp.invoke("projects.list"), tp.invoke("sessions.snapshot", { limit: 200 }), loadOpen(),
+          ]);
+          groupsEl.textContent = "";
+          for (const project of projects) {
+            const mine = sessions.filter((s) => s.projectId === project.id).sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+            const group = el("details"); group.open = open[project.id] !== false;
+            group.addEventListener("toggle", () => { open[project.id] = group.open; tp.invoke("storage.set", { key: "home.open", value: open }).catch(() => {}); });
+            group.append(el("summary", project.name + " \xB7 " + mine.length));
+            for (const s of mine) group.append(renderRow(s));
+            group.append(renderStarter(project));
+            groupsEl.append(group);
+          }
+          countEl.textContent = sessions.length + " sessions \xB7 updated " + new Date().toLocaleTimeString();
+        } catch (e) { fail(e.message); }
+      }
+
+      await load();
+      tp.watch("session.activity", { limit: 1 }, () => load(), { intervalMs: 20000 });
+    })();
+    </script>
+
+Refresh on a button or a slow watch, not on a tight timer: the page shares a
+rate budget of ${LIMITS.ratePerMinute} requests a minute with its own forms. Grouping is
+yours to change: a group can be any set of projects, and \`data-theme\` on a
+group's element can give it its own look.`;
 var accessibility = () => `## Before you save
 
 - Read it once at 320px wide, once in dark mode, once with reduced motion.
@@ -1800,6 +1909,13 @@ session with instructions to build it; that agent writes its own page. Link to
 it, or suggest making it home. A page that should stay put is one whose forms
 start fresh sessions instead of messaging you: nothing then asks you to
 rewrite it. If you want another agent's page changed, talk to that agent.
+
+## The home page
+
+One page is home; every other page links back to it in chrome you never
+write. init says whether one exists. When the reader asks for one place to
+see and steer their sessions, build it in a session dedicated to it: run
+\`bb thread-page home\` there and follow \`bb thread-page guide\` \xA7The home page.
 
 ## More
 
@@ -11850,7 +11966,10 @@ function homeRoute(serving) {
   return async (_context) => {
     const home3 = serving.settings.current().homeSessionId;
     if (!isSessionId(home3)) {
-      return errorPage("No home page is set yet. Run `bb thread-page home` in the session whose page should be home.", 404);
+      return errorPage(
+        "No home page is set yet. A home page is an ordinary page some agent built and designated. To get one, ask any agent: \u201CSet up my Thread Pages home page\u201D \u2014 it runs `bb thread-page home` in a session dedicated to it and builds a hub of your sessions there. Or run `bb thread-page home` yourself in the session whose page should be home.",
+        404
+      );
     }
     const session = await serving.host.sessions.get(home3).catch(() => null);
     if (!session || session.deleted || session.archived) {

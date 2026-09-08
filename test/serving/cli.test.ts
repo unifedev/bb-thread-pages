@@ -20,6 +20,7 @@ describe("bb thread-page init", () => {
     expect(first.stdout).toContain("page: /storage/thr_a/index.html");
     expect(first.stdout).toContain(`link: [Open the Thread Page](${ROUTE_BASE}/page?session=thr_a)`);
     expect(first.stdout).toContain("state: NEW");
+    expect(first.stdout).toContain("home: none set. If the reader wants one place to see and steer their sessions, run `bb thread-page home`");
     const written = Buffer.from(fixture.state.files.get(fileKey("thr_a", "index.html"))!).toString("utf8");
     expect(written).toContain("<title>My task</title>");
     expect(written).toContain("<form");
@@ -64,6 +65,7 @@ describe("bb thread-page home", () => {
     expect(result.stdout).toContain("home: thr_a");
     expect(result.stdout).toContain("state: NEW");
     expect(fixture.serving.settings.current().homeSessionId).toBe("thr_a");
+    expect((await fixture.cli(["init"], "thr_a")).stdout).toContain("home: this page is the home page");
     seedSession(fixture.state, "thr_b", PAGE, { title: "Hub" });
     const second = await fixture.cli(["home"], "thr_b");
     expect(second.stdout).toContain("warning: home was “My task” (thr_a)");
@@ -130,6 +132,7 @@ describe("the standing instruction", () => {
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/forms\s+start fresh sessions/);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/SKIP/);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/bb thread-page guide/);
+    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/## The home page/);
   });
 });
 

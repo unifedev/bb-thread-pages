@@ -7,9 +7,15 @@ site the reader can read and answer from on any device.
 bb plugin install git:https://github.com/unifedev/bb-thread-pages.git@^1.0.0
 ```
 
-Then turn on **Agent instructions** in the plugin's settings (or
-`bb plugin config thread-pages set agentInstructions true`), or ask any agent
-to run `bb thread-page init`.
+Then two things:
+
+1. Turn on **Agent instructions** in the plugin's settings (or
+   `bb plugin config thread-pages set agentInstructions true`). Every new
+   session then writes a page for its task and answers you from it.
+2. Start a session anywhere and say *"Set up my Thread Pages home page."* The
+   agent runs `bb thread-page home` there, builds a hub of your sessions from
+   the guide's starter, and replies with the link every page links back to.
+   To change the hub later, ask that session.
 
 ## This repository is the implementation only
 

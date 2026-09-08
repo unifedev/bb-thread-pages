@@ -56,6 +56,10 @@ describe("the shell", () => {
     const missing = await fixture.get(`${ROUTE_BASE}/home`);
     expect(missing.status).toBe(404);
     expect(await missing.text()).toMatch(/no longer exists/);
+    await fixture.harness.behavior.setSettings({ homeSessionId: null });
+    const none = await fixture.get(`${ROUTE_BASE}/home`);
+    expect(none.status).toBe(404);
+    expect(await none.text()).toMatch(/Set up my Thread Pages home page/);
   });
 
   it("hides the working indicator when the label is blank", async () => {

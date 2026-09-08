@@ -9,7 +9,10 @@ export function homeRoute(serving: ServingContext) {
   return async (_context: Context): Promise<Response> => {
     const home = serving.settings.current().homeSessionId;
     if (!isSessionId(home)) {
-      return errorPage("No home page is set yet. Run `bb thread-page home` in the session whose page should be home.", 404);
+      return errorPage(
+        "No home page is set yet. A home page is an ordinary page some agent built and designated. To get one, ask any agent: “Set up my Thread Pages home page” — it runs `bb thread-page home` in a session dedicated to it and builds a hub of your sessions there. Or run `bb thread-page home` yourself in the session whose page should be home.",
+        404,
+      );
     }
     const session = await serving.host.sessions.get(home).catch(() => null);
     if (!session || session.deleted || session.archived) {

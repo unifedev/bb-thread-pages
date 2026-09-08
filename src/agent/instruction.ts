@@ -45,6 +45,13 @@ it, or suggest making it home. A page that should stay put is one whose forms
 start fresh sessions instead of messaging you: nothing then asks you to
 rewrite it. If you want another agent's page changed, talk to that agent.
 
+## The home page
+
+One page is home; every other page links back to it in chrome you never
+write. init says whether one exists. When the reader asks for one place to
+see and steer their sessions, build it in a session dedicated to it: run
+\`bb thread-page home\` there and follow \`bb thread-page guide\` §The home page.
+
 ## More
 
 A page that needs more than prose and a form — files beside it, a chart, live

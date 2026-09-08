@@ -47,6 +47,15 @@ describe("the authoring guide", () => {
     expect(coreGuide).toContain("320px");
   });
 
+  it("carries a complete starter hub that only uses real capabilities", () => {
+    const section = coreGuide.slice(coreGuide.indexOf("### A starter hub"), coreGuide.indexOf("## Before you save"));
+    for (const method of section.matchAll(/invoke\("([a-z.A-Z]+)"/g)) {
+      expect(capabilityRegistry.get(method[1]!)?.implemented, method[1]).toBe(true);
+    }
+    expect(section).toContain('e.code === "cancelled"');
+    expect(section).not.toMatch(/window\.(open|prompt|alert|confirm)/);
+  });
+
   it("tells the truth about own-file fetch per site strategy", () => {
     expect(coreGuide).toContain("`fetch(\"data.json\")` of your own file from\npage script is refused");
     expect(prefixGuide).toContain("Page script may also fetch its own files as data");
