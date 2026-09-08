@@ -98,6 +98,12 @@ export function createFakeHost(): { host: SessionHost; state: FakeHostState } {
       async archive(id) {
         record("sessions.archive", id);
       },
+      async markRead(id, read) {
+        record("sessions.markRead", id, read);
+        const session = state.sessions.get(id);
+        if (session) state.sessions.set(id, { ...session, unread: !read });
+        return { unread: !read };
+      },
       async activity(id, limit) {
         record("sessions.activity", id, limit);
         return state.activity.slice(-limit);

@@ -193,6 +193,19 @@ describe("confirmed effects", () => {
   });
 });
 
+describe("reader state", () => {
+  it("marks a session read or unread without a confirmation", async () => {
+    fixture.state.sessions.set("thr_b", sessionRecord({ id: "thr_b", title: "Other session", unread: true }));
+    const read = await call("sessions.markRead", { sessionId: "thr_b" });
+    expect(read.status).toBe(200);
+    expect(read.body.response?.result).toEqual({ sessionId: "thr_b", unread: false });
+    const unread = await call("sessions.markRead", { sessionId: "thr_b", read: false });
+    expect(unread.body.response?.result).toEqual({ sessionId: "thr_b", unread: true });
+    expect((await call("sessions.markRead", { sessionId: "thr_missing" })).body.response?.error?.code).toBe("not_found");
+    expect(fixture.state.calls.filter((entry) => entry.method === "sessions.markRead").map((entry) => entry.args)).toEqual([["thr_b", true], ["thr_b", false]]);
+  });
+});
+
 describe("navigation", () => {
   it("opens pages and host sessions in place through host-built URLs", async () => {
     const page = await call("pages.open", { sessionId: "thr_c" });

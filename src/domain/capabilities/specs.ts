@@ -62,7 +62,7 @@ export const contextGet = spec({
       capabilities: s.array(
         s.object({
           method: s.string({ min: 3, max: LIMITS.methodNameChars, label: "Method" }),
-          effect: s.literal(["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device"]),
+          effect: s.literal(["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state"]),
           confirmation: s.literal(["none", "required"]),
         }),
         64,
@@ -317,6 +317,21 @@ export const sessionsStop = spec({
   doc: { params: "`{ sessionId }`.", result: "`{ stopped }`.", notes: "Refuses this page's own session outright, before any dialog." },
 });
 
+export const sessionsMarkRead = spec({
+  method: "sessions.markRead",
+  description: "Mark a session read or unread for the reader.",
+  effect: "reader-state",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(s.object({ sessionId: entityId("Session id"), read: s.withDefault(s.boolean(), true) })),
+  validateResult: result(s.object({ sessionId: entityId("Session id"), unread: s.boolean() })),
+  doc: {
+    params: "`{ sessionId, read? }` — `read` defaults to true; `false` marks it unread again.",
+    result: "`{ sessionId, unread }`, the mark after the change.",
+    notes: "Changes only the reader's own attention mark, the one the host's sidebar shows; it never touches the session's work, so it is not confirmed.",
+  },
+});
+
 export const sessionsArchive = spec({
   method: "sessions.archive",
   description: "Archive a session.",
@@ -455,6 +470,7 @@ export const ALL_CAPABILITIES = Object.freeze([
   projectsCreate,
   sessionsStop,
   sessionsArchive,
+  sessionsMarkRead,
   navigationOpenExternal,
   projectsBrowse,
   voiceCaptureAndTranscribe,

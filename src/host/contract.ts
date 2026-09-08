@@ -29,6 +29,8 @@ export interface SessionHost {
     start(args: StartSessionArgs): Promise<{ id: string }>;
     stop(id: string): Promise<void>;
     archive(id: string): Promise<void>;
+    /** Sets the reader's read mark; returns the mark afterwards. */
+    markRead(id: string, read: boolean): Promise<{ unread: boolean }>;
     activity(id: string, limit: number): Promise<ActivityItem[]>;
     storage(id: string): Promise<StorageLocation>;
   };

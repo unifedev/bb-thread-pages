@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.3 — 2026-09-08
+
+- New capability `sessions.markRead` `{ sessionId, read? }` with the new
+  `reader-state` effect class: changes only the reader's read mark, never
+  the session's work, so it is not confirmed (spec R5.7a, RW-19).
+- Starter hub: a failed session needs you only while it is unread; every row
+  has a Read/Unread toggle; the "+ New" prompt box is styled.
+
 ## 1.0.2 — 2026-09-08
 
 The home page matches what the reader sees in bb, and the starter hub is

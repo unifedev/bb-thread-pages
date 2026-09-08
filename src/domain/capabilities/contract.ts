@@ -7,7 +7,11 @@ import type { JsonValue, Validation } from "../json/strict-json.ts";
  * its parameters and its result. Execution and confirmation wording live in
  * the server-side handler, which is the only place with host access.
  */
-export const EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device"] as const;
+/**
+ * `reader-state` changes only what the reader sees about a session — its
+ * read mark — never the session's work; it is not confirmed. spec R5.7a
+ */
+export const EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state"] as const;
 export type EffectClass = (typeof EFFECT_CLASSES)[number];
 
 /** Effects that must be confirmed in trusted chrome. spec R5.7 */

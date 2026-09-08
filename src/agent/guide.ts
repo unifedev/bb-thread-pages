@@ -296,9 +296,10 @@ is a session dedicated to it, so nothing else ever rewrites it.
 
 Complete and working as written; drop it into <main>. It follows what the
 reader already sees in bb: no archived sessions, sub-agents hidden, the
-sessions that need them first (working, waiting, failed, unread), five recent
-per project then "Show more", one line per session, search with "/", and
-Stop, Archive and start-a-session with the confirmations handled. Views and
+sessions that need them first (working, waiting on them, unread — a failed
+session only until they have looked), five recent per project then "Show
+more", one line per session, search with "/", Read/Unread, Stop, Archive and
+start-a-session with the confirmations handled. Views and
 collapsed projects persist in \`storage\`. It widens the page for the list;
 that is allowed — the page owns its stylesheet.
 

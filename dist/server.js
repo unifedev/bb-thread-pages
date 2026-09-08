@@ -1201,7 +1201,10 @@ var STARTER_HUB_MAIN = String.raw`<div class="hub-bar">
   .row .acts button[data-danger]:hover:not(:disabled) { color: var(--flag); border-color: var(--flag); }
   .more { margin: .3rem 0 0; padding: .2rem 0; font: inherit; font-size: .78rem; color: var(--accent); background: transparent; border: 0; box-shadow: none; cursor: pointer; }
   .starter { margin: .5rem 0 0; display: grid; gap: .4rem; }
-  .starter textarea { width: 100%; min-height: 3.2rem; margin: 0; font: inherit; font-size: .88rem; }
+  .starter textarea { width: 100%; min-height: 3.2rem; margin: 0; padding: .5rem .65rem; font: inherit; font-size: .88rem; line-height: 1.5; color: var(--ink); background: var(--surface); border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * .7); resize: vertical; }
+  .starter textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .starter button { justify-self: start; margin: 0; padding: .4rem .9rem; font: inherit; font-size: .85rem; font-weight: 600; color: var(--bg); background: var(--accent); border: var(--rule-w) solid var(--accent); border-radius: calc(var(--radius) * .7); box-shadow: none; cursor: pointer; }
+  .starter button:disabled { opacity: .6; cursor: default; }
   .starter .say { font-size: .78rem; color: var(--ink-3); }
   .empty { margin: .6rem 0; font-size: .85rem; color: var(--ink-3); }
   .hub-foot { margin-top: 1.5rem; font-size: .75rem; color: var(--ink-3); }
@@ -1217,7 +1220,8 @@ var STARTER_HUB_MAIN = String.raw`<div class="hub-bar">
   const PER_PROJECT = 5, MORE = 10;
   const el = (tag, text, cls) => { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n; };
   const fail = (m) => { errorEl.hidden = false; errorEl.textContent = m; };
-  const needsYou = (s) => s.status === "working" || s.status === "waiting" || s.status === "failed" || s.unread;
+  // Needs you: running, waiting on you, or unread — a failed session only until you have looked at it.
+  const needsYou = (s) => s.status === "working" || s.status === "waiting" || s.unread;
   const recency = (s) => Math.max(s.attentionAtMs || 0, s.updatedAtMs || 0);
   const ago = (ms) => { const d = Date.now() - ms; if (d < 60e3) return "now"; if (d < 3600e3) return Math.round(d / 60e3) + "m"; if (d < 86400e3) return Math.round(d / 3600e3) + "h"; return Math.round(d / 86400e3) + "d"; };
 
@@ -1257,6 +1261,7 @@ var STARTER_HUB_MAIN = String.raw`<div class="hub-bar">
     const acts = el("span", undefined, "acts");
     if (s.page.available) acts.append(act("bb", () => tp.invoke("sessions.openHost", { sessionId: s.id })));
     if (s.status === "working") acts.append(act("Stop", async () => { await tp.invoke("sessions.stop", { sessionId: s.id }); await load(); }, true));
+    acts.append(act(s.unread ? "Read" : "Unread", async () => { const r = await tp.invoke("sessions.markRead", { sessionId: s.id, read: !!s.unread }); s.unread = r.unread; render(); }));
     acts.append(act("Archive", async () => { await tp.invoke("sessions.archive", { sessionId: s.id }); sessions = sessions.filter((x) => x.id !== s.id); render(); }, true));
     r.append(el("span", undefined, "dot"), title, when, acts);
     return r;
@@ -1299,7 +1304,7 @@ var STARTER_HUB_MAIN = String.raw`<div class="hub-bar">
       const h = el("h2", project.name); h.title = "Collapse or expand";
       h.addEventListener("click", () => { prefs.collapsed[project.id] = !prefs.collapsed[project.id]; savePrefs(); render(); });
       const counts = el("span", undefined, "counts");
-      const w = all.filter((s) => s.status === "working").length, u = all.filter((s) => s.unread).length, f = all.filter((s) => s.status === "failed" || s.status === "waiting").length;
+      const w = all.filter((s) => s.status === "working").length, u = all.filter((s) => s.unread).length, f = all.filter((s) => s.status === "waiting" || (s.status === "failed" && s.unread)).length;
       counts.append(document.createTextNode(all.length + " "));
       if (w) counts.append(el("b", w + " working ")); if (u) counts.append(el("i", u + " unread ")); if (f) counts.append(el("s", f + " need you"));
       const add = act("+ New", async () => { if (starters.has(project.id)) starters.delete(project.id); else starters.add(project.id); render(); });
@@ -1618,9 +1623,10 @@ is a session dedicated to it, so nothing else ever rewrites it.
 
 Complete and working as written; drop it into <main>. It follows what the
 reader already sees in bb: no archived sessions, sub-agents hidden, the
-sessions that need them first (working, waiting, failed, unread), five recent
-per project then "Show more", one line per session, search with "/", and
-Stop, Archive and start-a-session with the confirmations handled. Views and
+sessions that need them first (working, waiting on them, unread \u2014 a failed
+session only until they have looked), five recent per project then "Show
+more", one line per session, search with "/", Read/Unread, Stop, Archive and
+start-a-session with the confirmations handled. Views and
 collapsed projects persist in \`storage\`. It widens the page for the list;
 that is allowed \u2014 the page owns its stylesheet.
 
@@ -1842,6 +1848,11 @@ function createBbHost(bb) {
       },
       async archive(id) {
         await bb.sdk.threads.archive({ threadId: id });
+      },
+      async markRead(id, read) {
+        const after = read ? await bb.sdk.threads.markRead({ threadId: id }) : await bb.sdk.threads.markUnread({ threadId: id });
+        const record = asRecord(after);
+        return { unread: record ? unreadOf(record) : !read };
       },
       async activity(id, limit) {
         const events = await bb.sdk.threads.events.list({
@@ -2106,7 +2117,7 @@ function normalize(values) {
 }
 
 // src/domain/capabilities/contract.ts
-var EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device"];
+var EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state"];
 var CONFIRMED_EFFECTS = /* @__PURE__ */ new Set(["cross-session-write", "destructive", "device"]);
 
 // src/domain/capabilities/registry.ts
@@ -2119,7 +2130,7 @@ function createRegistry(specs) {
     if (CONFIRMED_EFFECTS.has(spec2.effect) && !spec2.confirmed) {
       throw new TypeError(`${spec2.method} has a ${spec2.effect} effect and must be confirmed`);
     }
-    if ((spec2.effect === "read" || spec2.effect === "own-session-write") && spec2.confirmed) {
+    if ((spec2.effect === "read" || spec2.effect === "own-session-write" || spec2.effect === "reader-state") && spec2.confirmed) {
       throw new TypeError(`${spec2.method} is a ${spec2.effect} and must not be confirmed`);
     }
     if (typeof spec2.description !== "string" || spec2.description.trim().length === 0 || spec2.description.length > 240) {
@@ -2427,7 +2438,7 @@ var contextGet = spec({
       capabilities: array(
         object({
           method: string({ min: 3, max: LIMITS.methodNameChars, label: "Method" }),
-          effect: literal(["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device"]),
+          effect: literal(["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state"]),
           confirmation: literal(["none", "required"])
         }),
         64
@@ -2656,6 +2667,20 @@ var sessionsStop = spec({
   validateResult: result(object({ stopped: boolean() })),
   doc: { params: "`{ sessionId }`.", result: "`{ stopped }`.", notes: "Refuses this page's own session outright, before any dialog." }
 });
+var sessionsMarkRead = spec({
+  method: "sessions.markRead",
+  description: "Mark a session read or unread for the reader.",
+  effect: "reader-state",
+  confirmed: false,
+  implemented: true,
+  validateParams: params(object({ sessionId: entityId("Session id"), read: withDefault(boolean(), true) })),
+  validateResult: result(object({ sessionId: entityId("Session id"), unread: boolean() })),
+  doc: {
+    params: "`{ sessionId, read? }` \u2014 `read` defaults to true; `false` marks it unread again.",
+    result: "`{ sessionId, unread }`, the mark after the change.",
+    notes: "Changes only the reader's own attention mark, the one the host's sidebar shows; it never touches the session's work, so it is not confirmed."
+  }
+});
 var sessionsArchive = spec({
   method: "sessions.archive",
   description: "Archive a session.",
@@ -2780,6 +2805,7 @@ var ALL_CAPABILITIES = Object.freeze([
   projectsCreate,
   sessionsStop,
   sessionsArchive,
+  sessionsMarkRead,
   navigationOpenExternal,
   projectsBrowse,
   voiceCaptureAndTranscribe
@@ -3638,6 +3664,16 @@ var sessionsArchive2 = handler({
     return { result: { archived: true } };
   }
 });
+var sessionsMarkRead2 = handler({
+  method: "sessions.markRead",
+  async refuse(params2, context) {
+    await targetSession(context, params2.sessionId);
+  },
+  async execute(params2, { serving }) {
+    const after = await serving.host.sessions.markRead(params2.sessionId, params2.read);
+    return { result: { sessionId: params2.sessionId, unread: after.unread } };
+  }
+});
 var projectsBrowse2 = handler({
   method: "projects.browse",
   async summarize() {
@@ -3689,6 +3725,7 @@ var ALL_HANDLERS = [
   sessionsStart2,
   sessionsStop2,
   sessionsArchive2,
+  sessionsMarkRead2,
   projectsBrowse2,
   projectsCreate2,
   pagesOpen2,

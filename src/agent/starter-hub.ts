@@ -61,7 +61,10 @@ export const STARTER_HUB_MAIN = String.raw`<div class="hub-bar">
   .row .acts button[data-danger]:hover:not(:disabled) { color: var(--flag); border-color: var(--flag); }
   .more { margin: .3rem 0 0; padding: .2rem 0; font: inherit; font-size: .78rem; color: var(--accent); background: transparent; border: 0; box-shadow: none; cursor: pointer; }
   .starter { margin: .5rem 0 0; display: grid; gap: .4rem; }
-  .starter textarea { width: 100%; min-height: 3.2rem; margin: 0; font: inherit; font-size: .88rem; }
+  .starter textarea { width: 100%; min-height: 3.2rem; margin: 0; padding: .5rem .65rem; font: inherit; font-size: .88rem; line-height: 1.5; color: var(--ink); background: var(--surface); border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * .7); resize: vertical; }
+  .starter textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .starter button { justify-self: start; margin: 0; padding: .4rem .9rem; font: inherit; font-size: .85rem; font-weight: 600; color: var(--bg); background: var(--accent); border: var(--rule-w) solid var(--accent); border-radius: calc(var(--radius) * .7); box-shadow: none; cursor: pointer; }
+  .starter button:disabled { opacity: .6; cursor: default; }
   .starter .say { font-size: .78rem; color: var(--ink-3); }
   .empty { margin: .6rem 0; font-size: .85rem; color: var(--ink-3); }
   .hub-foot { margin-top: 1.5rem; font-size: .75rem; color: var(--ink-3); }
@@ -77,7 +80,8 @@ export const STARTER_HUB_MAIN = String.raw`<div class="hub-bar">
   const PER_PROJECT = 5, MORE = 10;
   const el = (tag, text, cls) => { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n; };
   const fail = (m) => { errorEl.hidden = false; errorEl.textContent = m; };
-  const needsYou = (s) => s.status === "working" || s.status === "waiting" || s.status === "failed" || s.unread;
+  // Needs you: running, waiting on you, or unread — a failed session only until you have looked at it.
+  const needsYou = (s) => s.status === "working" || s.status === "waiting" || s.unread;
   const recency = (s) => Math.max(s.attentionAtMs || 0, s.updatedAtMs || 0);
   const ago = (ms) => { const d = Date.now() - ms; if (d < 60e3) return "now"; if (d < 3600e3) return Math.round(d / 60e3) + "m"; if (d < 86400e3) return Math.round(d / 3600e3) + "h"; return Math.round(d / 86400e3) + "d"; };
 
@@ -117,6 +121,7 @@ export const STARTER_HUB_MAIN = String.raw`<div class="hub-bar">
     const acts = el("span", undefined, "acts");
     if (s.page.available) acts.append(act("bb", () => tp.invoke("sessions.openHost", { sessionId: s.id })));
     if (s.status === "working") acts.append(act("Stop", async () => { await tp.invoke("sessions.stop", { sessionId: s.id }); await load(); }, true));
+    acts.append(act(s.unread ? "Read" : "Unread", async () => { const r = await tp.invoke("sessions.markRead", { sessionId: s.id, read: !!s.unread }); s.unread = r.unread; render(); }));
     acts.append(act("Archive", async () => { await tp.invoke("sessions.archive", { sessionId: s.id }); sessions = sessions.filter((x) => x.id !== s.id); render(); }, true));
     r.append(el("span", undefined, "dot"), title, when, acts);
     return r;
@@ -159,7 +164,7 @@ export const STARTER_HUB_MAIN = String.raw`<div class="hub-bar">
       const h = el("h2", project.name); h.title = "Collapse or expand";
       h.addEventListener("click", () => { prefs.collapsed[project.id] = !prefs.collapsed[project.id]; savePrefs(); render(); });
       const counts = el("span", undefined, "counts");
-      const w = all.filter((s) => s.status === "working").length, u = all.filter((s) => s.unread).length, f = all.filter((s) => s.status === "failed" || s.status === "waiting").length;
+      const w = all.filter((s) => s.status === "working").length, u = all.filter((s) => s.unread).length, f = all.filter((s) => s.status === "waiting" || (s.status === "failed" && s.unread)).length;
       counts.append(document.createTextNode(all.length + " "));
       if (w) counts.append(el("b", w + " working ")); if (u) counts.append(el("i", u + " unread ")); if (f) counts.append(el("s", f + " need you"));
       const add = act("+ New", async () => { if (starters.has(project.id)) starters.delete(project.id); else starters.add(project.id); render(); });

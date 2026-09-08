@@ -22,7 +22,7 @@ export function createRegistry(specs: readonly AnyCapabilitySpec[]): CapabilityR
     if (CONFIRMED_EFFECTS.has(spec.effect) && !spec.confirmed) {
       throw new TypeError(`${spec.method} has a ${spec.effect} effect and must be confirmed`);
     }
-    if ((spec.effect === "read" || spec.effect === "own-session-write") && spec.confirmed) {
+    if ((spec.effect === "read" || spec.effect === "own-session-write" || spec.effect === "reader-state") && spec.confirmed) {
       throw new TypeError(`${spec.method} is a ${spec.effect} and must not be confirmed`);
     }
     if (typeof spec.description !== "string" || spec.description.trim().length === 0 || spec.description.length > 240) {

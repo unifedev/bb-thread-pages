@@ -20,6 +20,7 @@ const SPEC_NAMES = [
   "projects.create",
   "sessions.stop",
   "sessions.archive",
+  "sessions.markRead",
   "navigation.openExternal",
   "projects.browse",
   "voice.captureAndTranscribe",
@@ -45,7 +46,7 @@ describe("capability registry", () => {
   it("confirms every cross-session, destructive and device effect and no read", () => {
     for (const entry of capabilityRegistry.list()) {
       if (["cross-session-write", "destructive", "device"].includes(entry.effect)) expect(entry.confirmed, entry.method).toBe(true);
-      if (["read", "own-session-write"].includes(entry.effect)) expect(entry.confirmed, entry.method).toBe(false);
+      if (["read", "own-session-write", "reader-state"].includes(entry.effect)) expect(entry.confirmed, entry.method).toBe(false);
     }
     expect(spec("navigation.openExternal").confirmed).toBe(true);
     expect(spec("pages.open").confirmed).toBe(false);

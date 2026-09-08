@@ -124,6 +124,17 @@ export const sessionsArchive = handler<{ sessionId: string }, unknown>({
   },
 });
 
+export const sessionsMarkRead = handler<{ sessionId: string; read: boolean }, unknown>({
+  method: "sessions.markRead",
+  async refuse(params, context) {
+    await targetSession(context, params.sessionId);
+  },
+  async execute(params, { serving }) {
+    const after = await serving.host.sessions.markRead(params.sessionId, params.read);
+    return { result: { sessionId: params.sessionId, unread: after.unread } };
+  },
+});
+
 export const projectsBrowse = handler<null, unknown>({
   method: "projects.browse",
   async summarize() {

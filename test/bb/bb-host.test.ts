@@ -37,6 +37,19 @@ describe("bb adapter", () => {
     expect(calls[1]![0]).toMatchObject({ environment: { type: "reuse", environmentId: "env_9" }, providerId: "codex", title: "T" });
   });
 
+  it("marks read and unread through bb and reports the resulting mark", async () => {
+    const { host, fake } = hostWith({
+      threads: {
+        markRead: async () => makeThreadResponse({ id: "thr_a", lastReadAt: 50, latestAttentionAt: 41 }),
+        markUnread: async () => makeThreadResponse({ id: "thr_a", lastReadAt: null, latestAttentionAt: 41 }),
+      },
+    });
+    expect(await host.sessions.markRead("thr_a", true)).toEqual({ unread: false });
+    expect(await host.sessions.markRead("thr_a", false)).toEqual({ unread: true });
+    expect(fake.harness.inspection.sdk.callsTo("threads.markRead")).toHaveLength(1);
+    expect(fake.harness.inspection.sdk.callsTo("threads.markUnread")).toHaveLength(1);
+  });
+
   it("reads models from the catalog object per provider and drops what it cannot use", async () => {
     const { host } = hostWith({
       providers: {

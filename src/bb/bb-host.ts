@@ -109,6 +109,11 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
       async archive(id) {
         await bb.sdk.threads.archive({ threadId: id });
       },
+      async markRead(id, read) {
+        const after = (read ? await bb.sdk.threads.markRead({ threadId: id }) : await bb.sdk.threads.markUnread({ threadId: id })) as unknown;
+        const record = asRecord(after);
+        return { unread: record ? unreadOf(record) : !read };
+      },
       async activity(id, limit): Promise<ActivityItem[]> {
         const events = (await bb.sdk.threads.events.list({
           threadId: id,
