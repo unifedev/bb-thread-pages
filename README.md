@@ -84,9 +84,18 @@ limitation once bb offers prefix routes.
 
 ## Release
 
+A release is a git tag **and** an npm publish, always both: `bb plugin install
+git:…@^X.Y.0` resolves tags, `bb plugin install npm:@unifedev/thread-pages`
+resolves npm, and the two must name the same code.
+
 1. `npm ci && npm run check && npm run build`
-2. Commit `dist/` and `src/generated/`, tag `vX.Y.Z`, push. bb refuses a tag
-   that later moves: publish a fix as a new version.
-3. `bb plugin install git:<url>@^X.Y.0` on a clean machine.
+2. Bump `version` in `package.json`, add the `CHANGELOG.md` entry, commit
+   `dist/` and `src/generated/` with it.
+3. `git tag -a vX.Y.Z -m "Thread Pages X.Y.Z" && git push origin main --tags`.
+   bb refuses a tag that later moves: publish a fix as a new version.
+4. `npm publish --access public` (as a member of `@unifedev`). Verify with
+   `npm view @unifedev/thread-pages version`.
+5. On a clean machine: `bb plugin install npm:@unifedev/thread-pages@^X.Y.0`
+   or the `git:` form, then `bb thread-page status`.
 
 MIT
