@@ -34,9 +34,10 @@ authenticated to, so they work over bb Connect and on mobile without exposing a
 second port or a public URL.
 
 **Safe by construction.** Page code runs in an opaque-origin sandbox with no bb
-cookie, no mutation token, no parent DOM, no raw API, and no general network
-access. Anything the page can ask bb to do goes through one narrow, validated
-capability at a time.
+cookie, no mutation token, no parent DOM and no raw API. Anything the page can
+ask bb to do goes through one narrow, validated capability at a time. Pages can
+reach the internet — holding no bb authority is the boundary, not being cut off
+from the world.
 
 ## In the page
 

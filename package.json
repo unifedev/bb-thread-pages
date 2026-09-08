@@ -57,6 +57,7 @@
     "dist/server.js",
     "dist/server.meta.json",
     "docs/",
+    "spec/",
     "ARCHITECTURE.md",
     "PLUGIN_OVERVIEW.md",
     "README.md",

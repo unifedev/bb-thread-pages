@@ -2,9 +2,18 @@
 
 Version 0.3.0 · September 2026
 
-This is the design and its reasoning. [docs/MODEL.md](./docs/MODEL.md) is the
-operator's view — where things are stored and how to reach them.
+This is the design and its reasoning, as built. [docs/MODEL.md](./docs/MODEL.md)
+is the operator's view — where things are stored and how to reach them.
 [docs/ROADMAP.md](./docs/ROADMAP.md) is what is left.
+[docs/DECISIONS.md](./docs/DECISIONS.md) records the design decisions and why
+they were made.
+
+> **[spec/](./spec/) is the specification the product is being rebuilt against.**
+> It is complete and implementation-independent: someone who has never seen this
+> code can build Thread Pages from it, on bb or on another host. Where this
+> document and the spec disagree, **the spec wins** — this one describes what
+> exists, the spec describes what is intended.
+> [spec/09-conformance.md](./spec/09-conformance.md) lists every difference.
 
 ## Intent
 
@@ -25,8 +34,43 @@ Three properties follow, and everything else is downstream of them:
    an API it posts to. Saving is publishing.
 2. **The agent's contract stays small.** One command, a short instruction, and
    an optional guide it fetches only when the page needs more than prose.
-3. **Page code is untrusted.** It is generated, so it is sandboxed and given
-   narrow named capabilities rather than credentials.
+3. **Page code holds no bb authority.** It is generated, so it is sandboxed away
+   from bb's credentials and given narrow named capabilities instead. It is *not*
+   quarantined from the world — see *Trust boundary*.
+
+## One agent, one page
+
+Decided September 2026 ([docs/DECISIONS.md](./docs/DECISIONS.md) D1). This is the
+model the rest of the design assumes.
+
+A page is the product of **one agent's work**, tied to that agent's thread. There
+is no second kind of page. It is one HTML file by default and may grow into a
+site of several files when the agent needs that.
+
+Durable surfaces — a project console, a dashboard, a task launcher — are not a
+feature. They are what you get when a page's forms **spawn fresh agents** instead
+of messaging their owner: nothing asks the owning agent to rewrite the page, so
+it stays put. The spawned agent need have no route back into the page at all.
+
+Two consequences worth stating plainly:
+
+- **The home page is a convention, not a mechanism.** It is one agent's page that
+  a setting happens to point at. Any page can be home.
+- **A new dashboard is an agent, not a feature request.** Spawn an agent, tell it
+  what to build, and it writes its own page. An agent that wants another
+  interface to exist does the same rather than writing outside its own file — and
+  can then talk to that agent to have it adjusted.
+
+This is why `threads.spawn` is load-bearing rather than a convenience: it is the
+mechanism durable surfaces are made of.
+
+## Portability
+
+The server contract is meant to be reimplementable. Someone should be able to
+stand up an equivalent host and have existing pages keep working, so bb is the
+first host rather than the definition. A page therefore reaches the outside only
+through attributes and capabilities, never through anything bb-shaped, and no fix
+may depend on bb's frontend.
 
 ## The shape
 
@@ -53,9 +97,25 @@ The page is generated code, so it is treated as hostile.
 **Inside the iframe** — `sandbox="allow-scripts allow-forms"`, opaque origin.
 Arbitrary HTML, CSS and JavaScript are allowed *because* the frame has no bb
 cookie, no mutation token, no parent DOM, no `localStorage`, no raw bb API, no
-CLI, and no filesystem access. CSP blocks ordinary `fetch` and subresources.
-Page-authored code can therefore be as creative as the task needs without that
-creativity being a security question.
+CLI, and no filesystem access. Page-authored code can therefore be as creative as
+the task needs without that creativity being a security question.
+
+**The network is not part of that boundary** (decided September 2026,
+[docs/DECISIONS.md](./docs/DECISIONS.md) D7, reversing an earlier non-goal).
+Pages get internet access. The reasoning: the agent that writes the page already
+has the machine and can act directly; a remote script it chose to include is one
+it could have used anywhere; local programs can already trigger agents; and the
+whole surface sits behind auth. Restricting the network bought very little, and
+cost most of what makes a page a real application.
+
+It bought little because it never actually prevented exfiltration — see *The
+honest limitation* below. Denying `connect-src` while leaving self-navigation
+open was obscurity, not containment.
+
+What the network does **not** change: the page still holds no bb credential, and
+every effect on bb still goes through one validated capability at a time with a
+trusted confirmation. Reaching a URL and holding bb's authority are different
+things, and only the first is now open.
 
 **Outside the iframe** — plugin-authored code on the bb origin. It holds the
 action token, makes the same-origin calls, owns navigation, and renders
@@ -92,7 +152,16 @@ do not either. A page therefore has access to data already inside its own frame.
 It grants no bb authority. Closing it entirely would mean forbidding authored
 JavaScript and shipping a declarative renderer instead, which would cost the
 open-page model that is the point of the product. This is a stated trade, not an
-oversight.
+oversight — and it is the reason the network restriction was dropped rather than
+defended: a limit that a one-line self-navigation walks around is not a limit.
+
+One consequence of open network access is worth naming because it does *not*
+follow from "the agent already owns the host": a page runs in the **reader's**
+browser, which is often a different machine on a different network. Page script
+can therefore reach what that device can reach, including its loopback and
+private-range addresses. CSP cannot express "public internet but not private
+ranges", so the options were open access or a curated allow-list; the allow-list
+was rejected as contradicting the decision. Recorded as accepted.
 
 ## Capabilities
 

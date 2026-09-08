@@ -135,11 +135,17 @@ wildcard-bind bb.
 
 ## Security
 
-The page is generated code, so it is treated as untrusted. It runs in an
+The page is generated code, so it holds none of bb's authority. It runs in an
 opaque-origin sandbox with no bb cookie, no mutation token, no parent DOM, no
-`localStorage`, no raw bb API, no CLI, no filesystem access, and no ordinary
-network access. Everything it can ask bb to do goes through one validated,
-named capability at a time.
+`localStorage`, no raw bb API, no CLI and no filesystem access. Everything it can
+ask bb to do goes through one validated, named capability at a time.
+
+Pages **do** have internet access (decided September 2026 — see
+[docs/DECISIONS.md](./docs/DECISIONS.md) D7). Reaching a URL and holding bb's
+credentials are different things, and only the first is open. Restricting the
+network never prevented exfiltration anyway, because a page can encode
+frame-local data in a self-navigation URL; it only cost pages the ability to load
+fonts, data and libraries.
 
 Anything reaching outside the current thread requires a confirmation the page
 cannot fake: the server answers once with a signed challenge carrying **its own**

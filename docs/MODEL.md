@@ -51,6 +51,14 @@ That is the whole storage model. The page is a normal file: read it, diff it,
 edit it with any tool. There is no database of pages, no revision history, and
 no separate publish step.
 
+> **This section is due to change.** [DECISIONS.md](./DECISIONS.md) D1 decided
+> that a page is one HTML file *by default* and may grow into a site of several
+> files. Today's layout cannot express that: `thread-page-assets/` is flat, name
+> characters are restricted, subdirectories are rejected, and assets are served
+> from a separate preview origin through an injected `<base href>` rather than
+> from the page's own route. That indirection is also the direct cause of two
+> open bugs. The replacement shape is not designed yet.
+
 The plugin also keeps two small things in bb's existing `plugin_kv` table:
 
 - `page-signing-key:v2` — 32 bytes, so open browser sessions survive a reload;
