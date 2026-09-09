@@ -1,3 +1,4 @@
+import { parse as parseHtml } from "parse5";
 import { describe, expect, it } from "vitest";
 import { buildGuide } from "../../src/agent/guide.ts";
 import { DEFAULT_PAGE_SEED, renderSeed } from "../../src/agent/seed/seed.ts";
@@ -84,6 +85,31 @@ describe("the seed", () => {
   it("keeps its comment free of tags that would end it early", () => {
     const comment = DEFAULT_PAGE_SEED.slice(DEFAULT_PAGE_SEED.indexOf("<!--"), DEFAULT_PAGE_SEED.indexOf("-->"));
     expect(comment).not.toContain("-->");
+  });
+
+  // An agent edits its page with string operations, because the page is a file
+  // and there is no page-editing API. A comment that spells tags out literally
+  // makes every count and every index lie: the seed once mentioned <main> in
+  // prose, so a structural check on a healthy page reported two of them and the
+  // obvious splice started inside the comment. spec R6.18-R6.23
+  it("contains no tag token that is not a real element", () => {
+    const html = renderSeed(DEFAULT_PAGE_SEED, "Title", new Date("2026-09-08T00:00:00Z"));
+    const document = parseHtml(html);
+    const counted = new Map<string, number>();
+    const walk = (node: { tagName?: string; childNodes?: unknown[] }): void => {
+      if (node.tagName) counted.set(node.tagName, (counted.get(node.tagName) ?? 0) + 1);
+      for (const child of node.childNodes ?? []) walk(child as { tagName?: string; childNodes?: unknown[] });
+    };
+    walk(document as unknown as { childNodes: unknown[] });
+
+    for (const tag of ["main", "form", "script", "style", "link", "img", "textarea", "button"]) {
+      const tokens = html.match(new RegExp(`<${tag}[\\s>/]`, "g"))?.length ?? 0;
+      expect(tokens, `<${tag}> tokens in the raw text vs elements in the DOM`).toBe(counted.get(tag) ?? 0);
+    }
+  });
+
+  it("tells an author what to do when the page should stay put", () => {
+    expect(DEFAULT_PAGE_SEED).toContain("delete the reply form");
   });
 });
 

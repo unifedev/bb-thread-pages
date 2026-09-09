@@ -37,6 +37,11 @@ export const THEME_CSS = String.raw`
 
   *, *::before, *::after { box-sizing: border-box; }
 
+  /* A class rule that sets display outranks the user-agent rule for the
+     hidden attribute, so a page that styles .banner with display:flex would
+     render a hidden banner as an empty bar. This keeps hidden meaning hidden. */
+  [hidden] { display: none !important; }
+
   html { -webkit-text-size-adjust: 100%; }
 
   body {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ALL_CAPABILITIES, capabilityRegistry, completeInvocation, createRegistry, decodeBridgeRequest, resolveInvocation, type AnyCapabilitySpec } from "../../src/domain/capabilities/index.ts";
+import { RENAMED_METHODS, unknownMethodMessage } from "../../src/domain/capabilities/renamed.ts";
 import { PageError } from "../../src/domain/errors.ts";
 import { LIMITS } from "../../src/domain/limits.ts";
 
@@ -78,6 +79,23 @@ describe("bridge requests", () => {
     expect(() => resolveInvocation(stale, capabilityRegistry, "d".repeat(64))).toThrow(expect.objectContaining({ code: "stale_page" }));
     expect(() => resolveInvocation(decodeBridgeRequest(request("fixture.nonexistentMethod", {})), capabilityRegistry, REV)).toThrow(expect.objectContaining({ code: "unknown_method" }));
     expect(() => resolveInvocation(decodeBridgeRequest(request("voice.captureAndTranscribe", {})), capabilityRegistry, REV)).toThrow(expect.objectContaining({ code: "unknown_method" }));
+  });
+
+  // 1.0.0 renamed the whole page-facing surface at once. A page written
+  // against 0.3.x got back "Unknown capability: threads.spawn", which reads as
+  // "this host cannot do that" rather than "this is called something else".
+  it("names the replacement when a page calls a method that was renamed", () => {
+    for (const [old, replacement] of Object.entries(RENAMED_METHODS)) {
+      expect(() => resolveInvocation(decodeBridgeRequest(request(old, {})), capabilityRegistry, REV)).toThrow(
+        expect.objectContaining({ code: "unknown_method", message: expect.stringContaining(`renamed to ${replacement}`) }),
+      );
+      expect(capabilityRegistry.get(old), `${old} must not be aliased`).toBeUndefined();
+      expect(capabilityRegistry.get(replacement), `${replacement} must exist`).toBeDefined();
+    }
+  });
+
+  it("does not invent a replacement for a method that never existed", () => {
+    expect(unknownMethodMessage("fixture.nonexistentMethod")).toBe("Unknown capability: fixture.nonexistentMethod");
   });
 });
 

@@ -24,27 +24,31 @@ export const DEFAULT_PAGE_SEED = `<!doctype html>
   </header>
 
   <!--
-    Write inside <main>. Plain semantic HTML is already styled: h2, p, ul,
-    table, form, fieldset/legend, a wrapping label, small, details. Three
-    class names exist: .card boxes an aside, .needs-you flags a block that is
-    blocked on the reader, .label is a small uppercase tag.
+    Everything below is yours: this whole file, including the stylesheet in
+    the head. Rewrite it however the task needs. Two things the file cannot
+    tell you, because they are behaviour rather than markup:
 
-    Every <form> answers this session automatically unless it carries
-    data-thread-page-manual. Blank answers are valid. A <form method="dialog">
-    you only meant as a local confirm still sends a message unless it opts out.
+    1. Every form element in this document is captured and delivered to this
+       session as a message. That includes a dialog form you only meant as a
+       local confirm; put data-thread-page-manual on any form that is not
+       meant to answer. Nothing is required and blank is a real answer.
+    2. window.prompt, alert, confirm and window.open do nothing here — the
+       sandbox silences them. Build the input into the page instead.
 
-    Files you put beside this index.html are served relatively: <img
-    src="chart.png">, <link href="page.css">, <script src="app.js">, nested
-    paths included. Ordinary <a href="https://…"> links work.
+    The look is three attributes on the html element. data-theme: paper,
+    terminal, atrium, volume or bloom. data-mode: system, light or dark.
+    data-atmos: on or off.
 
-    data-theme: paper | terminal | atrium | volume | bloom.
-    data-mode: system | light | dark. data-atmos: on | off.
-    Extra CSS goes in one more <style>, everything inside @scope (main),
-    colour and shape from var(--token) only.
+    If this page should stay put — a dashboard, a console, a page nobody
+    should have to rewrite — delete the reply form below and let its buttons
+    start fresh sessions instead. See the guide.
 
-    Never use window.prompt, alert, confirm or window.open: the sandbox
-    silences them. For anything more — charts, files, live session state,
-    starting sessions, links — run: bb thread-page guide
+    Everything else — files beside this one, charts, live session state,
+    starting sessions, links, limits — is in: bb thread-page guide
+
+    This comment deliberately names no HTML tags. An earlier version spelled
+    them out, and every agent that edited its page by string surgery found
+    tags here that were not in the document. Keep it that way.
   -->
   <main>
     <p>Replace this with what changed and what you need from the reader.</p>

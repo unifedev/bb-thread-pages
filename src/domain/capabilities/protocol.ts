@@ -4,6 +4,7 @@ import { isJsonObject, validateJson, type JsonValue } from "../json/strict-json.
 import { LIMITS } from "../limits.ts";
 import type { CapabilityRegistry } from "./registry.ts";
 import type { AnyCapabilitySpec } from "./contract.ts";
+import { unknownMethodMessage } from "./renamed.ts";
 
 /**
  * The bridge protocol: what a page sends over the port and what it gets back.
@@ -89,7 +90,7 @@ export interface ResolvedInvocation<Params = unknown> {
 export function resolveInvocation(request: BridgeRequest, registry: CapabilityRegistry, currentRevision: string): ResolvedInvocation {
   if (request.pageRevision !== currentRevision) throw new PageError("stale_page", "This page changed; reload it before responding.");
   const spec = registry.get(request.method);
-  if (!spec || !spec.implemented) throw new PageError("unknown_method", `Unknown capability: ${request.method}`);
+  if (!spec || !spec.implemented) throw new PageError("unknown_method", unknownMethodMessage(request.method));
   const params = spec.validateParams(request.params);
   if (!params.ok) {
     const first = params.issues[0];

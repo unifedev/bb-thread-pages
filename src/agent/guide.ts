@@ -17,6 +17,7 @@ export function buildGuide(registry: CapabilityRegistry, site: SiteStrategy): st
     forms(),
     uploads(),
     ownFiles(site),
+    keepingCurrent(),
     runtimeApi(),
     capabilities(registry),
     startingSessions(),
@@ -159,6 +160,30 @@ fetches work (see Network).`
 Page script may also fetch its own files as data: \`await fetch("data.json")\`.`
 }`;
 
+const keepingCurrent = () => `## Keeping a page's data current
+
+The entry document is the only artifact guaranteed to reach every reader, on
+every origin. Rewriting it is therefore how you push new data to an open page:
+the shell notices the new revision within ${LIMITS.shellPollMs / 1000} s and reloads the page under
+the reader, preserving what they were typing. You do not need a poller, a
+sidecar or a socket for this — a page that follows a data source is a page
+something rewrites.
+
+Three things to get right:
+
+- **Make the build deterministic.** An unchanged data set must produce a
+  byte-identical document. This is the non-obvious half: a generated timestamp
+  in the payload turns every rebuild into a reload for every reader, and the
+  page will look like it is flickering for no reason.
+- **Set \`setDirty(true)\` while the reader is mid-edit** in state the host
+  cannot see. A captured form does this for you; your own widgets do not.
+- **Refresh on a slow watch, not a tight timer.** A page shares a budget of
+  ${LIMITS.ratePerMinute} requests a minute with its own forms.
+
+\`window.threadPage.watch\` is the other half, for live host state — sessions,
+activity — that does not live in your file. Use the document rewrite for data
+you generate, and \`watch\` for data the host owns.`;
+
 const runtimeApi = () => `## window.threadPage
 
 The complete page-facing API; it is frozen and cannot be replaced.
@@ -270,7 +295,23 @@ writes its own page. Link to it with \`pages.open\`, or suggest making it home.
 If you want another agent's page changed, send that agent a message with
 \`sessions.send\` rather than editing its file. Do not create a session merely
 to hold a page: a page that stays put is owned by a real agent that built it
-and then stopped.`;
+and then stopped.
+
+**The whole file is yours.** There is no page-editing API and there is not
+meant to be one: ${ENTRY_FILE} is a file in your storage directory that you
+read and write with your ordinary tools. Nothing in it is reserved — not the
+stylesheet, not the header, not the comment the seed came with. Rewriting the
+document whole is the expected way to change it, and safer than splicing,
+because a splice computed from string indices can silently eat content that a
+whole-document write cannot.
+
+**A page may be build output.** A repository script generating pages into
+several sessions' storage — so a team gets one identical interface from a
+checkout rather than from three agents independently writing HTML — is
+legitimate. The rule that does not bend: every page still has one owning
+session, and that session's agent builds the page the first time, whether or
+not a script takes over afterwards. A page with no agent behind it is a page
+nobody can be asked to change.`;
 
 const home = () => `## The home page
 
@@ -316,7 +357,11 @@ const accessibility = () => `## Before you save
 - Every action reachable by keyboard; nothing pointer-only.
 - Inline SVG for diagrams and charts, with var(--accent) inside it; a zero
   gets a visible stub or the eye reads missing data.
-- grep -o '#[0-9a-fA-F]\\{3,8\\}' ${ENTRY_FILE} inside your <style> should be empty.`;
+- grep -o '#[0-9a-fA-F]\\{3,8\\}' ${ENTRY_FILE} inside your <style> should be empty.
+- Read it once over the reader's real origin, not only loopback. A local bb
+  requires no credential and a remote one does, so anything the page loads for
+  itself can work for you and fail for them. Authentication is the one axis
+  where behaviour genuinely differs between your machine and theirs.`;
 
 const limits = () => `## Limits
 
