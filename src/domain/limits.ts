@@ -62,6 +62,16 @@ export const LIMITS = Object.freeze({
   watchMinMs: 2_000,
   watchMaxMs: 5 * 60 * 1000,
   /** Offline copy of the entry document kept in the host's key-value store. R2.30 */
+  /**
+   * Resolving a page's own files into its entry document (see pages/inline.ts).
+   * The per-file cap is generous because a page's stylesheet and data set are
+   * the whole point; the total is what keeps one page from becoming a document
+   * no phone will load. Base64 costs a third on top of both.
+   */
+  inlineFileBytes: 2 * 1024 * 1024,
+  inlineTotalBytes: 3 * 1024 * 1024,
+  /** How far `url()` inside an inlined stylesheet is followed. */
+  inlineCssDepth: 3,
   offlineCopyBytes: 200 * 1024,
   offlineCacheEntries: 32,
   offlineCacheBytes: 8 * 1024 * 1024,

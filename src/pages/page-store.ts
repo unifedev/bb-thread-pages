@@ -3,6 +3,7 @@ import { isRevision } from "../domain/ids.ts";
 import { LIMITS } from "../domain/limits.ts";
 import { revisionOf } from "../domain/revision.ts";
 import type { SessionHost } from "../host/contract.ts";
+import type { ResolveOutcome } from "./inline.ts";
 import { ENTRY_FILE } from "./layout.ts";
 
 /**
@@ -16,6 +17,8 @@ export interface LoadedPage {
   readonly updatedAtMs: number;
   /** True when served from the offline copy. */
   readonly stale: boolean;
+  /** Own files carried into the document, and those that could not be. */
+  readonly site: { readonly resolved: number; readonly skipped: readonly { path: string; reason: string }[] };
 }
 
 interface CachedPage {
@@ -23,6 +26,13 @@ interface CachedPage {
   readonly revision: string;
   readonly updatedAtMs: number;
 }
+
+/**
+ * Resolves a page's own files into its entry document so it renders on an
+ * origin that will not authorise the sandbox's subresource requests.
+ * Temporary; see pages/inline.ts. spec R1.2, R4.25-R4.27
+ */
+export type PageResolver = (session: string, html: string) => Promise<ResolveOutcome>;
 
 export interface PageStore {
   load(session: string): Promise<LoadedPage>;
@@ -34,7 +44,7 @@ export interface PageStore {
 
 const KV_PREFIX = "cache:";
 
-export function createPageStore(host: SessionHost): PageStore {
+export function createPageStore(host: SessionHost, resolve?: PageResolver): PageStore {
   const memory = new Map<string, CachedPage>();
   let memoryBytes = 0;
 
@@ -62,7 +72,15 @@ export function createPageStore(host: SessionHost): PageStore {
   async function persist(session: string, page: CachedPage, previousRevision: string | undefined): Promise<void> {
     if (previousRevision === page.revision) return;
     const key = KV_PREFIX + session;
-    if (Buffer.byteLength(page.html, "utf8") > LIMITS.offlineCopyBytes) {
+    const bytes = Buffer.byteLength(page.html, "utf8");
+    if (bytes > LIMITS.offlineCopyBytes) {
+      // Silently dropping this is how a page stops opening offline with no
+      // author ever learning why. Carrying a page's own files into the
+      // document makes it much easier to cross. spec R2.27-R2.31
+      host.log.warn(
+        `offline copy: ${session} is ${Math.round(bytes / 1024)} KiB, over the ${LIMITS.offlineCopyBytes / 1024} KiB limit — ` +
+          "the page will not open while its host is unreachable",
+      );
       await host.kv.delete(key).catch((error: unknown) => host.log.warn(`offline copy: could not clear ${session}: ${errorText(error)}`));
       return;
     }
@@ -101,19 +119,35 @@ export function createPageStore(host: SessionHost): PageStore {
         content = await host.files.read(location, ENTRY_FILE);
       } catch (error) {
         const fallback = await cached(session);
-        if (fallback) return { ...fallback, stale: true };
+        if (fallback) return { ...fallback, stale: true, site: { resolved: 0, skipped: [] } };
         throw PageError.is(error) ? error : new PageError("unavailable", PUBLIC_MESSAGES.unavailable, { cause: error });
       }
       if (!content) throw new PageError("no_page", PUBLIC_MESSAGES.noPage);
       if (content.bytes.byteLength > LIMITS.entryDocumentBytes) {
         throw new PageError("page_too_large", PUBLIC_MESSAGES.pageTooLarge);
       }
-      const html = Buffer.from(content.bytes).toString("utf8");
-      const page: CachedPage = { html, revision: revisionOf(content.bytes), updatedAtMs: content.modifiedAtMs ?? Date.now() };
+      const authored = Buffer.from(content.bytes).toString("utf8");
+      let html = authored;
+      let site: LoadedPage["site"] = { resolved: 0, skipped: [] };
+      if (resolve) {
+        try {
+          const outcome = await resolve(session, authored);
+          html = outcome.html;
+          site = { resolved: outcome.resolved.length, skipped: outcome.skipped };
+          for (const file of outcome.skipped) {
+            host.log.warn(`page ${session}: ${file.path} is referenced but was not carried into the document (${file.reason})`);
+          }
+        } catch (error) {
+          // A page that renders without its own files beats a page that does
+          // not render. Serve what the agent wrote.
+          host.log.warn(`page ${session}: could not resolve its own files: ${errorText(error)}`);
+        }
+      }
+      const page: CachedPage = { html, revision: revisionOf(html), updatedAtMs: content.modifiedAtMs ?? Date.now() };
       const previous = memory.get(session)?.revision;
       retain(session, page);
       await persist(session, page, previous);
-      return { ...page, stale: false };
+      return { ...page, stale: false, site };
     },
     remember,
     knownRevision(session) {

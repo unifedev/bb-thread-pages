@@ -146,17 +146,38 @@ spaces and punctuation in names are all fine:
 
 No permission, no declaration, no API: writing a file into your page root is
 enough. Keep everything inside your own page root; another agent's page is
-not yours to write.${
+not yours to write.
+
+**How this actually works, because it constrains what you can do.** Your page
+runs in a sandbox on an opaque origin, and a request it makes for itself
+carries no credential. A bb on loopback asks for none and the file arrives; a
+bb reached over an authenticated origin — which is how the reader opens the
+page on a phone — refuses it. So the host resolves your relative references
+**when it serves the document**: each one is read from your page root and
+rewritten to a \`data:\` URL before the reader's browser ever sees it. The
+consequences worth knowing:
+
+- It works the same on every origin. Write the reference; do not work around it.
+- Your files are **inside the document**, so they count against the ${mebibytes(LIMITS.entryDocumentBytes)}
+  entry limit, and a page over ${kibibytes(LIMITS.offlineCopyBytes)} keeps no offline copy. Per file at
+  most ${mebibytes(LIMITS.inlineFileBytes)}, ${mebibytes(LIMITS.inlineTotalBytes)} across the page; base64 adds a third to both.
+- A file that is missing, too large or over the budget is **left as you wrote
+  it** and named in the plugin log (\`bb plugin logs thread-pages\`). The page
+  still renders; that one reference does not resolve.
+- \`url()\` inside a stylesheet you reference is followed too, so backgrounds
+  and \`@font-face\` survive. Absolute and remote URLs are never touched.
+- Changing a file beside ${ENTRY_FILE} changes the document, so an open page
+  reloads — see *Keeping a page's data current*. You do not have to touch
+  ${ENTRY_FILE} to publish new data.
+${
   site.name === "core-storage"
     ? `
-
-**One limitation on this host:** \`fetch("data.json")\` of your own file from
-page script is refused (403) — the host's file route rejects the sandbox's
-\`Origin: null\`. Subresources (<script>, <link>, <img>) load normally, so
-load data with <script src="data.js"> or inline it in the document. Remote
-fetches work (see Network).`
+**One limitation left on this host:** \`fetch("data.json")\` of your own file
+from page script is refused (403) — the host's file route rejects the
+sandbox's \`Origin: null\`, and only subresource references are resolved for
+you. Load data with <script src="data.js"> or inline it in the document.
+Remote fetches work (see Network).`
     : `
-
 Page script may also fetch its own files as data: \`await fetch("data.json")\`.`
 }`;
 
@@ -396,5 +417,8 @@ const limitations = (site: SiteStrategy) => `## Known limitations
   generic message; the cause is in the plugin log (\`bb plugin logs thread-pages\`).
 - Embedding another page or site in an <iframe> is blocked (frame-src 'none').
 - \`voice.captureAndTranscribe\` is not implemented: unknown_method.${
-  site.name === "core-storage" ? `\n- fetch() of your own files from page script is refused on this host (see Files you show the reader).` : ""
+  site.name === "core-storage"
+    ? `\n- fetch() of your own files from page script is refused on this host (see Files you show the reader).` +
+      `\n- Your own files are carried inside the entry document rather than served as files, because this host cannot authorise a sandboxed document's own requests. That is why they count against the document's size limits.`
+    : ""
 }`;

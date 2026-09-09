@@ -62,9 +62,22 @@ describe("the authoring guide", () => {
   });
 
   it("tells the truth about own-file fetch per site strategy", () => {
-    expect(coreGuide).toContain("`fetch(\"data.json\")` of your own file from\npage script is refused");
+    expect(coreGuide).toContain("`fetch(\"data.json\")` of your own file\nfrom page script is refused");
     expect(prefixGuide).toContain("Page script may also fetch its own files as data");
     expect(prefixGuide).not.toContain("is refused (403)");
+  });
+
+  // The one sentence that caused the worst field bug said subresources "load
+  // normally". They do not, on the origin a reader actually uses, and the
+  // guide must not imply that a file beside the page is served as a file.
+  it("says how a page's own files actually reach the reader, and what it costs", () => {
+    const section = coreGuide.slice(coreGuide.indexOf("## Files you show the reader"), coreGuide.indexOf("## Keeping a page's data current"));
+    expect(section).toContain("carries no credential");
+    expect(section).toContain("`data:` URL");
+    expect(section).toContain("count against the");
+    expect(section).toContain("left as you wrote");
+    expect(section).not.toContain("load normally");
+    expect(section).toContain("so an open page");
   });
 });
 

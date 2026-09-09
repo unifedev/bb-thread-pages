@@ -7,6 +7,7 @@ import { capabilityRegistry } from "./domain/capabilities/index.ts";
 import { createRateLimiter } from "./domain/rate-limit.ts";
 import { createOutcomeMemory } from "./domain/submissions/idempotency.ts";
 import type { SessionHost } from "./host/contract.ts";
+import { resolveOwnFiles } from "./pages/inline.ts";
 import { createPageStore } from "./pages/page-store.ts";
 import { createCoreStorageSite, type SiteStrategy } from "./pages/site.ts";
 import { createSelectionStore } from "./serving/bridge/selection-store.ts";
@@ -38,7 +39,16 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
 
   const serving: ServingContext = {
     host,
-    pages: createPageStore(host),
+    // Strategy A cannot serve a sandboxed document's own files on an
+    // authenticated origin, so the document carries them. Delete this
+    // argument, and pages/inline.ts, once the host can authorise them.
+    pages: createPageStore(host, async (session, html) => {
+      const location = await host.sessions.storage(session);
+      return resolveOwnFiles(html, async (path) => {
+        const file = await host.files.read(location, path);
+        return file ? { bytes: file.bytes } : null;
+      });
+    }),
     settings,
     signingKey,
     site,
