@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+Worked through the two field reports in `unife-bb-plugin/docs`. Full
+disposition: `unife-bb-plugin/docs/FIELD-ISSUES-RESOLUTION.md`.
+
+### A page's own files reach the reader
+
+- The entry document now carries them. Each relative reference is resolved
+  from the page root when the document is served and rewritten to a `data:`
+  URL. Before this, a page that loaded its own stylesheet or data file worked
+  on loopback and rendered empty on bb Connect — the origin a reader actually
+  uses — because bb Connect authenticates at the edge and a sandboxed frame's
+  subresource requests carry no credential.
+- `url()` inside a resolved stylesheet is followed, so backgrounds and
+  `@font-face` survive. Absolute and remote URLs are untouched. Anything
+  missing, oversized or over budget is left exactly as written and named in
+  the log, so a page degrades rather than breaks. Traversal is refused.
+- Editing a file beside `index.html` now changes the document, so an open page
+  reloads without the entry document being touched.
+- This is a workaround for a host limitation, with a written deletion plan:
+  `docs/B1-OWN-FILES.md`.
+- The offline copy is no longer dropped in silence when a document is over
+  200 KiB.
+
+### The seed and the guide
+
+- The seed's comment names no HTML tags. It used to spell `<main>` and
+  `<style>` out, which made every string count and every string index in an
+  agent's own page lie. A test asserts that every tag token in the raw seed is
+  a real element in the parsed DOM.
+- The seed says what to do when a page should stay put: delete the reply form.
+- `[hidden]` means hidden: a class rule setting `display` used to outrank it.
+- The guide stops claiming that subresources "load normally", says how a page's
+  own files actually reach the reader and what that costs, and gains
+  *Keeping a page's data current* — rewriting the entry document is how new
+  data reaches an open page, and the build that writes it must be
+  deterministic.
+- The guide says the whole file belongs to the agent, that nothing in it is
+  reserved, and that rewriting it whole is expected and safer than splicing.
+- A page may be build output as long as one session owns it and that session's
+  agent built it first.
+- "Before you save" asks for one reading over the reader's real origin.
+
+### Upgrading from 0.3.x
+
+- `unknown_method` names the replacement when a page calls a renamed method.
+  There are still no aliases; the old name still fails, legibly.
+- `docs/UPGRADING.md` carries the full rename table.
+
 ## 1.0.3 — 2026-09-08
 
 - New capability `sessions.markRead` `{ sessionId, read? }` with the new

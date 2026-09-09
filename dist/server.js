@@ -86,6 +86,16 @@ var LIMITS = Object.freeze({
   watchMinMs: 2e3,
   watchMaxMs: 5 * 60 * 1e3,
   /** Offline copy of the entry document kept in the host's key-value store. R2.30 */
+  /**
+   * Resolving a page's own files into its entry document (see pages/inline.ts).
+   * The per-file cap is generous because a page's stylesheet and data set are
+   * the whole point; the total is what keeps one page from becoming a document
+   * no phone will load. Base64 costs a third on top of both.
+   */
+  inlineFileBytes: 2 * 1024 * 1024,
+  inlineTotalBytes: 3 * 1024 * 1024,
+  /** How far `url()` inside an inlined stylesheet is followed. */
+  inlineCssDepth: 3,
   offlineCopyBytes: 200 * 1024,
   offlineCacheEntries: 32,
   offlineCacheBytes: 8 * 1024 * 1024,
@@ -246,6 +256,10 @@ function uploadFileName(originalName, now, randomHex) {
 function isSafeUploadName(name) {
   return UPLOAD_NAME.test(name) && !name.includes("..");
 }
+function isSafeRelativePath(path) {
+  if (path.length === 0 || path.length > 1024 || path.includes("\0") || path.includes("\\") || path.startsWith("/")) return false;
+  return path.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
 
 // src/serving/context.ts
 function pageUrl(routeBase, session) {
@@ -293,6 +307,11 @@ var THEME_CSS = String.raw`
   }
 
   *, *::before, *::after { box-sizing: border-box; }
+
+  /* A class rule that sets display outranks the user-agent rule for the
+     hidden attribute, so a page that styles .banner with display:flex would
+     render a hidden banner as an empty bar. This keeps hidden meaning hidden. */
+  [hidden] { display: none !important; }
 
   html { -webkit-text-size-adjust: 100%; }
 
@@ -944,27 +963,31 @@ var DEFAULT_PAGE_SEED = `<!doctype html>
   </header>
 
   <!--
-    Write inside <main>. Plain semantic HTML is already styled: h2, p, ul,
-    table, form, fieldset/legend, a wrapping label, small, details. Three
-    class names exist: .card boxes an aside, .needs-you flags a block that is
-    blocked on the reader, .label is a small uppercase tag.
+    Everything below is yours: this whole file, including the stylesheet in
+    the head. Rewrite it however the task needs. Two things the file cannot
+    tell you, because they are behaviour rather than markup:
 
-    Every <form> answers this session automatically unless it carries
-    data-thread-page-manual. Blank answers are valid. A <form method="dialog">
-    you only meant as a local confirm still sends a message unless it opts out.
+    1. Every form element in this document is captured and delivered to this
+       session as a message. That includes a dialog form you only meant as a
+       local confirm; put data-thread-page-manual on any form that is not
+       meant to answer. Nothing is required and blank is a real answer.
+    2. window.prompt, alert, confirm and window.open do nothing here \u2014 the
+       sandbox silences them. Build the input into the page instead.
 
-    Files you put beside this index.html are served relatively: <img
-    src="chart.png">, <link href="page.css">, <script src="app.js">, nested
-    paths included. Ordinary <a href="https://\u2026"> links work.
+    The look is three attributes on the html element. data-theme: paper,
+    terminal, atrium, volume or bloom. data-mode: system, light or dark.
+    data-atmos: on or off.
 
-    data-theme: paper | terminal | atrium | volume | bloom.
-    data-mode: system | light | dark. data-atmos: on | off.
-    Extra CSS goes in one more <style>, everything inside @scope (main),
-    colour and shape from var(--token) only.
+    If this page should stay put \u2014 a dashboard, a console, a page nobody
+    should have to rewrite \u2014 delete the reply form below and let its buttons
+    start fresh sessions instead. See the guide.
 
-    Never use window.prompt, alert, confirm or window.open: the sandbox
-    silences them. For anything more \u2014 charts, files, live session state,
-    starting sessions, links \u2014 run: bb thread-page guide
+    Everything else \u2014 files beside this one, charts, live session state,
+    starting sessions, links, limits \u2014 is in: bb thread-page guide
+
+    This comment deliberately names no HTML tags. An earlier version spelled
+    them out, and every agent that edited its page by string surgery found
+    tags here that were not in the document. Keep it that way.
   -->
   <main>
     <p>Replace this with what changed and what you need from the reader.</p>
@@ -1360,6 +1383,7 @@ function buildGuide(registry, site) {
     forms(),
     uploads(),
     ownFiles(site),
+    keepingCurrent(),
     runtimeApi(),
     capabilities(registry),
     startingSessions(),
@@ -1483,15 +1507,59 @@ spaces and punctuation in names are all fine:
 
 No permission, no declaration, no API: writing a file into your page root is
 enough. Keep everything inside your own page root; another agent's page is
-not yours to write.${site.name === "core-storage" ? `
+not yours to write.
 
-**One limitation on this host:** \`fetch("data.json")\` of your own file from
-page script is refused (403) \u2014 the host's file route rejects the sandbox's
-\`Origin: null\`. Subresources (<script>, <link>, <img>) load normally, so
-load data with <script src="data.js"> or inline it in the document. Remote
-fetches work (see Network).` : `
+**How this actually works, because it constrains what you can do.** Your page
+runs in a sandbox on an opaque origin, and a request it makes for itself
+carries no credential. A bb on loopback asks for none and the file arrives; a
+bb reached over an authenticated origin \u2014 which is how the reader opens the
+page on a phone \u2014 refuses it. So the host resolves your relative references
+**when it serves the document**: each one is read from your page root and
+rewritten to a \`data:\` URL before the reader's browser ever sees it. The
+consequences worth knowing:
 
+- It works the same on every origin. Write the reference; do not work around it.
+- Your files are **inside the document**, so they count against the ${mebibytes(LIMITS.entryDocumentBytes)}
+  entry limit, and a page over ${kibibytes(LIMITS.offlineCopyBytes)} keeps no offline copy. Per file at
+  most ${mebibytes(LIMITS.inlineFileBytes)}, ${mebibytes(LIMITS.inlineTotalBytes)} across the page; base64 adds a third to both.
+- A file that is missing, too large or over the budget is **left as you wrote
+  it** and named in the plugin log (\`bb plugin logs thread-pages\`). The page
+  still renders; that one reference does not resolve.
+- \`url()\` inside a stylesheet you reference is followed too, so backgrounds
+  and \`@font-face\` survive. Absolute and remote URLs are never touched.
+- Changing a file beside ${ENTRY_FILE} changes the document, so an open page
+  reloads \u2014 see *Keeping a page's data current*. You do not have to touch
+  ${ENTRY_FILE} to publish new data.
+${site.name === "core-storage" ? `
+**One limitation left on this host:** \`fetch("data.json")\` of your own file
+from page script is refused (403) \u2014 the host's file route rejects the
+sandbox's \`Origin: null\`, and only subresource references are resolved for
+you. Load data with <script src="data.js"> or inline it in the document.
+Remote fetches work (see Network).` : `
 Page script may also fetch its own files as data: \`await fetch("data.json")\`.`}`;
+var keepingCurrent = () => `## Keeping a page's data current
+
+The entry document is the only artifact guaranteed to reach every reader, on
+every origin. Rewriting it is therefore how you push new data to an open page:
+the shell notices the new revision within ${LIMITS.shellPollMs / 1e3} s and reloads the page under
+the reader, preserving what they were typing. You do not need a poller, a
+sidecar or a socket for this \u2014 a page that follows a data source is a page
+something rewrites.
+
+Three things to get right:
+
+- **Make the build deterministic.** An unchanged data set must produce a
+  byte-identical document. This is the non-obvious half: a generated timestamp
+  in the payload turns every rebuild into a reload for every reader, and the
+  page will look like it is flickering for no reason.
+- **Set \`setDirty(true)\` while the reader is mid-edit** in state the host
+  cannot see. A captured form does this for you; your own widgets do not.
+- **Refresh on a slow watch, not a tight timer.** A page shares a budget of
+  ${LIMITS.ratePerMinute} requests a minute with its own forms.
+
+\`window.threadPage.watch\` is the other half, for live host state \u2014 sessions,
+activity \u2014 that does not live in your file. Use the document rewrite for data
+you generate, and \`watch\` for data the host owns.`;
 var runtimeApi = () => `## window.threadPage
 
 The complete page-facing API; it is frozen and cannot be replaced.
@@ -1598,7 +1666,23 @@ writes its own page. Link to it with \`pages.open\`, or suggest making it home.
 If you want another agent's page changed, send that agent a message with
 \`sessions.send\` rather than editing its file. Do not create a session merely
 to hold a page: a page that stays put is owned by a real agent that built it
-and then stopped.`;
+and then stopped.
+
+**The whole file is yours.** There is no page-editing API and there is not
+meant to be one: ${ENTRY_FILE} is a file in your storage directory that you
+read and write with your ordinary tools. Nothing in it is reserved \u2014 not the
+stylesheet, not the header, not the comment the seed came with. Rewriting the
+document whole is the expected way to change it, and safer than splicing,
+because a splice computed from string indices can silently eat content that a
+whole-document write cannot.
+
+**A page may be build output.** A repository script generating pages into
+several sessions' storage \u2014 so a team gets one identical interface from a
+checkout rather than from three agents independently writing HTML \u2014 is
+legitimate. The rule that does not bend: every page still has one owning
+session, and that session's agent builds the page the first time, whether or
+not a script takes over afterwards. A page with no agent behind it is a page
+nobody can be asked to change.`;
 var home2 = () => `## The home page
 
 One page is home; every other page shows a "\u2190 Sessions" link back to it in
@@ -1642,7 +1726,11 @@ var accessibility = () => `## Before you save
 - Every action reachable by keyboard; nothing pointer-only.
 - Inline SVG for diagrams and charts, with var(--accent) inside it; a zero
   gets a visible stub or the eye reads missing data.
-- grep -o '#[0-9a-fA-F]\\{3,8\\}' ${ENTRY_FILE} inside your <style> should be empty.`;
+- grep -o '#[0-9a-fA-F]\\{3,8\\}' ${ENTRY_FILE} inside your <style> should be empty.
+- Read it once over the reader's real origin, not only loopback. A local bb
+  requires no credential and a remote one does, so anything the page loads for
+  itself can work for you and fail for them. Authentication is the one axis
+  where behaviour genuinely differs between your machine and theirs.`;
 var limits = () => `## Limits
 
 | Limit | Value |
@@ -1675,7 +1763,8 @@ var limitations = (site) => `## Known limitations
   generic message; the cause is in the plugin log (\`bb plugin logs thread-pages\`).
 - Embedding another page or site in an <iframe> is blocked (frame-src 'none').
 - \`voice.captureAndTranscribe\` is not implemented: unknown_method.${site.name === "core-storage" ? `
-- fetch() of your own files from page script is refused on this host (see Files you show the reader).` : ""}`;
+- fetch() of your own files from page script is refused on this host (see Files you show the reader).
+- Your own files are carried inside the entry document rather than served as files, because this host cannot authorise a sandboxed document's own requests. That is why they count against the document's size limits.` : ""}`;
 
 // src/bb/activity.ts
 function sessionStateOf(thread, hasPendingInteraction) {
@@ -2811,6 +2900,29 @@ var ALL_CAPABILITIES = Object.freeze([
   voiceCaptureAndTranscribe
 ]);
 
+// src/domain/capabilities/renamed.ts
+var RENAMED_METHODS = Object.freeze({
+  "threads.spawn": "sessions.start",
+  "threads.snapshot": "sessions.snapshot",
+  "threads.send": "sessions.send",
+  "threads.stop": "sessions.stop",
+  "threads.archive": "sessions.archive",
+  "threads.activity": "session.activity",
+  "threads.reply": "session.reply",
+  "threads.openPage": "pages.open",
+  "threads.openBb": "sessions.openHost",
+  "thread.get": "context.get",
+  "thread.reply": "session.reply",
+  "thread.activity": "session.activity",
+  "page.storage.get": "storage.get",
+  "page.storage.set": "storage.set",
+  "navigation.open": "navigation.openExternal"
+});
+function unknownMethodMessage(method) {
+  const replacement = RENAMED_METHODS[method];
+  return replacement ? `Unknown capability: ${method} (renamed to ${replacement} in 1.0; there is no alias)` : `Unknown capability: ${method}`;
+}
+
 // src/domain/capabilities/protocol.ts
 var BRIDGE_PROTOCOL_VERSION = 1;
 function decodeBridgeRequest(input) {
@@ -2842,7 +2954,7 @@ function failureFromError(id, error) {
 function resolveInvocation(request, registry, currentRevision) {
   if (request.pageRevision !== currentRevision) throw new PageError("stale_page", "This page changed; reload it before responding.");
   const spec2 = registry.get(request.method);
-  if (!spec2 || !spec2.implemented) throw new PageError("unknown_method", `Unknown capability: ${request.method}`);
+  if (!spec2 || !spec2.implemented) throw new PageError("unknown_method", unknownMethodMessage(request.method));
   const params2 = spec2.validateParams(request.params);
   if (!params2.ok) {
     const first = params2.issues[0];
@@ -2936,880 +3048,6 @@ function createOutcomeMemory(options = {}) {
       return { kind: "fresh", outcome };
     },
     size: () => records.size
-  };
-}
-
-// src/domain/revision.ts
-import { createHash } from "node:crypto";
-function revisionOf(content) {
-  const hash = createHash("sha256");
-  if (typeof content === "string") hash.update(content, "utf8");
-  else hash.update(content);
-  return hash.digest("hex");
-}
-function sha256Hex(content) {
-  return revisionOf(content);
-}
-function etagFor(revision) {
-  return `"${revision}"`;
-}
-function ifNoneMatchMatches(header, etag) {
-  if (!header) return false;
-  return header.split(",").map((candidate) => candidate.trim().replace(/^W\//, "")).some((candidate) => candidate === etag || candidate === "*");
-}
-
-// src/pages/page-store.ts
-var KV_PREFIX = "cache:";
-function createPageStore(host) {
-  const memory = /* @__PURE__ */ new Map();
-  let memoryBytes = 0;
-  function cost(page) {
-    return Buffer.byteLength(page.html, "utf8") + 128;
-  }
-  function retain(session, page) {
-    const previous = memory.get(session);
-    if (previous) {
-      memoryBytes -= cost(previous);
-      memory.delete(session);
-    }
-    memory.set(session, page);
-    memoryBytes += cost(page);
-    while (memory.size > LIMITS.offlineCacheEntries || memoryBytes > LIMITS.offlineCacheBytes) {
-      const oldest = memory.keys().next().value;
-      if (oldest === void 0) break;
-      const evicted = memory.get(oldest);
-      memory.delete(oldest);
-      if (evicted) memoryBytes -= cost(evicted);
-    }
-  }
-  async function persist(session, page, previousRevision) {
-    if (previousRevision === page.revision) return;
-    const key = KV_PREFIX + session;
-    if (Buffer.byteLength(page.html, "utf8") > LIMITS.offlineCopyBytes) {
-      await host.kv.delete(key).catch((error) => host.log.warn(`offline copy: could not clear ${session}: ${errorText(error)}`));
-      return;
-    }
-    await host.kv.set(key, { html: page.html, revision: page.revision, updatedAtMs: page.updatedAtMs }).catch((error) => {
-      host.log.warn(`offline copy: could not store ${session}: ${errorText(error)}`);
-    });
-  }
-  async function cached(session) {
-    const resident = memory.get(session);
-    if (resident) return resident;
-    try {
-      const stored = await host.kv.get(KV_PREFIX + session);
-      if (!isCachedPage(stored)) return null;
-      retain(session, stored);
-      return stored;
-    } catch (error) {
-      host.log.warn(`offline copy: could not read ${session}: ${errorText(error)}`);
-      return null;
-    }
-  }
-  async function remember(session, html, updatedAtMs = Date.now()) {
-    const page = { html, revision: revisionOf(html), updatedAtMs };
-    const previous = memory.get(session)?.revision;
-    retain(session, page);
-    await persist(session, page, previous);
-    return page;
-  }
-  return {
-    async load(session) {
-      let content;
-      try {
-        const location = await host.sessions.storage(session);
-        content = await host.files.read(location, ENTRY_FILE);
-      } catch (error) {
-        const fallback = await cached(session);
-        if (fallback) return { ...fallback, stale: true };
-        throw PageError.is(error) ? error : new PageError("unavailable", PUBLIC_MESSAGES.unavailable, { cause: error });
-      }
-      if (!content) throw new PageError("no_page", PUBLIC_MESSAGES.noPage);
-      if (content.bytes.byteLength > LIMITS.entryDocumentBytes) {
-        throw new PageError("page_too_large", PUBLIC_MESSAGES.pageTooLarge);
-      }
-      const html = Buffer.from(content.bytes).toString("utf8");
-      const page = { html, revision: revisionOf(content.bytes), updatedAtMs: content.modifiedAtMs ?? Date.now() };
-      const previous = memory.get(session)?.revision;
-      retain(session, page);
-      await persist(session, page, previous);
-      return { ...page, stale: false };
-    },
-    remember,
-    knownRevision(session) {
-      return memory.get(session)?.revision ?? null;
-    }
-  };
-}
-function isCachedPage(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const entry = value;
-  return typeof entry.html === "string" && Buffer.byteLength(entry.html, "utf8") <= LIMITS.offlineCopyBytes && isRevision(entry.revision) && revisionOf(entry.html) === entry.revision && typeof entry.updatedAtMs === "number" && Number.isFinite(entry.updatedAtMs);
-}
-
-// src/pages/site.ts
-function createCoreStorageSite(routeBase, storageFilesBase) {
-  return {
-    name: "core-storage",
-    documentUrl: (session) => `${routeBase}/document?session=${encodeURIComponent(session)}`,
-    baseHref: (session) => storageFilesBase(session)
-  };
-}
-
-// src/serving/bridge/selection-store.ts
-import { randomBytes } from "node:crypto";
-function createSelectionStore() {
-  const selections = /* @__PURE__ */ new Map();
-  function prune(now) {
-    for (const [token, selection] of selections) {
-      if (selection.expiresAt <= now) selections.delete(token);
-    }
-    while (selections.size > LIMITS.selectionTokens) {
-      const oldest = selections.keys().next().value;
-      if (oldest === void 0) break;
-      selections.delete(oldest);
-    }
-  }
-  return {
-    issue(selection, now) {
-      prune(now);
-      const token = `sel.${randomBytes(18).toString("base64url")}`;
-      selections.set(token, { ...selection, expiresAt: now + LIMITS.selectionTokenMs });
-      return token;
-    },
-    peek(token, session, now) {
-      prune(now);
-      const selection = selections.get(token);
-      return selection && selection.session === session ? selection : null;
-    },
-    redeem(token, session, now) {
-      prune(now);
-      const selection = selections.get(token);
-      if (!selection || selection.session !== session) return null;
-      selections.delete(token);
-      return selection;
-    }
-  };
-}
-
-// src/domain/json/canonical.ts
-import { createHash as createHash2 } from "node:crypto";
-function canonicalJson(value) {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
-}
-function fingerprint(value) {
-  return createHash2("sha256").update(canonicalJson(value), "utf8").digest("hex");
-}
-
-// src/domain/tokens/mac.ts
-import { createHmac, timingSafeEqual } from "node:crypto";
-function signPayload(payload, key) {
-  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
-  return `${encoded}.${signature(encoded, key)}`;
-}
-function openToken(token, key) {
-  const parts = token.split(".");
-  if (parts.length !== 2) return null;
-  const [encoded, supplied] = parts;
-  if (!encoded || !supplied) return null;
-  try {
-    const expected = Buffer.from(signature(encoded, key), "ascii");
-    const given = Buffer.from(supplied, "ascii");
-    if (given.byteLength !== expected.byteLength) return null;
-    if (!timingSafeEqual(given, expected)) return null;
-    return JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
-  } catch {
-    return null;
-  }
-}
-function signature(encoded, key) {
-  return createHmac("sha256", key).update(encoded, "ascii").digest("base64url");
-}
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function lifetimeValid(payload, now, maxLifetimeMs) {
-  const { iat, exp } = payload;
-  return typeof iat === "number" && Number.isSafeInteger(iat) && typeof exp === "number" && Number.isSafeInteger(exp) && iat <= now + 3e4 && exp > now && exp > iat && exp - iat <= maxLifetimeMs;
-}
-
-// src/domain/tokens/confirmation.ts
-function paramsFingerprint(params2) {
-  return fingerprint(params2);
-}
-function mintChallenge(binding, summary, now, key) {
-  const bounded = summary.length <= LIMITS.summaryChars ? summary : `${summary.slice(0, LIMITS.summaryChars - 1)}\u2026`;
-  const payload = {
-    v: 3,
-    scope: "confirm",
-    session: binding.session,
-    revision: binding.revision,
-    requestId: binding.requestId,
-    method: binding.method,
-    paramsHash: paramsFingerprint(binding.params),
-    summary: bounded,
-    iat: now,
-    exp: now + LIMITS.confirmationMs
-  };
-  return { challenge: signPayload(payload, key), payload };
-}
-function openChallenge(challenge, key, now) {
-  if (typeof challenge !== "string" || challenge.length === 0 || challenge.length > LIMITS.tokenChars) return null;
-  const payload = openToken(challenge, key);
-  if (!isRecord(payload)) return null;
-  if (payload.v !== 3 || payload.scope !== "confirm" || !isSessionId(payload.session) || !isRevision(payload.revision) || !isRequestId(payload.requestId) || !isMethodName(payload.method) || !isRevision(payload.paramsHash) || typeof payload.summary !== "string" || payload.summary.length === 0 || payload.summary.length > LIMITS.summaryChars || !lifetimeValid({ iat: payload.iat, exp: payload.exp }, now, LIMITS.confirmationMs)) {
-    return null;
-  }
-  return {
-    v: 3,
-    scope: "confirm",
-    session: payload.session,
-    revision: payload.revision,
-    requestId: payload.requestId,
-    method: payload.method,
-    paramsHash: payload.paramsHash,
-    summary: payload.summary,
-    iat: payload.iat,
-    exp: payload.exp
-  };
-}
-function challengeMatches(challenge, binding) {
-  return challenge.session === binding.session && challenge.revision === binding.revision && challenge.requestId === binding.requestId && challenge.method === binding.method && challenge.paramsHash === paramsFingerprint(binding.params);
-}
-
-// src/domain/tokens/action-token.ts
-function mintActionToken(args, key) {
-  const payload = {
-    v: 3,
-    scope: "action",
-    session: args.session,
-    revision: args.revision,
-    iat: args.now,
-    exp: args.now + LIMITS.actionTokenMs
-  };
-  return { token: signPayload(payload, key), payload };
-}
-function verifyActionToken(token, key, now) {
-  if (typeof token !== "string" || token.length === 0 || token.length > LIMITS.tokenChars) return null;
-  const payload = openToken(token, key);
-  if (!isRecord(payload)) return null;
-  if (payload.v !== 3 || payload.scope !== "action" || !isSessionId(payload.session) || !isRevision(payload.revision) || !lifetimeValid({ iat: payload.iat, exp: payload.exp }, now, LIMITS.actionTokenMs)) {
-    return null;
-  }
-  return {
-    v: 3,
-    scope: "action",
-    session: payload.session,
-    revision: payload.revision,
-    iat: payload.iat,
-    exp: payload.exp
-  };
-}
-
-// src/serving/action-request.ts
-async function readJsonBody(context, maxBytes) {
-  const declared = Number(context.req.header("content-length") ?? "0");
-  if (Number.isFinite(declared) && declared > maxBytes) throw new PageError("request_too_large", "Request body is too large");
-  const raw = await context.req.text();
-  if (Buffer.byteLength(raw, "utf8") > maxBytes) throw new PageError("request_too_large", "Request body is too large");
-  try {
-    return JSON.parse(raw);
-  } catch {
-    throw new PageError("invalid_json", "Request body is not valid JSON");
-  }
-}
-function requireActionToken(serving, token) {
-  const verified = typeof token === "string" ? verifyActionToken(token, serving.signingKey, serving.now()) : null;
-  if (!verified) throw new PageError("confirmation_invalid", PUBLIC_MESSAGES.tokenInvalid, { status: 401 });
-  return verified;
-}
-function acquireRate(serving, session) {
-  const release = serving.rate.acquire(session, serving.now());
-  if (!release) throw new PageError("rate_limited", PUBLIC_MESSAGES.rateLimited);
-  return release;
-}
-
-// src/serving/session-access.ts
-function sessionIdFrom(context) {
-  const url = new URL(context.req.url);
-  const candidate = url.searchParams.get("session") ?? url.searchParams.get("threadId");
-  if (!isSessionId(candidate)) throw new PageError("invalid_session", PUBLIC_MESSAGES.invalidSession);
-  return candidate;
-}
-async function eligibleSession(serving, id) {
-  const session = await serving.host.sessions.get(id);
-  if (!session) throw new PageError("not_found", "That session does not exist.");
-  const reason = ineligibleReason(session);
-  if (reason) throw new PageError("ineligible", `${PUBLIC_MESSAGES.ineligible} (${describeIneligible(reason)}.)`);
-  return session;
-}
-
-// src/serving/bridge/dispatcher.ts
-function parseEnvelope(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new PageError("invalid_request", "Invalid bridge envelope");
-  const input = value;
-  const keys = Object.keys(input);
-  if (!keys.includes("actionToken") || !keys.includes("request") || keys.some((key) => !["actionToken", "request", "confirmation"].includes(key))) {
-    throw new PageError("invalid_request", "Invalid bridge envelope");
-  }
-  if (typeof input.actionToken !== "string" || input.actionToken.length > LIMITS.tokenChars) throw new PageError("invalid_request", "Invalid bridge envelope");
-  const confirmation = input.confirmation;
-  if (confirmation !== void 0 && confirmation !== null && (typeof confirmation !== "string" || confirmation.length > LIMITS.tokenChars)) {
-    throw new PageError("invalid_request", "Invalid bridge envelope");
-  }
-  return { actionToken: input.actionToken, request: input.request, confirmation: typeof confirmation === "string" ? confirmation : null };
-}
-function createDispatcher(serving, handlers) {
-  const byMethod = new Map(handlers.map((entry) => [entry.method, entry]));
-  for (const spec2 of serving.registry.list()) {
-    if (spec2.implemented && !byMethod.has(spec2.method)) throw new Error(`No handler for capability ${spec2.method}`);
-  }
-  return async function dispatch(body) {
-    let requestId;
-    let release = null;
-    try {
-      const envelope = parseEnvelope(body);
-      requestId = envelope.request?.id;
-      const token = requireActionToken(serving, envelope.actionToken);
-      release = acquireRate(serving, token.session);
-      const request = decodeBridgeRequest(envelope.request);
-      requestId = request.id;
-      const invocation = resolveInvocation(request, serving.registry, token.revision);
-      const entry = byMethod.get(invocation.spec.method);
-      if (!entry) throw new PageError("unknown_method", `Unknown capability: ${invocation.spec.method}`);
-      const session = await eligibleSession(serving, token.session).catch((error) => {
-        throw PageError.is(error) && error.code === "ineligible" ? new PageError("conflict", "This session no longer accepts page actions") : error;
-      });
-      const page = await serving.pages.load(token.session);
-      if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
-      const context = { serving, session, page, requestId: request.id };
-      await entry.refuse?.(invocation.params, context);
-      if (invocation.spec.confirmed) {
-        const binding = { session: token.session, revision: token.revision, requestId: request.id, method: request.method, params: invocation.params };
-        if (envelope.confirmation === null) {
-          const summary = await entry.summarize?.(invocation.params, context) ?? invocation.spec.description;
-          const { challenge: challenge2, payload } = mintChallenge(binding, summary, serving.now(), serving.signingKey);
-          return { status: 401, body: { confirm: { requestId: request.id, summary: payload.summary, challenge: challenge2 } } };
-        }
-        const challenge = openChallenge(envelope.confirmation, serving.signingKey, serving.now());
-        if (!challenge || !challengeMatches(challenge, binding)) {
-          throw new PageError("confirmation_invalid", "The confirmation is expired or does not match this request");
-        }
-      }
-      if (page.stale && invocation.spec.effect !== "read" && invocation.spec.effect !== "navigation") {
-        throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);
-      }
-      let outcome;
-      try {
-        outcome = await entry.execute(invocation.params, context);
-      } catch (error) {
-        if (PageError.is(error) && isBridgeErrorCode(error.code)) throw error;
-        serving.host.log.warn(`bridge ${request.method} for ${token.session}: ${errorText(error)}`);
-        throw new PageError("handler_error", PUBLIC_MESSAGES.handler, { cause: error });
-      }
-      const response = completeInvocation(invocation, outcome.result);
-      return { status: response.ok ? 200 : 500, body: outcome.navigate ? { response, navigate: outcome.navigate } : { response } };
-    } catch (error) {
-      if (PageError.is(error)) {
-        if (error.cause !== void 0) serving.host.log.warn(`bridge: ${error.code}: ${errorText(error.cause)}`);
-        const code = isBridgeErrorCode(error.code) ? error.code : error.code === "ineligible" || error.code === "no_page" ? "not_found" : "handler_error";
-        return { status: error.status, body: { response: failure(requestId, code, error.message) } };
-      }
-      serving.host.log.warn(`bridge: ${errorText(error)}`);
-      return { status: 500, body: { response: failureFromError(requestId, error) } };
-    } finally {
-      release?.();
-    }
-  };
-}
-
-// src/serving/bridge/handler.ts
-function handler(definition) {
-  return definition;
-}
-function excerpt(text, max = 80) {
-  const line = text.replace(/\s+/g, " ").trim();
-  return line.length <= max ? line : `${line.slice(0, max - 1)}\u2026`;
-}
-
-// src/serving/bridge/handlers/navigation.ts
-var pagesOpen2 = handler({
-  method: "pages.open",
-  async refuse(params2, { serving }) {
-    const target = await serving.host.sessions.get(params2.sessionId);
-    if (!target || ineligibleReason(target)) throw new PageError("not_found", "That session has no page");
-  },
-  async execute(params2, { serving }) {
-    return { result: { opened: true }, navigate: { kind: "page", url: pageUrl(serving.routeBase, params2.sessionId) } };
-  }
-});
-var sessionsOpenHost2 = handler({
-  method: "sessions.openHost",
-  async refuse(params2, { serving }) {
-    const target = await serving.host.sessions.get(params2.sessionId);
-    if (!target || target.deleted) throw new PageError("not_found", "That session is not available");
-  },
-  async execute(params2, { serving }) {
-    return { result: { opened: true }, navigate: { kind: "host", url: serving.hostSessionUrl(params2.sessionId) } };
-  }
-});
-var navigationOpenExternal2 = handler({
-  method: "navigation.openExternal",
-  async summarize(params2) {
-    const origin = new URL(params2.url).origin;
-    return params2.label ? `Leave this page and open \u201C${excerpt(params2.label, 60)}\u201D at ${origin}` : `Leave this page and open ${origin}`;
-  },
-  async execute(params2) {
-    return { result: { opened: true }, navigate: { kind: "external", url: new URL(params2.url).href } };
-  }
-});
-
-// src/serving/bridge/handlers/reads.ts
-var contextGet2 = handler({
-  method: "context.get",
-  async execute(_params, { serving, session, page }) {
-    return {
-      result: {
-        protocolVersion: 1,
-        session: { id: session.id, title: session.title.slice(0, LIMITS.titleChars), projectId: session.projectId },
-        page: { revision: page.revision, readOnly: page.stale },
-        capabilities: serving.registry.descriptors()
-      }
-    };
-  }
-});
-var sessionActivity2 = handler({
-  method: "session.activity",
-  async execute(params2, { serving, session }) {
-    const items = await serving.host.sessions.activity(session.id, params2.limit);
-    return { result: { state: session.state, updatedAtMs: session.updatedAtMs, items } };
-  }
-});
-function queryKey(params2) {
-  return `${params2.projectId ?? ""}|${params2.includeArchived ? 1 : 0}|${params2.includeChildren ? 1 : 0}`;
-}
-function encodeCursor(cursor) {
-  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
-}
-function decodeCursor(value, params2) {
-  try {
-    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
-    if (parsed.phase !== "live" && parsed.phase !== "archived" || !Number.isSafeInteger(parsed.offset) || parsed.offset < 0 || parsed.query !== queryKey(params2)) {
-      throw new Error("mismatch");
-    }
-    return { phase: parsed.phase, offset: parsed.offset, query: parsed.query };
-  } catch {
-    throw new PageError("invalid_params", "The cursor does not belong to this query");
-  }
-}
-async function pageAvailability(context, sessions) {
-  const { serving } = context;
-  const byHost = /* @__PURE__ */ new Map();
-  await Promise.all(
-    sessions.map(async (session) => {
-      try {
-        const location = await serving.host.sessions.storage(session.id);
-        const entries = byHost.get(location.hostId) ?? [];
-        entries.push({ session: session.id, path: joinPath(location.rootPath, ENTRY_FILE) });
-        byHost.set(location.hostId, entries);
-      } catch {
-      }
-    })
-  );
-  const availability = /* @__PURE__ */ new Map();
-  await Promise.all(
-    [...byHost.entries()].map(async ([hostId, entries]) => {
-      const existence = await serving.host.files.exist(hostId, entries.map((entry) => entry.path));
-      for (const entry of entries) availability.set(entry.session, existence[entry.path] === true);
-    })
-  );
-  return availability;
-}
-var sessionsSnapshot2 = handler({
-  method: "sessions.snapshot",
-  async execute(params2, context) {
-    const { serving } = context;
-    const start = params2.cursor ? decodeCursor(params2.cursor, params2) : { phase: "live", offset: 0, query: queryKey(params2) };
-    const collected = [];
-    let phase = start.phase;
-    let offset = start.offset;
-    let next = null;
-    while (collected.length < params2.limit) {
-      const want = params2.limit - collected.length;
-      const rows = await serving.host.sessions.list({
-        ...params2.projectId ? { projectId: params2.projectId } : {},
-        archived: phase === "archived",
-        rootsOnly: !params2.includeChildren,
-        offset,
-        limit: want + 1
-      });
-      const visible = rows.filter(
-        (row) => row.visibility === "visible" && !row.deleted && row.archived === (phase === "archived") && (params2.includeChildren || row.parentId === null)
-      );
-      const more = rows.length > want;
-      collected.push(...visible.slice(0, want));
-      offset += Math.min(rows.length, want);
-      if (more) {
-        next = { phase, offset, query: start.query };
-        break;
-      }
-      if (phase === "live" && params2.includeArchived) {
-        phase = "archived";
-        offset = 0;
-        continue;
-      }
-      break;
-    }
-    const availability = await pageAvailability(context, collected);
-    const sessions = collected.map((record) => ({
-      id: record.id,
-      title: record.title.slice(0, LIMITS.titleChars),
-      projectId: record.projectId,
-      parentSessionId: record.parentId,
-      status: record.state,
-      archived: record.archived,
-      page: { available: availability.get(record.id) === true, revision: availability.get(record.id) ? serving.pages.knownRevision(record.id) : null },
-      updatedAtMs: record.updatedAtMs,
-      attentionAtMs: record.attentionAtMs,
-      unread: record.unread
-    }));
-    return { result: { sessions, nextCursor: next ? encodeCursor(next) : null, generatedAtMs: serving.now() } };
-  }
-});
-var projectsList2 = handler({
-  method: "projects.list",
-  async execute(_params, { serving }) {
-    const projects = await serving.host.projects.list();
-    return { result: { projects: projects.slice(0, LIMITS.projectsMax).map((project) => ({ id: project.id, name: project.name.slice(0, LIMITS.titleChars), kind: project.kind })) } };
-  }
-});
-var providersList2 = handler({
-  method: "providers.list",
-  async execute(_params, { serving }) {
-    const providers = await serving.host.providers.list();
-    return {
-      result: {
-        providers: providers.slice(0, LIMITS.providersMax).map((provider) => ({
-          id: provider.id,
-          displayName: provider.displayName.slice(0, LIMITS.titleChars),
-          available: provider.available,
-          models: provider.models.slice(0, LIMITS.modelsPerProvider).map((model) => ({
-            id: model.id,
-            displayName: model.displayName.slice(0, LIMITS.titleChars),
-            isDefault: model.isDefault,
-            reasoningLevels: model.reasoningLevels.slice(0, 16)
-          }))
-        }))
-      }
-    };
-  }
-});
-function storageKey2(session, key) {
-  return `state:${session}:${key}`;
-}
-var storageGet2 = handler({
-  method: "storage.get",
-  async execute(params2, { serving, session }) {
-    const stored = await serving.host.kv.get(storageKey2(session.id, params2.key));
-    return { result: stored === void 0 ? { found: false } : { found: true, value: stored } };
-  }
-});
-var storageSet2 = handler({
-  method: "storage.set",
-  async execute(params2, { serving, session }) {
-    await serving.host.kv.set(storageKey2(session.id, params2.key), params2.value);
-    return { result: { stored: true } };
-  }
-});
-
-// src/domain/submissions/message.ts
-function formatSubmissionMessage(submission) {
-  const heading = submission.title.trim() || "Thread Page";
-  const sections = submission.answers.map((answer) => {
-    const label = answer.label.trim() || answer.name;
-    return `**${label}**
-${formatValue(answer.value)}`;
-  });
-  if (submission.files.length > 0) {
-    sections.push(
-      [
-        "**Attached files**",
-        ...submission.files.map((file) => `- \`$BB_THREAD_STORAGE/${file.path}\` (${file.name}, ${file.sizeBytes} bytes)`),
-        `They are in the \`${UPLOAD_DIR}/\` directory of your page root; read them with your normal tools.`
-      ].join("\n")
-    );
-  }
-  return [`The user answered the form on your Thread Page \u2014 ${heading}.`, ...sections].join("\n\n");
-}
-function formatValue(value) {
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "(left blank)";
-  return value.length > 0 ? value : "(left blank)";
-}
-function formatReplyMessage(title2, result2) {
-  const heading = title2?.trim() || "Interactive response";
-  const serialized = JSON.stringify(result2, null, 2) ?? "null";
-  let longestRun = 0;
-  for (const match of serialized.matchAll(/`+/g)) longestRun = Math.max(longestRun, match[0].length);
-  const fence = "`".repeat(Math.max(3, longestRun + 1));
-  return [`The user sent an interactive response from your Thread Page \u2014 ${heading}.`, `**Result**
-
-${fence}json
-${serialized}
-${fence}`].join("\n\n");
-}
-
-// src/serving/bridge/handlers/writes.ts
-var sessionReply2 = handler({
-  method: "session.reply",
-  async execute(params2, { serving, session, page, requestId }) {
-    const key = `${session.id}:${params2.idempotencyKey ?? requestId}`;
-    const print = fingerprint({ revision: page.revision, result: params2.result, mode: params2.mode, title: params2.title ?? null });
-    const remembered = serving.replies.remember(key, print, () => serving.host.sessions.send(session.id, formatReplyMessage(params2.title, params2.result), params2.mode), serving.now());
-    if (remembered.kind === "conflict") throw new PageError("conflict", "This idempotency key was already used with a different reply");
-    const outcome = await remembered.outcome;
-    return { result: { delivery: outcome.delivery, duplicate: remembered.kind === "replay" } };
-  }
-});
-async function targetSession(context, id) {
-  const target = await context.serving.host.sessions.get(id);
-  if (!target || target.deleted) throw new PageError("not_found", "That session is not available");
-  return target;
-}
-var sessionsSend2 = handler({
-  method: "sessions.send",
-  async refuse(params2, context) {
-    if (params2.sessionId === context.session.id) throw new PageError("invalid_params", "Use session.reply to answer this page's own session");
-    await targetSession(context, params2.sessionId);
-  },
-  async summarize(params2, context) {
-    const target = await targetSession(context, params2.sessionId);
-    return `Send to \u201C${excerpt(target.title, 60)}\u201D: \u201C${excerpt(params2.prompt)}\u201D${params2.mode === "steer" ? " (interrupting its current turn)" : ""}`;
-  },
-  async execute(params2, { serving }) {
-    const sent = await serving.host.sessions.send(params2.sessionId, params2.prompt, params2.mode);
-    return { result: { sessionId: params2.sessionId, delivery: sent.delivery, duplicate: false } };
-  }
-});
-async function resolveStart(params2, context) {
-  const projects = await context.serving.host.projects.list();
-  const project = projects.find((candidate) => candidate.id === params2.projectId);
-  if (!project) throw new PageError("not_found", "That project is not available");
-  let environment = { kind: "project-default" };
-  let environmentLabel = "the project's default environment";
-  if (typeof params2.environment === "object") {
-    const other = await targetSession(context, params2.environment.sameAs);
-    if (!other.environmentId) throw new PageError("invalid_params", "That session has no environment to share");
-    environment = { kind: "reuse", environmentId: other.environmentId };
-    environmentLabel = `the environment of \u201C${excerpt(other.title, 40)}\u201D`;
-  }
-  return {
-    args: {
-      projectId: params2.projectId,
-      prompt: params2.prompt,
-      ...params2.title ? { title: params2.title } : {},
-      ...params2.providerId ? { providerId: params2.providerId } : {},
-      ...params2.model ? { model: params2.model } : {},
-      ...params2.reasoningLevel ? { reasoningLevel: params2.reasoningLevel } : {},
-      environment
-    },
-    projectName: project.name,
-    environmentLabel
-  };
-}
-var sessionsStart2 = handler({
-  method: "sessions.start",
-  async refuse(params2, context) {
-    await resolveStart(params2, context);
-  },
-  async summarize(params2, context) {
-    const { projectName, environmentLabel } = await resolveStart(params2, context);
-    const runtime = [params2.providerId, params2.model, params2.reasoningLevel].filter(Boolean).join(" \xB7 ") || "the project's default provider and model";
-    return `Start a session in ${projectName}: \u201C${excerpt(params2.prompt)}\u201D \u2014 using ${runtime}, in ${environmentLabel}`;
-  },
-  async execute(params2, context) {
-    const { args } = await resolveStart(params2, context);
-    const started = await context.serving.host.sessions.start(args);
-    return { result: { sessionId: started.id } };
-  }
-});
-var sessionsStop2 = handler({
-  method: "sessions.stop",
-  async refuse(params2, context) {
-    if (params2.sessionId === context.session.id) throw new PageError("invalid_params", "A page cannot stop its own session");
-    await targetSession(context, params2.sessionId);
-  },
-  async summarize(params2, context) {
-    const target = await targetSession(context, params2.sessionId);
-    return `Stop \u201C${excerpt(target.title, 60)}\u201D`;
-  },
-  async execute(params2, { serving }) {
-    await serving.host.sessions.stop(params2.sessionId);
-    return { result: { stopped: true } };
-  }
-});
-var sessionsArchive2 = handler({
-  method: "sessions.archive",
-  async refuse(params2, context) {
-    await targetSession(context, params2.sessionId);
-  },
-  async summarize(params2, context) {
-    const target = await targetSession(context, params2.sessionId);
-    return `Archive \u201C${excerpt(target.title, 60)}\u201D${params2.sessionId === context.session.id ? " (this page's own session; its page will stop being served)" : ""}`;
-  },
-  async execute(params2, { serving }) {
-    await serving.host.sessions.archive(params2.sessionId);
-    return { result: { archived: true } };
-  }
-});
-var sessionsMarkRead2 = handler({
-  method: "sessions.markRead",
-  async refuse(params2, context) {
-    await targetSession(context, params2.sessionId);
-  },
-  async execute(params2, { serving }) {
-    const after = await serving.host.sessions.markRead(params2.sessionId, params2.read);
-    return { result: { sessionId: params2.sessionId, unread: after.unread } };
-  }
-});
-var projectsBrowse2 = handler({
-  method: "projects.browse",
-  async summarize() {
-    return "Choose a project folder on this device";
-  },
-  async execute(_params, { serving, session }) {
-    const location = await serving.host.sessions.storage(session.id);
-    const picked = await serving.host.projects.browse(location.hostId);
-    if (!picked) return { result: { selection: null } };
-    const token = serving.selections.issue({ session: session.id, hostId: location.hostId, path: picked.path }, serving.now());
-    return { result: { selection: { token, displayPath: displayPath(picked.path), hostName: picked.hostName } } };
-  }
-});
-function displayPath(path) {
-  return path.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~").replace(/^[A-Za-z]:\\Users\\[^\\]+/, "~");
-}
-var projectsCreate2 = handler({
-  method: "projects.create",
-  async refuse(params2, { serving, session }) {
-    if (!serving.selections.peek(params2.selectionToken, session.id, serving.now())) {
-      throw new PageError("not_found", "That folder selection has expired; choose the folder again");
-    }
-  },
-  async summarize(params2, { serving, session }) {
-    const selection = serving.selections.peek(params2.selectionToken, session.id, serving.now());
-    const name = params2.name ?? selection?.path.split(/[\\/]/).pop() ?? "the selected folder";
-    return `Create project \u201C${excerpt(name, 60)}\u201D from ${selection ? displayPath(selection.path) : "the selected folder"}`;
-  },
-  async execute(params2, { serving, session }) {
-    const selection = serving.selections.redeem(params2.selectionToken, session.id, serving.now());
-    if (!selection) throw new PageError("not_found", "That folder selection has expired; choose the folder again");
-    const name = params2.name ?? selection.path.split(/[\\/]/).pop() ?? "New project";
-    const created = await serving.host.projects.create({ name, hostId: selection.hostId, path: selection.path });
-    return { result: { project: { id: created.id, name: created.name, kind: created.kind } } };
-  }
-});
-
-// src/serving/bridge/handlers/index.ts
-var ALL_HANDLERS = [
-  contextGet2,
-  sessionActivity2,
-  sessionsSnapshot2,
-  projectsList2,
-  providersList2,
-  storageGet2,
-  storageSet2,
-  sessionReply2,
-  sessionsSend2,
-  sessionsStart2,
-  sessionsStop2,
-  sessionsArchive2,
-  sessionsMarkRead2,
-  projectsBrowse2,
-  projectsCreate2,
-  pagesOpen2,
-  sessionsOpenHost2,
-  navigationOpenExternal2
-];
-
-// src/serving/responses.ts
-function baseHeaders(contentType) {
-  return new Headers({
-    "cache-control": "no-store, max-age=0",
-    "content-type": contentType,
-    "referrer-policy": "no-referrer",
-    "x-content-type-options": "nosniff",
-    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
-  });
-}
-function shellCsp(nonce) {
-  return [
-    "default-src 'none'",
-    "base-uri 'none'",
-    "connect-src 'self'",
-    "form-action 'none'",
-    "frame-ancestors 'self'",
-    "frame-src 'self'",
-    `script-src 'nonce-${nonce}'`,
-    `style-src 'nonce-${nonce}'`,
-    "img-src 'self' data:"
-  ].join("; ");
-}
-function documentCsp() {
-  return [
-    "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'",
-    "script-src * data: blob: 'unsafe-inline' 'unsafe-eval'",
-    "style-src * data: blob: 'unsafe-inline'",
-    "img-src * data: blob:",
-    "font-src * data: blob:",
-    "media-src * data: blob:",
-    "connect-src * data: blob:",
-    "worker-src * blob: data:",
-    "frame-src 'none'",
-    "child-src blob:",
-    "object-src 'none'",
-    "base-uri 'self'",
-    "sandbox allow-scripts allow-forms"
-  ].join("; ");
-}
-function jsonResponse(value, status2 = 200, extra) {
-  const headers = baseHeaders("application/json; charset=utf-8");
-  for (const [key, entry] of Object.entries(extra ?? {})) headers.set(key, entry);
-  return new Response(JSON.stringify(value), { status: status2, headers });
-}
-function errorJson(error) {
-  return jsonResponse({ ok: false, code: error.code, message: error.message }, error.status);
-}
-function errorPage(message, status2) {
-  const headers = baseHeaders("text/html; charset=utf-8");
-  headers.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox");
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thread Page</title><style>body{max-width:42rem;margin:4rem auto;padding:0 1rem;font:16px/1.5 system-ui,sans-serif;color:CanvasText;background:Canvas}h1{font-size:1.4rem}</style></head><body><main><h1>Thread Page</h1><p>${escapeHtml(message)}</p></main></body></html>`;
-  return new Response(html, { status: status2, headers });
-}
-function failureResponse(error, log, where, asPage) {
-  if (PageError.is(error)) {
-    if (error.cause !== void 0) log.warn(`${where}: ${error.code}: ${errorText(error.cause)}`);
-    return asPage ? errorPage(error.message, error.status) : errorJson(error);
-  }
-  log.warn(`${where}: ${errorText(error)}`);
-  const generic = new PageError("handler_error", "Something went wrong serving this page.");
-  return asPage ? errorPage(generic.message, 500) : errorJson(generic);
-}
-
-// src/serving/bridge-route.ts
-function bridgeRoute(dispatch) {
-  return async (context) => {
-    let body;
-    try {
-      body = await readJsonBody(context, LIMITS.capabilityPayloadBytes + 8192);
-    } catch (error) {
-      const failed = PageError.is(error) ? error : new PageError("invalid_json", "Invalid bridge body");
-      const code = failed.code === "request_too_large" ? "request_too_large" : "invalid_json";
-      return jsonResponse({ response: failure(void 0, code, failed.message) }, failed.status);
-    }
-    const outcome = await dispatch(body);
-    return jsonResponse(outcome.body, outcome.status);
   };
 }
 
@@ -12027,6 +11265,1088 @@ function parse(html, options) {
   return Parser.parse(html, options);
 }
 
+// src/pages/inline.ts
+var CARRIERS = [
+  { tag: "link", attr: "href", test: (element) => relOf(element).some((rel) => rel === "stylesheet" || rel === "icon" || rel === "shortcut" || rel === "apple-touch-icon" || rel === "preload") },
+  { tag: "script", attr: "src" },
+  { tag: "img", attr: "src" },
+  { tag: "source", attr: "src" },
+  { tag: "audio", attr: "src" },
+  { tag: "video", attr: "src" },
+  { tag: "video", attr: "poster" },
+  { tag: "track", attr: "src" }
+];
+function relOf(element) {
+  const rel = attributeOf(element, "rel") ?? "";
+  return rel.toLowerCase().split(/\s+/).filter(Boolean);
+}
+function attributeOf(element, name) {
+  return element.attrs.find((attr) => attr.name === name)?.value ?? null;
+}
+function setAttribute(element, name, value) {
+  const existing = element.attrs.find((attr) => attr.name === name);
+  if (existing) existing.value = value;
+  else element.attrs.push({ name, value });
+}
+function isOwnFileReference(value) {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.startsWith("#") || trimmed.startsWith("/") || trimmed.startsWith("//")) return false;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) return false;
+  return true;
+}
+function pathOf(reference) {
+  const withoutHash = reference.trim().split("#")[0] ?? "";
+  const withoutQuery = withoutHash.split("?")[0] ?? "";
+  if (withoutQuery.length === 0) return null;
+  try {
+    return decodeURIComponent(withoutQuery);
+  } catch {
+    return withoutQuery;
+  }
+}
+function mimeFor(path, declared) {
+  if (declared && declared.length > 0) return declared;
+  const extension = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+  return EXTENSION_TYPES[extension] ?? "application/octet-stream";
+}
+var EXTENSION_TYPES = Object.freeze({
+  css: "text/css",
+  js: "text/javascript",
+  mjs: "text/javascript",
+  json: "application/json",
+  svg: "image/svg+xml",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  ico: "image/x-icon",
+  woff: "font/woff",
+  woff2: "font/woff2",
+  ttf: "font/ttf",
+  otf: "font/otf",
+  mp4: "video/mp4",
+  webm: "video/webm",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  vtt: "text/vtt"
+});
+function dataUrl(bytes, mimeType) {
+  return `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`;
+}
+var CSS_URL = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
+async function resolveOwnFiles(html, read) {
+  const document = parse(html);
+  const resolved = [];
+  const skipped = [];
+  const seen = /* @__PURE__ */ new Map();
+  let budget = LIMITS.inlineTotalBytes;
+  async function urlFor(path, depth) {
+    const memo = seen.get(path);
+    if (memo !== void 0) return memo;
+    const answer = await load(path, depth);
+    seen.set(path, answer);
+    return answer;
+  }
+  async function load(path, depth) {
+    if (!isSafeRelativePath(path)) {
+      skipped.push({ path, reason: "unsafe-path" });
+      return null;
+    }
+    const file = await read(path).catch(() => null);
+    if (!file) {
+      skipped.push({ path, reason: "missing" });
+      return null;
+    }
+    if (file.bytes.byteLength > LIMITS.inlineFileBytes) {
+      skipped.push({ path, reason: "too-large" });
+      return null;
+    }
+    if (file.bytes.byteLength > budget) {
+      skipped.push({ path, reason: "budget" });
+      return null;
+    }
+    budget -= file.bytes.byteLength;
+    const mimeType = mimeFor(path, file.mimeType);
+    const bytes = mimeType === "text/css" && depth < LIMITS.inlineCssDepth ? Buffer.from(await resolveCss(Buffer.from(file.bytes).toString("utf8"), path, depth), "utf8") : file.bytes;
+    resolved.push({ path, bytes: file.bytes.byteLength });
+    return dataUrl(bytes, mimeType);
+  }
+  async function resolveCss(css, from, depth) {
+    const base = from.includes("/") ? from.slice(0, from.lastIndexOf("/") + 1) : "";
+    const replacements = /* @__PURE__ */ new Map();
+    for (const match of css.matchAll(CSS_URL)) {
+      const reference = match[2] ?? "";
+      if (!isOwnFileReference(reference) || replacements.has(reference)) continue;
+      const path = pathOf(reference);
+      if (!path) continue;
+      const url = await urlFor(normalise(base + path), depth + 1);
+      if (url) replacements.set(reference, url);
+    }
+    if (replacements.size === 0) return css;
+    return css.replace(CSS_URL, (whole, quote, reference) => {
+      const url = replacements.get(reference);
+      return url ? `url(${quote}${url}${quote})` : whole;
+    });
+  }
+  const elements = [];
+  const walk = (node) => {
+    if (defaultTreeAdapter.isElementNode(node)) elements.push(node);
+    for (const child of node.childNodes ?? []) walk(child);
+  };
+  walk(document);
+  let changed = false;
+  for (const element of elements) {
+    for (const carrier of CARRIERS) {
+      if (element.tagName !== carrier.tag) continue;
+      if (carrier.test && !carrier.test(element)) continue;
+      const reference = attributeOf(element, carrier.attr);
+      if (reference === null || !isOwnFileReference(reference)) continue;
+      const path = pathOf(reference);
+      if (!path) continue;
+      const url = await urlFor(normalise(path), 0);
+      if (!url) continue;
+      setAttribute(element, carrier.attr, url);
+      changed = true;
+    }
+    if (element.tagName === "img" || element.tagName === "source") {
+      const srcset = attributeOf(element, "srcset");
+      if (srcset !== null) {
+        const rewritten = await resolveSrcset(srcset, urlFor);
+        if (rewritten !== null) {
+          setAttribute(element, "srcset", rewritten);
+          changed = true;
+        }
+      }
+    }
+  }
+  return { html: changed ? serialize(document) : html, resolved, skipped };
+}
+async function resolveSrcset(srcset, urlFor) {
+  const candidates = srcset.split(",").map((entry) => entry.trim()).filter(Boolean);
+  const rewritten = [];
+  let changed = false;
+  for (const candidate of candidates) {
+    const [reference, ...descriptor] = candidate.split(/\s+/);
+    if (!reference || !isOwnFileReference(reference)) {
+      rewritten.push(candidate);
+      continue;
+    }
+    const path = pathOf(reference);
+    const url = path ? await urlFor(normalise(path), 0) : null;
+    if (!url) {
+      rewritten.push(candidate);
+      continue;
+    }
+    changed = true;
+    rewritten.push([url, ...descriptor].join(" "));
+  }
+  return changed ? rewritten.join(", ") : null;
+}
+function normalise(path) {
+  const out = [];
+  for (const segment of path.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === ".." && out.length > 0 && out[out.length - 1] !== "..") out.pop();
+    else out.push(segment);
+  }
+  return out.join("/");
+}
+
+// src/domain/revision.ts
+import { createHash } from "node:crypto";
+function revisionOf(content) {
+  const hash = createHash("sha256");
+  if (typeof content === "string") hash.update(content, "utf8");
+  else hash.update(content);
+  return hash.digest("hex");
+}
+function sha256Hex(content) {
+  return revisionOf(content);
+}
+function etagFor(revision) {
+  return `"${revision}"`;
+}
+function ifNoneMatchMatches(header, etag) {
+  if (!header) return false;
+  return header.split(",").map((candidate) => candidate.trim().replace(/^W\//, "")).some((candidate) => candidate === etag || candidate === "*");
+}
+
+// src/pages/page-store.ts
+var KV_PREFIX = "cache:";
+function createPageStore(host, resolve) {
+  const memory = /* @__PURE__ */ new Map();
+  let memoryBytes = 0;
+  function cost(page) {
+    return Buffer.byteLength(page.html, "utf8") + 128;
+  }
+  function retain(session, page) {
+    const previous = memory.get(session);
+    if (previous) {
+      memoryBytes -= cost(previous);
+      memory.delete(session);
+    }
+    memory.set(session, page);
+    memoryBytes += cost(page);
+    while (memory.size > LIMITS.offlineCacheEntries || memoryBytes > LIMITS.offlineCacheBytes) {
+      const oldest = memory.keys().next().value;
+      if (oldest === void 0) break;
+      const evicted = memory.get(oldest);
+      memory.delete(oldest);
+      if (evicted) memoryBytes -= cost(evicted);
+    }
+  }
+  async function persist(session, page, previousRevision) {
+    if (previousRevision === page.revision) return;
+    const key = KV_PREFIX + session;
+    const bytes = Buffer.byteLength(page.html, "utf8");
+    if (bytes > LIMITS.offlineCopyBytes) {
+      host.log.warn(
+        `offline copy: ${session} is ${Math.round(bytes / 1024)} KiB, over the ${LIMITS.offlineCopyBytes / 1024} KiB limit \u2014 the page will not open while its host is unreachable`
+      );
+      await host.kv.delete(key).catch((error) => host.log.warn(`offline copy: could not clear ${session}: ${errorText(error)}`));
+      return;
+    }
+    await host.kv.set(key, { html: page.html, revision: page.revision, updatedAtMs: page.updatedAtMs }).catch((error) => {
+      host.log.warn(`offline copy: could not store ${session}: ${errorText(error)}`);
+    });
+  }
+  async function cached(session) {
+    const resident = memory.get(session);
+    if (resident) return resident;
+    try {
+      const stored = await host.kv.get(KV_PREFIX + session);
+      if (!isCachedPage(stored)) return null;
+      retain(session, stored);
+      return stored;
+    } catch (error) {
+      host.log.warn(`offline copy: could not read ${session}: ${errorText(error)}`);
+      return null;
+    }
+  }
+  async function remember(session, html, updatedAtMs = Date.now()) {
+    const page = { html, revision: revisionOf(html), updatedAtMs };
+    const previous = memory.get(session)?.revision;
+    retain(session, page);
+    await persist(session, page, previous);
+    return page;
+  }
+  return {
+    async load(session) {
+      let content;
+      try {
+        const location = await host.sessions.storage(session);
+        content = await host.files.read(location, ENTRY_FILE);
+      } catch (error) {
+        const fallback = await cached(session);
+        if (fallback) return { ...fallback, stale: true, site: { resolved: 0, skipped: [] } };
+        throw PageError.is(error) ? error : new PageError("unavailable", PUBLIC_MESSAGES.unavailable, { cause: error });
+      }
+      if (!content) throw new PageError("no_page", PUBLIC_MESSAGES.noPage);
+      if (content.bytes.byteLength > LIMITS.entryDocumentBytes) {
+        throw new PageError("page_too_large", PUBLIC_MESSAGES.pageTooLarge);
+      }
+      const authored = Buffer.from(content.bytes).toString("utf8");
+      let html = authored;
+      let site = { resolved: 0, skipped: [] };
+      if (resolve) {
+        try {
+          const outcome = await resolve(session, authored);
+          html = outcome.html;
+          site = { resolved: outcome.resolved.length, skipped: outcome.skipped };
+          for (const file of outcome.skipped) {
+            host.log.warn(`page ${session}: ${file.path} is referenced but was not carried into the document (${file.reason})`);
+          }
+        } catch (error) {
+          host.log.warn(`page ${session}: could not resolve its own files: ${errorText(error)}`);
+        }
+      }
+      const page = { html, revision: revisionOf(html), updatedAtMs: content.modifiedAtMs ?? Date.now() };
+      const previous = memory.get(session)?.revision;
+      retain(session, page);
+      await persist(session, page, previous);
+      return { ...page, stale: false, site };
+    },
+    remember,
+    knownRevision(session) {
+      return memory.get(session)?.revision ?? null;
+    }
+  };
+}
+function isCachedPage(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entry = value;
+  return typeof entry.html === "string" && Buffer.byteLength(entry.html, "utf8") <= LIMITS.offlineCopyBytes && isRevision(entry.revision) && revisionOf(entry.html) === entry.revision && typeof entry.updatedAtMs === "number" && Number.isFinite(entry.updatedAtMs);
+}
+
+// src/pages/site.ts
+function createCoreStorageSite(routeBase, storageFilesBase) {
+  return {
+    name: "core-storage",
+    documentUrl: (session) => `${routeBase}/document?session=${encodeURIComponent(session)}`,
+    baseHref: (session) => storageFilesBase(session)
+  };
+}
+
+// src/serving/bridge/selection-store.ts
+import { randomBytes } from "node:crypto";
+function createSelectionStore() {
+  const selections = /* @__PURE__ */ new Map();
+  function prune(now) {
+    for (const [token, selection] of selections) {
+      if (selection.expiresAt <= now) selections.delete(token);
+    }
+    while (selections.size > LIMITS.selectionTokens) {
+      const oldest = selections.keys().next().value;
+      if (oldest === void 0) break;
+      selections.delete(oldest);
+    }
+  }
+  return {
+    issue(selection, now) {
+      prune(now);
+      const token = `sel.${randomBytes(18).toString("base64url")}`;
+      selections.set(token, { ...selection, expiresAt: now + LIMITS.selectionTokenMs });
+      return token;
+    },
+    peek(token, session, now) {
+      prune(now);
+      const selection = selections.get(token);
+      return selection && selection.session === session ? selection : null;
+    },
+    redeem(token, session, now) {
+      prune(now);
+      const selection = selections.get(token);
+      if (!selection || selection.session !== session) return null;
+      selections.delete(token);
+      return selection;
+    }
+  };
+}
+
+// src/domain/json/canonical.ts
+import { createHash as createHash2 } from "node:crypto";
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+}
+function fingerprint(value) {
+  return createHash2("sha256").update(canonicalJson(value), "utf8").digest("hex");
+}
+
+// src/domain/tokens/mac.ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+function signPayload(payload, key) {
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  return `${encoded}.${signature(encoded, key)}`;
+}
+function openToken(token, key) {
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [encoded, supplied] = parts;
+  if (!encoded || !supplied) return null;
+  try {
+    const expected = Buffer.from(signature(encoded, key), "ascii");
+    const given = Buffer.from(supplied, "ascii");
+    if (given.byteLength !== expected.byteLength) return null;
+    if (!timingSafeEqual(given, expected)) return null;
+    return JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+function signature(encoded, key) {
+  return createHmac("sha256", key).update(encoded, "ascii").digest("base64url");
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function lifetimeValid(payload, now, maxLifetimeMs) {
+  const { iat, exp } = payload;
+  return typeof iat === "number" && Number.isSafeInteger(iat) && typeof exp === "number" && Number.isSafeInteger(exp) && iat <= now + 3e4 && exp > now && exp > iat && exp - iat <= maxLifetimeMs;
+}
+
+// src/domain/tokens/confirmation.ts
+function paramsFingerprint(params2) {
+  return fingerprint(params2);
+}
+function mintChallenge(binding, summary, now, key) {
+  const bounded = summary.length <= LIMITS.summaryChars ? summary : `${summary.slice(0, LIMITS.summaryChars - 1)}\u2026`;
+  const payload = {
+    v: 3,
+    scope: "confirm",
+    session: binding.session,
+    revision: binding.revision,
+    requestId: binding.requestId,
+    method: binding.method,
+    paramsHash: paramsFingerprint(binding.params),
+    summary: bounded,
+    iat: now,
+    exp: now + LIMITS.confirmationMs
+  };
+  return { challenge: signPayload(payload, key), payload };
+}
+function openChallenge(challenge, key, now) {
+  if (typeof challenge !== "string" || challenge.length === 0 || challenge.length > LIMITS.tokenChars) return null;
+  const payload = openToken(challenge, key);
+  if (!isRecord(payload)) return null;
+  if (payload.v !== 3 || payload.scope !== "confirm" || !isSessionId(payload.session) || !isRevision(payload.revision) || !isRequestId(payload.requestId) || !isMethodName(payload.method) || !isRevision(payload.paramsHash) || typeof payload.summary !== "string" || payload.summary.length === 0 || payload.summary.length > LIMITS.summaryChars || !lifetimeValid({ iat: payload.iat, exp: payload.exp }, now, LIMITS.confirmationMs)) {
+    return null;
+  }
+  return {
+    v: 3,
+    scope: "confirm",
+    session: payload.session,
+    revision: payload.revision,
+    requestId: payload.requestId,
+    method: payload.method,
+    paramsHash: payload.paramsHash,
+    summary: payload.summary,
+    iat: payload.iat,
+    exp: payload.exp
+  };
+}
+function challengeMatches(challenge, binding) {
+  return challenge.session === binding.session && challenge.revision === binding.revision && challenge.requestId === binding.requestId && challenge.method === binding.method && challenge.paramsHash === paramsFingerprint(binding.params);
+}
+
+// src/domain/tokens/action-token.ts
+function mintActionToken(args, key) {
+  const payload = {
+    v: 3,
+    scope: "action",
+    session: args.session,
+    revision: args.revision,
+    iat: args.now,
+    exp: args.now + LIMITS.actionTokenMs
+  };
+  return { token: signPayload(payload, key), payload };
+}
+function verifyActionToken(token, key, now) {
+  if (typeof token !== "string" || token.length === 0 || token.length > LIMITS.tokenChars) return null;
+  const payload = openToken(token, key);
+  if (!isRecord(payload)) return null;
+  if (payload.v !== 3 || payload.scope !== "action" || !isSessionId(payload.session) || !isRevision(payload.revision) || !lifetimeValid({ iat: payload.iat, exp: payload.exp }, now, LIMITS.actionTokenMs)) {
+    return null;
+  }
+  return {
+    v: 3,
+    scope: "action",
+    session: payload.session,
+    revision: payload.revision,
+    iat: payload.iat,
+    exp: payload.exp
+  };
+}
+
+// src/serving/action-request.ts
+async function readJsonBody(context, maxBytes) {
+  const declared = Number(context.req.header("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > maxBytes) throw new PageError("request_too_large", "Request body is too large");
+  const raw = await context.req.text();
+  if (Buffer.byteLength(raw, "utf8") > maxBytes) throw new PageError("request_too_large", "Request body is too large");
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new PageError("invalid_json", "Request body is not valid JSON");
+  }
+}
+function requireActionToken(serving, token) {
+  const verified = typeof token === "string" ? verifyActionToken(token, serving.signingKey, serving.now()) : null;
+  if (!verified) throw new PageError("confirmation_invalid", PUBLIC_MESSAGES.tokenInvalid, { status: 401 });
+  return verified;
+}
+function acquireRate(serving, session) {
+  const release = serving.rate.acquire(session, serving.now());
+  if (!release) throw new PageError("rate_limited", PUBLIC_MESSAGES.rateLimited);
+  return release;
+}
+
+// src/serving/session-access.ts
+function sessionIdFrom(context) {
+  const url = new URL(context.req.url);
+  const candidate = url.searchParams.get("session") ?? url.searchParams.get("threadId");
+  if (!isSessionId(candidate)) throw new PageError("invalid_session", PUBLIC_MESSAGES.invalidSession);
+  return candidate;
+}
+async function eligibleSession(serving, id) {
+  const session = await serving.host.sessions.get(id);
+  if (!session) throw new PageError("not_found", "That session does not exist.");
+  const reason = ineligibleReason(session);
+  if (reason) throw new PageError("ineligible", `${PUBLIC_MESSAGES.ineligible} (${describeIneligible(reason)}.)`);
+  return session;
+}
+
+// src/serving/bridge/dispatcher.ts
+function parseEnvelope(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new PageError("invalid_request", "Invalid bridge envelope");
+  const input = value;
+  const keys = Object.keys(input);
+  if (!keys.includes("actionToken") || !keys.includes("request") || keys.some((key) => !["actionToken", "request", "confirmation"].includes(key))) {
+    throw new PageError("invalid_request", "Invalid bridge envelope");
+  }
+  if (typeof input.actionToken !== "string" || input.actionToken.length > LIMITS.tokenChars) throw new PageError("invalid_request", "Invalid bridge envelope");
+  const confirmation = input.confirmation;
+  if (confirmation !== void 0 && confirmation !== null && (typeof confirmation !== "string" || confirmation.length > LIMITS.tokenChars)) {
+    throw new PageError("invalid_request", "Invalid bridge envelope");
+  }
+  return { actionToken: input.actionToken, request: input.request, confirmation: typeof confirmation === "string" ? confirmation : null };
+}
+function createDispatcher(serving, handlers) {
+  const byMethod = new Map(handlers.map((entry) => [entry.method, entry]));
+  for (const spec2 of serving.registry.list()) {
+    if (spec2.implemented && !byMethod.has(spec2.method)) throw new Error(`No handler for capability ${spec2.method}`);
+  }
+  return async function dispatch(body) {
+    let requestId;
+    let release = null;
+    try {
+      const envelope = parseEnvelope(body);
+      requestId = envelope.request?.id;
+      const token = requireActionToken(serving, envelope.actionToken);
+      release = acquireRate(serving, token.session);
+      const request = decodeBridgeRequest(envelope.request);
+      requestId = request.id;
+      const invocation = resolveInvocation(request, serving.registry, token.revision);
+      const entry = byMethod.get(invocation.spec.method);
+      if (!entry) throw new PageError("unknown_method", `Unknown capability: ${invocation.spec.method}`);
+      const session = await eligibleSession(serving, token.session).catch((error) => {
+        throw PageError.is(error) && error.code === "ineligible" ? new PageError("conflict", "This session no longer accepts page actions") : error;
+      });
+      const page = await serving.pages.load(token.session);
+      if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
+      const context = { serving, session, page, requestId: request.id };
+      await entry.refuse?.(invocation.params, context);
+      if (invocation.spec.confirmed) {
+        const binding = { session: token.session, revision: token.revision, requestId: request.id, method: request.method, params: invocation.params };
+        if (envelope.confirmation === null) {
+          const summary = await entry.summarize?.(invocation.params, context) ?? invocation.spec.description;
+          const { challenge: challenge2, payload } = mintChallenge(binding, summary, serving.now(), serving.signingKey);
+          return { status: 401, body: { confirm: { requestId: request.id, summary: payload.summary, challenge: challenge2 } } };
+        }
+        const challenge = openChallenge(envelope.confirmation, serving.signingKey, serving.now());
+        if (!challenge || !challengeMatches(challenge, binding)) {
+          throw new PageError("confirmation_invalid", "The confirmation is expired or does not match this request");
+        }
+      }
+      if (page.stale && invocation.spec.effect !== "read" && invocation.spec.effect !== "navigation") {
+        throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);
+      }
+      let outcome;
+      try {
+        outcome = await entry.execute(invocation.params, context);
+      } catch (error) {
+        if (PageError.is(error) && isBridgeErrorCode(error.code)) throw error;
+        serving.host.log.warn(`bridge ${request.method} for ${token.session}: ${errorText(error)}`);
+        throw new PageError("handler_error", PUBLIC_MESSAGES.handler, { cause: error });
+      }
+      const response = completeInvocation(invocation, outcome.result);
+      return { status: response.ok ? 200 : 500, body: outcome.navigate ? { response, navigate: outcome.navigate } : { response } };
+    } catch (error) {
+      if (PageError.is(error)) {
+        if (error.cause !== void 0) serving.host.log.warn(`bridge: ${error.code}: ${errorText(error.cause)}`);
+        const code = isBridgeErrorCode(error.code) ? error.code : error.code === "ineligible" || error.code === "no_page" ? "not_found" : "handler_error";
+        return { status: error.status, body: { response: failure(requestId, code, error.message) } };
+      }
+      serving.host.log.warn(`bridge: ${errorText(error)}`);
+      return { status: 500, body: { response: failureFromError(requestId, error) } };
+    } finally {
+      release?.();
+    }
+  };
+}
+
+// src/serving/bridge/handler.ts
+function handler(definition) {
+  return definition;
+}
+function excerpt(text, max = 80) {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length <= max ? line : `${line.slice(0, max - 1)}\u2026`;
+}
+
+// src/serving/bridge/handlers/navigation.ts
+var pagesOpen2 = handler({
+  method: "pages.open",
+  async refuse(params2, { serving }) {
+    const target = await serving.host.sessions.get(params2.sessionId);
+    if (!target || ineligibleReason(target)) throw new PageError("not_found", "That session has no page");
+  },
+  async execute(params2, { serving }) {
+    return { result: { opened: true }, navigate: { kind: "page", url: pageUrl(serving.routeBase, params2.sessionId) } };
+  }
+});
+var sessionsOpenHost2 = handler({
+  method: "sessions.openHost",
+  async refuse(params2, { serving }) {
+    const target = await serving.host.sessions.get(params2.sessionId);
+    if (!target || target.deleted) throw new PageError("not_found", "That session is not available");
+  },
+  async execute(params2, { serving }) {
+    return { result: { opened: true }, navigate: { kind: "host", url: serving.hostSessionUrl(params2.sessionId) } };
+  }
+});
+var navigationOpenExternal2 = handler({
+  method: "navigation.openExternal",
+  async summarize(params2) {
+    const origin = new URL(params2.url).origin;
+    return params2.label ? `Leave this page and open \u201C${excerpt(params2.label, 60)}\u201D at ${origin}` : `Leave this page and open ${origin}`;
+  },
+  async execute(params2) {
+    return { result: { opened: true }, navigate: { kind: "external", url: new URL(params2.url).href } };
+  }
+});
+
+// src/serving/bridge/handlers/reads.ts
+var contextGet2 = handler({
+  method: "context.get",
+  async execute(_params, { serving, session, page }) {
+    return {
+      result: {
+        protocolVersion: 1,
+        session: { id: session.id, title: session.title.slice(0, LIMITS.titleChars), projectId: session.projectId },
+        page: { revision: page.revision, readOnly: page.stale },
+        capabilities: serving.registry.descriptors()
+      }
+    };
+  }
+});
+var sessionActivity2 = handler({
+  method: "session.activity",
+  async execute(params2, { serving, session }) {
+    const items = await serving.host.sessions.activity(session.id, params2.limit);
+    return { result: { state: session.state, updatedAtMs: session.updatedAtMs, items } };
+  }
+});
+function queryKey(params2) {
+  return `${params2.projectId ?? ""}|${params2.includeArchived ? 1 : 0}|${params2.includeChildren ? 1 : 0}`;
+}
+function encodeCursor(cursor) {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+function decodeCursor(value, params2) {
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (parsed.phase !== "live" && parsed.phase !== "archived" || !Number.isSafeInteger(parsed.offset) || parsed.offset < 0 || parsed.query !== queryKey(params2)) {
+      throw new Error("mismatch");
+    }
+    return { phase: parsed.phase, offset: parsed.offset, query: parsed.query };
+  } catch {
+    throw new PageError("invalid_params", "The cursor does not belong to this query");
+  }
+}
+async function pageAvailability(context, sessions) {
+  const { serving } = context;
+  const byHost = /* @__PURE__ */ new Map();
+  await Promise.all(
+    sessions.map(async (session) => {
+      try {
+        const location = await serving.host.sessions.storage(session.id);
+        const entries = byHost.get(location.hostId) ?? [];
+        entries.push({ session: session.id, path: joinPath(location.rootPath, ENTRY_FILE) });
+        byHost.set(location.hostId, entries);
+      } catch {
+      }
+    })
+  );
+  const availability = /* @__PURE__ */ new Map();
+  await Promise.all(
+    [...byHost.entries()].map(async ([hostId, entries]) => {
+      const existence = await serving.host.files.exist(hostId, entries.map((entry) => entry.path));
+      for (const entry of entries) availability.set(entry.session, existence[entry.path] === true);
+    })
+  );
+  return availability;
+}
+var sessionsSnapshot2 = handler({
+  method: "sessions.snapshot",
+  async execute(params2, context) {
+    const { serving } = context;
+    const start = params2.cursor ? decodeCursor(params2.cursor, params2) : { phase: "live", offset: 0, query: queryKey(params2) };
+    const collected = [];
+    let phase = start.phase;
+    let offset = start.offset;
+    let next = null;
+    while (collected.length < params2.limit) {
+      const want = params2.limit - collected.length;
+      const rows = await serving.host.sessions.list({
+        ...params2.projectId ? { projectId: params2.projectId } : {},
+        archived: phase === "archived",
+        rootsOnly: !params2.includeChildren,
+        offset,
+        limit: want + 1
+      });
+      const visible = rows.filter(
+        (row) => row.visibility === "visible" && !row.deleted && row.archived === (phase === "archived") && (params2.includeChildren || row.parentId === null)
+      );
+      const more = rows.length > want;
+      collected.push(...visible.slice(0, want));
+      offset += Math.min(rows.length, want);
+      if (more) {
+        next = { phase, offset, query: start.query };
+        break;
+      }
+      if (phase === "live" && params2.includeArchived) {
+        phase = "archived";
+        offset = 0;
+        continue;
+      }
+      break;
+    }
+    const availability = await pageAvailability(context, collected);
+    const sessions = collected.map((record) => ({
+      id: record.id,
+      title: record.title.slice(0, LIMITS.titleChars),
+      projectId: record.projectId,
+      parentSessionId: record.parentId,
+      status: record.state,
+      archived: record.archived,
+      page: { available: availability.get(record.id) === true, revision: availability.get(record.id) ? serving.pages.knownRevision(record.id) : null },
+      updatedAtMs: record.updatedAtMs,
+      attentionAtMs: record.attentionAtMs,
+      unread: record.unread
+    }));
+    return { result: { sessions, nextCursor: next ? encodeCursor(next) : null, generatedAtMs: serving.now() } };
+  }
+});
+var projectsList2 = handler({
+  method: "projects.list",
+  async execute(_params, { serving }) {
+    const projects = await serving.host.projects.list();
+    return { result: { projects: projects.slice(0, LIMITS.projectsMax).map((project) => ({ id: project.id, name: project.name.slice(0, LIMITS.titleChars), kind: project.kind })) } };
+  }
+});
+var providersList2 = handler({
+  method: "providers.list",
+  async execute(_params, { serving }) {
+    const providers = await serving.host.providers.list();
+    return {
+      result: {
+        providers: providers.slice(0, LIMITS.providersMax).map((provider) => ({
+          id: provider.id,
+          displayName: provider.displayName.slice(0, LIMITS.titleChars),
+          available: provider.available,
+          models: provider.models.slice(0, LIMITS.modelsPerProvider).map((model) => ({
+            id: model.id,
+            displayName: model.displayName.slice(0, LIMITS.titleChars),
+            isDefault: model.isDefault,
+            reasoningLevels: model.reasoningLevels.slice(0, 16)
+          }))
+        }))
+      }
+    };
+  }
+});
+function storageKey2(session, key) {
+  return `state:${session}:${key}`;
+}
+var storageGet2 = handler({
+  method: "storage.get",
+  async execute(params2, { serving, session }) {
+    const stored = await serving.host.kv.get(storageKey2(session.id, params2.key));
+    return { result: stored === void 0 ? { found: false } : { found: true, value: stored } };
+  }
+});
+var storageSet2 = handler({
+  method: "storage.set",
+  async execute(params2, { serving, session }) {
+    await serving.host.kv.set(storageKey2(session.id, params2.key), params2.value);
+    return { result: { stored: true } };
+  }
+});
+
+// src/domain/submissions/message.ts
+function formatSubmissionMessage(submission) {
+  const heading = submission.title.trim() || "Thread Page";
+  const sections = submission.answers.map((answer) => {
+    const label = answer.label.trim() || answer.name;
+    return `**${label}**
+${formatValue(answer.value)}`;
+  });
+  if (submission.files.length > 0) {
+    sections.push(
+      [
+        "**Attached files**",
+        ...submission.files.map((file) => `- \`$BB_THREAD_STORAGE/${file.path}\` (${file.name}, ${file.sizeBytes} bytes)`),
+        `They are in the \`${UPLOAD_DIR}/\` directory of your page root; read them with your normal tools.`
+      ].join("\n")
+    );
+  }
+  return [`The user answered the form on your Thread Page \u2014 ${heading}.`, ...sections].join("\n\n");
+}
+function formatValue(value) {
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "(left blank)";
+  return value.length > 0 ? value : "(left blank)";
+}
+function formatReplyMessage(title2, result2) {
+  const heading = title2?.trim() || "Interactive response";
+  const serialized = JSON.stringify(result2, null, 2) ?? "null";
+  let longestRun = 0;
+  for (const match of serialized.matchAll(/`+/g)) longestRun = Math.max(longestRun, match[0].length);
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  return [`The user sent an interactive response from your Thread Page \u2014 ${heading}.`, `**Result**
+
+${fence}json
+${serialized}
+${fence}`].join("\n\n");
+}
+
+// src/serving/bridge/handlers/writes.ts
+var sessionReply2 = handler({
+  method: "session.reply",
+  async execute(params2, { serving, session, page, requestId }) {
+    const key = `${session.id}:${params2.idempotencyKey ?? requestId}`;
+    const print = fingerprint({ revision: page.revision, result: params2.result, mode: params2.mode, title: params2.title ?? null });
+    const remembered = serving.replies.remember(key, print, () => serving.host.sessions.send(session.id, formatReplyMessage(params2.title, params2.result), params2.mode), serving.now());
+    if (remembered.kind === "conflict") throw new PageError("conflict", "This idempotency key was already used with a different reply");
+    const outcome = await remembered.outcome;
+    return { result: { delivery: outcome.delivery, duplicate: remembered.kind === "replay" } };
+  }
+});
+async function targetSession(context, id) {
+  const target = await context.serving.host.sessions.get(id);
+  if (!target || target.deleted) throw new PageError("not_found", "That session is not available");
+  return target;
+}
+var sessionsSend2 = handler({
+  method: "sessions.send",
+  async refuse(params2, context) {
+    if (params2.sessionId === context.session.id) throw new PageError("invalid_params", "Use session.reply to answer this page's own session");
+    await targetSession(context, params2.sessionId);
+  },
+  async summarize(params2, context) {
+    const target = await targetSession(context, params2.sessionId);
+    return `Send to \u201C${excerpt(target.title, 60)}\u201D: \u201C${excerpt(params2.prompt)}\u201D${params2.mode === "steer" ? " (interrupting its current turn)" : ""}`;
+  },
+  async execute(params2, { serving }) {
+    const sent = await serving.host.sessions.send(params2.sessionId, params2.prompt, params2.mode);
+    return { result: { sessionId: params2.sessionId, delivery: sent.delivery, duplicate: false } };
+  }
+});
+async function resolveStart(params2, context) {
+  const projects = await context.serving.host.projects.list();
+  const project = projects.find((candidate) => candidate.id === params2.projectId);
+  if (!project) throw new PageError("not_found", "That project is not available");
+  let environment = { kind: "project-default" };
+  let environmentLabel = "the project's default environment";
+  if (typeof params2.environment === "object") {
+    const other = await targetSession(context, params2.environment.sameAs);
+    if (!other.environmentId) throw new PageError("invalid_params", "That session has no environment to share");
+    environment = { kind: "reuse", environmentId: other.environmentId };
+    environmentLabel = `the environment of \u201C${excerpt(other.title, 40)}\u201D`;
+  }
+  return {
+    args: {
+      projectId: params2.projectId,
+      prompt: params2.prompt,
+      ...params2.title ? { title: params2.title } : {},
+      ...params2.providerId ? { providerId: params2.providerId } : {},
+      ...params2.model ? { model: params2.model } : {},
+      ...params2.reasoningLevel ? { reasoningLevel: params2.reasoningLevel } : {},
+      environment
+    },
+    projectName: project.name,
+    environmentLabel
+  };
+}
+var sessionsStart2 = handler({
+  method: "sessions.start",
+  async refuse(params2, context) {
+    await resolveStart(params2, context);
+  },
+  async summarize(params2, context) {
+    const { projectName, environmentLabel } = await resolveStart(params2, context);
+    const runtime = [params2.providerId, params2.model, params2.reasoningLevel].filter(Boolean).join(" \xB7 ") || "the project's default provider and model";
+    return `Start a session in ${projectName}: \u201C${excerpt(params2.prompt)}\u201D \u2014 using ${runtime}, in ${environmentLabel}`;
+  },
+  async execute(params2, context) {
+    const { args } = await resolveStart(params2, context);
+    const started = await context.serving.host.sessions.start(args);
+    return { result: { sessionId: started.id } };
+  }
+});
+var sessionsStop2 = handler({
+  method: "sessions.stop",
+  async refuse(params2, context) {
+    if (params2.sessionId === context.session.id) throw new PageError("invalid_params", "A page cannot stop its own session");
+    await targetSession(context, params2.sessionId);
+  },
+  async summarize(params2, context) {
+    const target = await targetSession(context, params2.sessionId);
+    return `Stop \u201C${excerpt(target.title, 60)}\u201D`;
+  },
+  async execute(params2, { serving }) {
+    await serving.host.sessions.stop(params2.sessionId);
+    return { result: { stopped: true } };
+  }
+});
+var sessionsArchive2 = handler({
+  method: "sessions.archive",
+  async refuse(params2, context) {
+    await targetSession(context, params2.sessionId);
+  },
+  async summarize(params2, context) {
+    const target = await targetSession(context, params2.sessionId);
+    return `Archive \u201C${excerpt(target.title, 60)}\u201D${params2.sessionId === context.session.id ? " (this page's own session; its page will stop being served)" : ""}`;
+  },
+  async execute(params2, { serving }) {
+    await serving.host.sessions.archive(params2.sessionId);
+    return { result: { archived: true } };
+  }
+});
+var sessionsMarkRead2 = handler({
+  method: "sessions.markRead",
+  async refuse(params2, context) {
+    await targetSession(context, params2.sessionId);
+  },
+  async execute(params2, { serving }) {
+    const after = await serving.host.sessions.markRead(params2.sessionId, params2.read);
+    return { result: { sessionId: params2.sessionId, unread: after.unread } };
+  }
+});
+var projectsBrowse2 = handler({
+  method: "projects.browse",
+  async summarize() {
+    return "Choose a project folder on this device";
+  },
+  async execute(_params, { serving, session }) {
+    const location = await serving.host.sessions.storage(session.id);
+    const picked = await serving.host.projects.browse(location.hostId);
+    if (!picked) return { result: { selection: null } };
+    const token = serving.selections.issue({ session: session.id, hostId: location.hostId, path: picked.path }, serving.now());
+    return { result: { selection: { token, displayPath: displayPath(picked.path), hostName: picked.hostName } } };
+  }
+});
+function displayPath(path) {
+  return path.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~").replace(/^[A-Za-z]:\\Users\\[^\\]+/, "~");
+}
+var projectsCreate2 = handler({
+  method: "projects.create",
+  async refuse(params2, { serving, session }) {
+    if (!serving.selections.peek(params2.selectionToken, session.id, serving.now())) {
+      throw new PageError("not_found", "That folder selection has expired; choose the folder again");
+    }
+  },
+  async summarize(params2, { serving, session }) {
+    const selection = serving.selections.peek(params2.selectionToken, session.id, serving.now());
+    const name = params2.name ?? selection?.path.split(/[\\/]/).pop() ?? "the selected folder";
+    return `Create project \u201C${excerpt(name, 60)}\u201D from ${selection ? displayPath(selection.path) : "the selected folder"}`;
+  },
+  async execute(params2, { serving, session }) {
+    const selection = serving.selections.redeem(params2.selectionToken, session.id, serving.now());
+    if (!selection) throw new PageError("not_found", "That folder selection has expired; choose the folder again");
+    const name = params2.name ?? selection.path.split(/[\\/]/).pop() ?? "New project";
+    const created = await serving.host.projects.create({ name, hostId: selection.hostId, path: selection.path });
+    return { result: { project: { id: created.id, name: created.name, kind: created.kind } } };
+  }
+});
+
+// src/serving/bridge/handlers/index.ts
+var ALL_HANDLERS = [
+  contextGet2,
+  sessionActivity2,
+  sessionsSnapshot2,
+  projectsList2,
+  providersList2,
+  storageGet2,
+  storageSet2,
+  sessionReply2,
+  sessionsSend2,
+  sessionsStart2,
+  sessionsStop2,
+  sessionsArchive2,
+  sessionsMarkRead2,
+  projectsBrowse2,
+  projectsCreate2,
+  pagesOpen2,
+  sessionsOpenHost2,
+  navigationOpenExternal2
+];
+
+// src/serving/responses.ts
+function baseHeaders(contentType) {
+  return new Headers({
+    "cache-control": "no-store, max-age=0",
+    "content-type": contentType,
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+  });
+}
+function shellCsp(nonce) {
+  return [
+    "default-src 'none'",
+    "base-uri 'none'",
+    "connect-src 'self'",
+    "form-action 'none'",
+    "frame-ancestors 'self'",
+    "frame-src 'self'",
+    `script-src 'nonce-${nonce}'`,
+    `style-src 'nonce-${nonce}'`,
+    "img-src 'self' data:"
+  ].join("; ");
+}
+function documentCsp() {
+  return [
+    "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'",
+    "script-src * data: blob: 'unsafe-inline' 'unsafe-eval'",
+    "style-src * data: blob: 'unsafe-inline'",
+    "img-src * data: blob:",
+    "font-src * data: blob:",
+    "media-src * data: blob:",
+    "connect-src * data: blob:",
+    "worker-src * blob: data:",
+    "frame-src 'none'",
+    "child-src blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "sandbox allow-scripts allow-forms"
+  ].join("; ");
+}
+function jsonResponse(value, status2 = 200, extra) {
+  const headers = baseHeaders("application/json; charset=utf-8");
+  for (const [key, entry] of Object.entries(extra ?? {})) headers.set(key, entry);
+  return new Response(JSON.stringify(value), { status: status2, headers });
+}
+function errorJson(error) {
+  return jsonResponse({ ok: false, code: error.code, message: error.message }, error.status);
+}
+function errorPage(message, status2) {
+  const headers = baseHeaders("text/html; charset=utf-8");
+  headers.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thread Page</title><style>body{max-width:42rem;margin:4rem auto;padding:0 1rem;font:16px/1.5 system-ui,sans-serif;color:CanvasText;background:Canvas}h1{font-size:1.4rem}</style></head><body><main><h1>Thread Page</h1><p>${escapeHtml(message)}</p></main></body></html>`;
+  return new Response(html, { status: status2, headers });
+}
+function failureResponse(error, log, where, asPage) {
+  if (PageError.is(error)) {
+    if (error.cause !== void 0) log.warn(`${where}: ${error.code}: ${errorText(error.cause)}`);
+    return asPage ? errorPage(error.message, error.status) : errorJson(error);
+  }
+  log.warn(`${where}: ${errorText(error)}`);
+  const generic = new PageError("handler_error", "Something went wrong serving this page.");
+  return asPage ? errorPage(generic.message, 500) : errorJson(generic);
+}
+
+// src/serving/bridge-route.ts
+function bridgeRoute(dispatch) {
+  return async (context) => {
+    let body;
+    try {
+      body = await readJsonBody(context, LIMITS.capabilityPayloadBytes + 8192);
+    } catch (error) {
+      const failed = PageError.is(error) ? error : new PageError("invalid_json", "Invalid bridge body");
+      const code = failed.code === "request_too_large" ? "request_too_large" : "invalid_json";
+      return jsonResponse({ response: failure(void 0, code, failed.message) }, failed.status);
+    }
+    const outcome = await dispatch(body);
+    return jsonResponse(outcome.body, outcome.status);
+  };
+}
+
 // src/domain/html/document.ts
 var XHTML = "http://www.w3.org/1999/xhtml";
 function injectKernel(source, options) {
@@ -12102,7 +12422,7 @@ ${source}
 }
 
 // src/generated/kernel-runtime.ts
-var KERNEL_RUNTIME = '"use strict";(()=>{var ee=Object.defineProperty;var te=(e,t,n)=>t in e?ee(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var F=(e,t,n)=>te(e,typeof t!="symbol"?t+"":t,n);var v=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var A=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],he=new Set(A);var ye=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${v.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var I=1,B=1,ne=new Set(A);function w(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function _(e,t){return Object.keys(e).length===t.length&&t.every(o=>Object.prototype.hasOwnProperty.call(e,o))}function q(e,t){if(!w(e)||e.v!==B||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return _(e,["v","id","ok","result"]);if(!_(e,["v","id","ok","error"])||!w(e.error))return!1;let n=e.error;return _(n,["code","message"])&&typeof n.code=="string"&&ne.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function N(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function re(e,t,n){let o=e.getAttribute("href");if(o===null)return{kind:"default"};if(o.startsWith("#"))return{kind:"default"};let s;try{s=new URL(o,n??t)}catch{return{kind:"block"}}return s.protocol!=="http:"&&s.protocol!=="https:"?{kind:"block"}:n&&s.href.startsWith(n)?{kind:"default"}:e.hasAttribute("download")?{kind:"default"}:{kind:"external",url:s.href,label:(e.textContent||"").replace(/\\s+/g," ").trim().slice(0,160)}}function U(e,t){e.addEventListener("click",n=>{if(n.defaultPrevented||n.button!==0)return;let s=n.target?.closest?.("a[href]");if(!s)return;let u=e.querySelector("base")?.getAttribute("href")??null,l=u?new URL(u,e.baseURI).href:null,a=re(s,e.baseURI,l);a.kind!=="default"&&(n.preventDefault(),a.kind==="external"&&t(a.url,a.label))},!0)}function K(e,t){let n=Object.freeze({version:1,invoke:t.invoke,watch:t.watch,setDirty:t.setDirty});Object.defineProperty(e,"threadPage",{value:n,writable:!1,configurable:!1,enumerable:!0})}var T=class extends Error{constructor(n,o){super(o);F(this,"code");this.name="ThreadPageError",this.code=n,Object.defineProperty(this,"code",{value:n,enumerable:!0,writable:!1})}};function j(e,t){let n=new Map,o=[],s=null,u=0;function l(){return u+=1,`tp-${typeof crypto<"u"&&typeof crypto.randomUUID=="function"?crypto.randomUUID():`${Date.now()}-${u}`}`}function a(m){let p=n.get(m);if(!(!p||!s))try{s(p.request)}catch(h){n.delete(m),p.reject(new T("invalid_request",h instanceof Error?h.message:"The request could not be sent"))}}function f(m,p){return new Promise((h,y)=>{if(typeof m!="string"){y(new T("invalid_request","A method name is required"));return}let b=l(),r={v:B,id:b,method:m,params:p===void 0?null:p,pageRevision:e};n.set(b,{request:r,resolve:h,reject:y}),s?a(b):o.push(b)})}function g(m,p,h,y){if(typeof h!="function")throw new TypeError("Thread Page watch needs a listener");let b=y?.intervalMs,r=typeof b=="number"&&Number.isFinite(b)?Math.max(v.watchMinMs,Math.min(v.watchMaxMs,Math.round(b))):v.watchDefaultMs,i=!1,c=!1,d=null;function E(x){i||(d!==null&&clearTimeout(d),d=setTimeout(k,x))}async function k(){if(d=null,!(i||c||t.visibilityState==="hidden")){c=!0;try{let x=await f(m,p);i||h(x,null)}catch(x){i||h(void 0,x)}finally{c=!1,i||E(r)}}}function R(){i||(t.visibilityState==="hidden"?(d!==null&&clearTimeout(d),d=null):E(0))}return t.addEventListener("visibilitychange",R),E(0),()=>{i||(i=!0,d!==null&&clearTimeout(d),d=null,t.removeEventListener("visibilitychange",R))}}return{invoke:f,watch:g,attach(m){for(s=m;o.length>0;){let p=o.shift();p&&a(p)}},receive(m){if(typeof m!="object"||m===null)return!1;let p=m.id;if(typeof p!="string")return!1;let h=n.get(p);if(!h)return!1;if(n.delete(p),!q(m,p))return h.reject(new T("invalid_response","The Thread Page bridge returned an invalid response")),!0;let y=m;return y.ok?h.resolve(y.result):h.reject(new T(y.error.code,y.error.message)),!0}}}function z(e){let t=new Map,n=0,o=!1,s=!1;function u(){let l=o||t.size>0;l!==s&&(s=l,e(l))}return{isDirty:()=>s,markForm(l){return n+=1,t.set(l,n),u(),n},versionOf:l=>t.get(l),clearForm(l,a){a!==void 0&&t.get(l)===a&&(t.delete(l),u())},setCustom(l){o=l===!0,u()}}}var oe="input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]";function H(e){if(!e)return"";let t=e.cloneNode(!0);for(let n of Array.from(t.querySelectorAll(oe)))n.remove();return(t.textContent||"").replace(/\\s+/g," ").trim()}function ie(e,t){let n=t.getAttribute("data-label");if(n&&n.trim())return n.trim();let o=t.closest("fieldset");if(o){let l=H(o.querySelector("legend"));if(l)return l}let s=t.getAttribute("aria-label");if(s&&s.trim())return s.trim();let u=t.closest("label");if(u){let l=H(u);if(l)return l}if(t.id){let l=e.ownerDocument,a=Array.from(l.querySelectorAll("label[for]")).find(g=>g.htmlFor===t.id),f=H(a??null);if(f)return f}return t.name}var se=new Set(["button","submit","reset","image","file"]);function ae(e){return Array.from(e.elements).filter(t=>{let n=t;return typeof n.name=="string"&&n.name.length>0&&!n.disabled&&"type"in n})}function $(e,t){let n=ae(e),o=[],s=new Set;if(t&&(C(t)==="button"||C(t)==="input")){let u=t,l=u.value||(u.textContent||"").trim();o.push({name:u.name||"action",label:"Action",value:l}),u.name&&s.add(u.name)}for(let u of n){let l=u.name,a=String(u.type||"").toLowerCase();if(s.has(l)||se.has(a))continue;s.add(l);let f=n.filter(g=>g.name===l);o.push({name:l,label:ie(e,u),value:le(u,f,a)})}return o}function C(e){return e.tagName.toLowerCase()}function le(e,t,n){if(n==="checkbox"){let o=t.filter(s=>C(s)==="input");return o.length===1?o[0]?.checked===!0:o.filter(s=>s.checked).map(s=>s.value)}if(n==="radio"){let o=t.find(s=>C(s)==="input"&&s.checked);return o?o.value:""}return C(e)==="select"&&e.multiple?Array.from(e.selectedOptions).map(o=>o.value):t.length>1?t.map(o=>String(o.value??"")):String(e.value??"")}var ue="data-thread-page-manual",V="data-thread-page-status",de="data-thread-page-range";function L(e){return e.hasAttribute(ue)}function S(e){let t=[];return"tagName"in e&&e.tagName.toLowerCase()==="form"&&t.push(e),"querySelectorAll"in e&&t.push(...Array.from(e.querySelectorAll("form"))),t.filter(n=>!L(n))}function M(e){let t=e.querySelector(`[${V}]`);return t||(t=e.ownerDocument.createElement("p"),t.setAttribute(V,""),t.setAttribute("role","status"),e.appendChild(t)),t}var G=new WeakSet;function W(e){e.noValidate=!0;for(let t of Array.from(e.querySelectorAll(\'input[type="range"]\'))){if(G.has(t))continue;G.add(t);let n=e.ownerDocument.createElement("output");n.setAttribute(de,"");let o=()=>{n.textContent=String(t.value)};t.addEventListener("input",o),o(),t.insertAdjacentElement("afterend",n)}}function P(e){return Array.from(e.querySelectorAll("input,textarea,select,button,fieldset"))}function ce(e){let t=[];for(let n of Array.from(e.querySelectorAll(\'input[type="file"]\')))if(!n.disabled)for(let o of Array.from(n.files??[])){if(t.length>=v.uploadsPerForm)return t;t.push({field:n.name||"file",file:o})}return t}function Z(e){let t=[];for(let n of P(e))n.disabled||(n.disabled=!0,t.push(n));return t}function D(e){for(let t of e)t.disabled=!1}function me(e){let t=e.getAttribute("data-title");return t&&t.trim()?t.trim().slice(0,300):(e.ownerDocument.querySelector("h1")?.textContent||"").trim().slice(0,300)||"Thread Page"}function J(e,t,n){return{submissionId:n,form:e,title:me(e),answers:$(e,t),files:ce(e)}}var X="data-thread-page-offline",O="Offline copy \\u2014 responses are disabled until the source host reconnects.";function Y(e,t){let n=new Set,o=t;function s(){if(!e.body)return;let a=e.querySelector(`[${X}="host"]`);o&&!a?(a=e.createElement("aside"),a.setAttribute(X,"host"),a.setAttribute("role","status"),a.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText"),a.textContent=O,e.body.insertBefore(a,e.body.firstChild)):!o&&a&&a.remove()}function u(a){for(let f of S(a)){for(let g of P(f))g.disabled||(g.disabled=!0,n.add(g));M(f).textContent=O}}function l(){for(let a of n)a.disabled=!1;n.clear();for(let a of S(e)){let f=M(a);f.textContent===O&&(f.textContent="")}}return{isReadOnly:()=>o,apply(a){o=a,a?u(e):l(),s()},prepare(a){o&&u(a),s()}}}function Q(e,t){let n=e.document,o=null,s=new Map,u=new WeakSet;function l(r){if(!o)return!1;try{return o.postMessage(r),!0}catch{return!1}}let a=z(r=>{l({kind:r?"thread-page:dirty":"thread-page:clean"})}),f=j(t.pageRevision,n),g=Y(n,t.stale);K(e,{version:1,invoke:(r,i)=>f.invoke(r,i),watch:(r,i,c,d)=>f.watch(r,i,c,d),setDirty:r=>a.setCustom(r!==!1)});function m(r){for(let i of S(r))W(i);g.prepare(r)}m(n),n.readyState==="loading"&&n.addEventListener("DOMContentLoaded",()=>m(n),{once:!0}),typeof e.MutationObserver=="function"&&n.documentElement&&new e.MutationObserver(i=>{for(let c of i)for(let d of Array.from(c.addedNodes))d.nodeType===1&&m(d)}).observe(n.documentElement,{childList:!0,subtree:!0});function p(r){let c=r.target?.closest?.("form");!c||L(c)||a.markForm(c)}n.addEventListener("input",p,!0),n.addEventListener("change",p,!0),n.addEventListener("submit",r=>{let i=r.target;if(!i||i.tagName?.toLowerCase()!=="form"||L(i)||(r.preventDefault(),g.isReadOnly()||u.has(i)))return;let c=`sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,d=i,E=J(d,r.submitter??null,c),k={form:d,disabled:[],dirtyVersion:a.versionOf(d)};s.set(c,k),u.add(d),M(d).textContent=E.files.length>0?"Uploading\\u2026":"Sending\\u2026",k.disabled=Z(d),l({kind:"thread-page:submit",submissionId:c,title:E.title,answers:E.answers,files:E.files})||(s.delete(c),u.delete(d),D(k.disabled),M(d).textContent="Page connection is not ready; try again in a moment.")},!0),U(n,(r,i)=>{f.invoke("navigation.openExternal",i?{url:r,label:i}:{url:r}).catch(()=>{})});function h(r){if(w(r)){if(r.kind==="thread-page:source-state"){g.apply(r.stale===!0);return}if(r.kind==="thread-page:submit-progress"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;i&&(M(i.form).textContent=String(r.message??"Working\\u2026").slice(0,160));return}if(r.kind==="thread-page:submit-result"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;if(!i)return;s.delete(r.submissionId),u.delete(i.form);let c=r.ok===!0;M(i.form).textContent=c?String(r.message??"Sent").slice(0,160):String(r.error??"Could not send").slice(0,160),D(i.disabled),g.isReadOnly()&&g.apply(!0),c&&a.clearForm(i.form,i.dirtyVersion);return}f.receive(r)}}function y(r){o=r,r.onmessage=i=>h(i.data),r.start?.(),f.attach(i=>{r.postMessage(i)}),a.isDirty()&&l({kind:"thread-page:dirty"})}function b(r){if(o||r.source!==e.parent)return;let i=r.data;if(!w(i)||i.kind!=="thread-page:connect"||i.version!==I||!r.ports||r.ports.length!==1)return;r.stopImmediatePropagation();let c=r.ports[0];c&&y(c)}return e.addEventListener("message",b,!0),t.stale&&g.apply(!0),e.parent.postMessage({kind:"thread-page:ready",version:I},"*"),{deliver:r=>h(r),connect:r=>y(r)}}Q(window,N(document.currentScript));})();';
+var KERNEL_RUNTIME = '"use strict";(()=>{var ee=Object.defineProperty;var te=(e,t,n)=>t in e?ee(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var F=(e,t,n)=>te(e,typeof t!="symbol"?t+"":t,n);var v=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var A=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],he=new Set(A);var ye=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${v.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var I=1,B=1,ne=new Set(A);function w(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function _(e,t){return Object.keys(e).length===t.length&&t.every(o=>Object.prototype.hasOwnProperty.call(e,o))}function q(e,t){if(!w(e)||e.v!==B||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return _(e,["v","id","ok","result"]);if(!_(e,["v","id","ok","error"])||!w(e.error))return!1;let n=e.error;return _(n,["code","message"])&&typeof n.code=="string"&&ne.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function N(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function re(e,t,n){let o=e.getAttribute("href");if(o===null)return{kind:"default"};if(o.startsWith("#"))return{kind:"default"};let s;try{s=new URL(o,n??t)}catch{return{kind:"block"}}return s.protocol!=="http:"&&s.protocol!=="https:"?{kind:"block"}:n&&s.href.startsWith(n)?{kind:"default"}:e.hasAttribute("download")?{kind:"default"}:{kind:"external",url:s.href,label:(e.textContent||"").replace(/\\s+/g," ").trim().slice(0,160)}}function U(e,t){e.addEventListener("click",n=>{if(n.defaultPrevented||n.button!==0)return;let s=n.target?.closest?.("a[href]");if(!s)return;let u=e.querySelector("base")?.getAttribute("href")??null,l=u?new URL(u,e.baseURI).href:null,a=re(s,e.baseURI,l);a.kind!=="default"&&(n.preventDefault(),a.kind==="external"&&t(a.url,a.label))},!0)}function K(e,t){let n=Object.freeze({version:1,invoke:t.invoke,watch:t.watch,setDirty:t.setDirty});Object.defineProperty(e,"threadPage",{value:n,writable:!1,configurable:!1,enumerable:!0})}var T=class extends Error{constructor(n,o){super(o);F(this,"code");this.name="ThreadPageError",this.code=n,Object.defineProperty(this,"code",{value:n,enumerable:!0,writable:!1})}};function j(e,t){let n=new Map,o=[],s=null,u=0;function l(){return u+=1,`tp-${typeof crypto<"u"&&typeof crypto.randomUUID=="function"?crypto.randomUUID():`${Date.now()}-${u}`}`}function a(m){let p=n.get(m);if(!(!p||!s))try{s(p.request)}catch(h){n.delete(m),p.reject(new T("invalid_request",h instanceof Error?h.message:"The request could not be sent"))}}function f(m,p){return new Promise((h,y)=>{if(typeof m!="string"){y(new T("invalid_request","A method name is required"));return}let b=l(),r={v:B,id:b,method:m,params:p===void 0?null:p,pageRevision:e};n.set(b,{request:r,resolve:h,reject:y}),s?a(b):o.push(b)})}function g(m,p,h,y){if(typeof h!="function")throw new TypeError("Thread Page watch needs a listener");let b=y?.intervalMs,r=typeof b=="number"&&Number.isFinite(b)?Math.max(v.watchMinMs,Math.min(v.watchMaxMs,Math.round(b))):v.watchDefaultMs,i=!1,c=!1,d=null;function E(x){i||(d!==null&&clearTimeout(d),d=setTimeout(k,x))}async function k(){if(d=null,!(i||c||t.visibilityState==="hidden")){c=!0;try{let x=await f(m,p);i||h(x,null)}catch(x){i||h(void 0,x)}finally{c=!1,i||E(r)}}}function R(){i||(t.visibilityState==="hidden"?(d!==null&&clearTimeout(d),d=null):E(0))}return t.addEventListener("visibilitychange",R),E(0),()=>{i||(i=!0,d!==null&&clearTimeout(d),d=null,t.removeEventListener("visibilitychange",R))}}return{invoke:f,watch:g,attach(m){for(s=m;o.length>0;){let p=o.shift();p&&a(p)}},receive(m){if(typeof m!="object"||m===null)return!1;let p=m.id;if(typeof p!="string")return!1;let h=n.get(p);if(!h)return!1;if(n.delete(p),!q(m,p))return h.reject(new T("invalid_response","The Thread Page bridge returned an invalid response")),!0;let y=m;return y.ok?h.resolve(y.result):h.reject(new T(y.error.code,y.error.message)),!0}}}function z(e){let t=new Map,n=0,o=!1,s=!1;function u(){let l=o||t.size>0;l!==s&&(s=l,e(l))}return{isDirty:()=>s,markForm(l){return n+=1,t.set(l,n),u(),n},versionOf:l=>t.get(l),clearForm(l,a){a!==void 0&&t.get(l)===a&&(t.delete(l),u())},setCustom(l){o=l===!0,u()}}}var oe="input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]";function H(e){if(!e)return"";let t=e.cloneNode(!0);for(let n of Array.from(t.querySelectorAll(oe)))n.remove();return(t.textContent||"").replace(/\\s+/g," ").trim()}function ie(e,t){let n=t.getAttribute("data-label");if(n&&n.trim())return n.trim();let o=t.closest("fieldset");if(o){let l=H(o.querySelector("legend"));if(l)return l}let s=t.getAttribute("aria-label");if(s&&s.trim())return s.trim();let u=t.closest("label");if(u){let l=H(u);if(l)return l}if(t.id){let l=e.ownerDocument,a=Array.from(l.querySelectorAll("label[for]")).find(g=>g.htmlFor===t.id),f=H(a??null);if(f)return f}return t.name}var se=new Set(["button","submit","reset","image","file"]);function ae(e){return Array.from(e.elements).filter(t=>{let n=t;return typeof n.name=="string"&&n.name.length>0&&!n.disabled&&"type"in n})}function $(e,t){let n=ae(e),o=[],s=new Set;if(t&&(C(t)==="button"||C(t)==="input")){let u=t,l=u.value||(u.textContent||"").trim();o.push({name:u.name||"action",label:"Action",value:l}),u.name&&s.add(u.name)}for(let u of n){let l=u.name,a=String(u.type||"").toLowerCase();if(s.has(l)||se.has(a))continue;s.add(l);let f=n.filter(g=>g.name===l);o.push({name:l,label:ie(e,u),value:le(u,f,a)})}return o}function C(e){return e.tagName.toLowerCase()}function le(e,t,n){if(n==="checkbox"){let o=t.filter(s=>C(s)==="input");return o.length===1?o[0]?.checked===!0:o.filter(s=>s.checked).map(s=>s.value)}if(n==="radio"){let o=t.find(s=>C(s)==="input"&&s.checked);return o?o.value:""}return C(e)==="select"&&e.multiple?Array.from(e.selectedOptions).map(o=>o.value):t.length>1?t.map(o=>String(o.value??"")):String(e.value??"")}var ue="data-thread-page-manual",V="data-thread-page-status",de="data-thread-page-range";function L(e){return e.hasAttribute(ue)}function S(e){let t=[];return"tagName"in e&&e.tagName.toLowerCase()==="form"&&t.push(e),"querySelectorAll"in e&&t.push(...Array.from(e.querySelectorAll("form"))),t.filter(n=>!L(n))}function M(e){let t=e.querySelector(`[${V}]`);return t||(t=e.ownerDocument.createElement("p"),t.setAttribute(V,""),t.setAttribute("role","status"),e.appendChild(t)),t}var G=new WeakSet;function W(e){e.noValidate=!0;for(let t of Array.from(e.querySelectorAll(\'input[type="range"]\'))){if(G.has(t))continue;G.add(t);let n=e.ownerDocument.createElement("output");n.setAttribute(de,"");let o=()=>{n.textContent=String(t.value)};t.addEventListener("input",o),o(),t.insertAdjacentElement("afterend",n)}}function P(e){return Array.from(e.querySelectorAll("input,textarea,select,button,fieldset"))}function ce(e){let t=[];for(let n of Array.from(e.querySelectorAll(\'input[type="file"]\')))if(!n.disabled)for(let o of Array.from(n.files??[])){if(t.length>=v.uploadsPerForm)return t;t.push({field:n.name||"file",file:o})}return t}function Z(e){let t=[];for(let n of P(e))n.disabled||(n.disabled=!0,t.push(n));return t}function D(e){for(let t of e)t.disabled=!1}function me(e){let t=e.getAttribute("data-title");return t&&t.trim()?t.trim().slice(0,300):(e.ownerDocument.querySelector("h1")?.textContent||"").trim().slice(0,300)||"Thread Page"}function J(e,t,n){return{submissionId:n,form:e,title:me(e),answers:$(e,t),files:ce(e)}}var X="data-thread-page-offline",O="Offline copy \\u2014 responses are disabled until the source host reconnects.";function Y(e,t){let n=new Set,o=t;function s(){if(!e.body)return;let a=e.querySelector(`[${X}="host"]`);o&&!a?(a=e.createElement("aside"),a.setAttribute(X,"host"),a.setAttribute("role","status"),a.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText"),a.textContent=O,e.body.insertBefore(a,e.body.firstChild)):!o&&a&&a.remove()}function u(a){for(let f of S(a)){for(let g of P(f))g.disabled||(g.disabled=!0,n.add(g));M(f).textContent=O}}function l(){for(let a of n)a.disabled=!1;n.clear();for(let a of S(e)){let f=M(a);f.textContent===O&&(f.textContent="")}}return{isReadOnly:()=>o,apply(a){o=a,a?u(e):l(),s()},prepare(a){o&&u(a),s()}}}function Q(e,t){let n=e.document,o=null,s=new Map,u=new WeakSet;function l(r){if(!o)return!1;try{return o.postMessage(r),!0}catch{return!1}}let a=z(r=>{l({kind:r?"thread-page:dirty":"thread-page:clean"})}),f=j(t.pageRevision,n),g=Y(n,t.stale);K(e,{version:1,invoke:(r,i)=>f.invoke(r,i),watch:(r,i,c,d)=>f.watch(r,i,c,d),setDirty:r=>a.setCustom(r!==!1)});function m(r){for(let i of S(r))W(i);g.prepare(r)}m(n),n.readyState==="loading"&&n.addEventListener("DOMContentLoaded",()=>m(n),{once:!0}),typeof e.MutationObserver=="function"&&n.documentElement&&new e.MutationObserver(i=>{for(let c of i)for(let d of Array.from(c.addedNodes))d.nodeType===1&&m(d)}).observe(n.documentElement,{childList:!0,subtree:!0});function p(r){let c=r.target?.closest?.("form");!c||L(c)||a.markForm(c)}n.addEventListener("input",p,!0),n.addEventListener("change",p,!0),n.addEventListener("submit",r=>{let i=r.target;if(!i||i.tagName?.toLowerCase()!=="form"||L(i)||(r.preventDefault(),g.isReadOnly()||u.has(i)))return;let c=`sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,d=i,E=J(d,r.submitter??null,c),k={form:d,disabled:[],dirtyVersion:a.versionOf(d)};s.set(c,k),u.add(d),M(d).textContent=E.files.length>0?"Uploading\\u2026":"Sending\\u2026",k.disabled=Z(d),l({kind:"thread-page:submit",submissionId:c,title:E.title,answers:E.answers,files:E.files})||(s.delete(c),u.delete(d),D(k.disabled),M(d).textContent="Page connection is not ready; try again in a moment.")},!0),U(n,(r,i)=>{f.invoke("navigation.openExternal",i?{url:r,label:i}:{url:r}).catch(()=>{})});function h(r){if(w(r)){if(r.kind==="thread-page:source-state"){g.apply(r.stale===!0);return}if(r.kind==="thread-page:submit-progress"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;i&&(M(i.form).textContent=String(r.message??"Working\\u2026").slice(0,160));return}if(r.kind==="thread-page:submit-result"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;if(!i)return;s.delete(r.submissionId),u.delete(i.form);let c=r.ok===!0;M(i.form).textContent=c?String(r.message??"Sent").slice(0,160):String(r.error??"Could not send").slice(0,160),D(i.disabled),g.isReadOnly()&&g.apply(!0),c&&a.clearForm(i.form,i.dirtyVersion);return}f.receive(r)}}function y(r){o=r,r.onmessage=i=>h(i.data),r.start?.(),f.attach(i=>{r.postMessage(i)}),a.isDirty()&&l({kind:"thread-page:dirty"})}function b(r){if(o||r.source!==e.parent)return;let i=r.data;if(!w(i)||i.kind!=="thread-page:connect"||i.version!==I||!r.ports||r.ports.length!==1)return;r.stopImmediatePropagation();let c=r.ports[0];c&&y(c)}return e.addEventListener("message",b,!0),t.stale&&g.apply(!0),e.parent.postMessage({kind:"thread-page:ready",version:I},"*"),{deliver:r=>h(r),connect:r=>y(r)}}Q(window,N(document.currentScript));})();';
 
 // src/serving/document-route.ts
 function documentRoute(serving) {
@@ -12151,7 +12471,7 @@ function homeRoute(serving) {
 import { randomBytes as randomBytes2 } from "node:crypto";
 
 // src/generated/shell-runtime.ts
-var SHELL_RUNTIME = '"use strict";(()=>{var M=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var x=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],Y=new Set(x);var Q=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${M.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var E=1,_=1,$=new Set(x),j=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,F=/^[a-z][a-zA-Z0-9]*(?:\\.[a-z][a-zA-Z0-9]*)+$/;function b(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function R(e,t){return Object.keys(e).length===t.length&&t.every(l=>Object.prototype.hasOwnProperty.call(e,l))}function C(e){return typeof e=="string"&&j.test(e)}function T(e,t){return b(e)&&R(e,["v","id","method","params","pageRevision"])&&e.v===_&&C(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&F.test(e.method)&&e.pageRevision===t}function B(e,t){if(!b(e)||e.v!==_||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return R(e,["v","id","ok","result"]);if(!R(e,["v","id","ok","error"])||!b(e.error))return!1;let o=e.error;return R(o,["code","message"])&&typeof o.code=="string"&&$.has(o.code)&&typeof o.message=="string"&&o.message.length>0&&o.message.length<=512}function w(e,t,o){return{v:1,id:C(e)?e:"invalid",ok:!1,error:{code:t,message:o.slice(0,512)||"Request failed"}}}function P(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function D(e){let t=e.querySelector("p"),o=e.querySelector(\'button[value="cancel"]\'),l=e.querySelector(\'button[value="confirm"]\'),c=null,d;function p(g){let y=c;if(c=null,g&&d)try{d()}catch{}d=void 0,e.open&&e.close(),y?.(g)}return o?.addEventListener("click",g=>{g.preventDefault(),p(!1)}),l?.addEventListener("click",g=>{g.preventDefault(),p(!0)}),e.addEventListener("cancel",g=>{g.preventDefault(),p(!1)}),e.addEventListener("close",()=>{c&&p(!1)}),{confirm(g,y){return new Promise(m=>{if(c&&p(!1),t&&(t.textContent=g),c=m,d=y,typeof e.showModal=="function")try{e.showModal()}catch{p(!1)}else p(!1)})}}}function O(e){let t=null;return{inPlace(o){e.location.assign(o)},reserveWindow(){try{if(t=e.open("","_blank"),t)try{t.opener=null}catch{}}catch{t=null}},external(o){let l=t;if(t=null,l&&!l.closed)try{l.location.href=o;return}catch{try{l.close()}catch{}}e.location.assign(o)},release(){let o=t;t=null;try{o?.close()}catch{}}}}function A(e,t,o,l=e.fetch.bind(e)){let c=`"${t.pageRevision}"`,d=!1,p=!1,g=!1,y=t.stale,m=null,v=null;function k(s){m!==null&&clearTimeout(m),m=null,!(p||e.document.visibilityState!=="visible")&&(m=setTimeout(()=>{m=null,i()},s))}function r(){m!==null&&clearTimeout(m),m=null,v?.abort(),v=null}function n(){d?(o.setStatus("Page changed \\u2014 reload when ready",!0),o.showReload(!0)):o.reloadView()}async function i(){if(!(p||g||e.document.visibilityState!=="visible")){if(Date.now()>=t.expiresAt-3e4){p=!0,d?(o.setStatus("Session expiring \\u2014 reload when ready",!0),o.showReload(!0)):o.reloadView();return}g=!0,v=new AbortController;try{let s=await l(t.documentUrl,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":c},signal:v.signal});if(s.status===401||s.status===403){p=!0,o.setStatus("Session expired \\u2014 reload this page",!0),o.showReload(!0);return}if(!s.ok&&s.status!==304){o.setStatus("Page unavailable",!0);return}let f=s.headers.get("x-thread-page-stale")==="true";o.setWorking(s.headers.get("x-thread-page-activity")==="working"),f!==y&&(y=f,o.onStaleChanged(f)),o.setStatus(f?"Offline copy \\u2014 read-only":"",f);let u=s.headers.get("etag");u&&u!==c&&(c=u,n())}catch(s){s instanceof DOMException&&s.name==="AbortError"||o.setStatus("Cannot check for updates",!0)}finally{v=null,g=!1,k(t.pollMs)}}}return e.document.addEventListener("visibilitychange",()=>{e.document.visibilityState==="visible"?k(0):r()}),{start:()=>k(t.pollMs),setDirty:s=>{d=s},pollNow:()=>i(),isStopped:()=>p}}function I(e){let{config:t,confirmer:o,navigator:l}=e,c=e.fetchImpl??fetch;function d(r,n){r.postMessage(n)}async function p(r){return(await c(t.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify(r)})).json().catch(()=>null)}function g(r){return!b(r)||r.kind!=="page"&&r.kind!=="host"&&r.kind!=="external"||typeof r.url!="string"||r.kind==="external"&&!/^https?:\\/\\//i.test(r.url)||r.kind!=="external"&&!r.url.startsWith("/")?null:{kind:r.kind,url:r.url}}function y(r,n,i){if(!b(i)||!B(i.response,n.id)){d(r,w(n.id,"invalid_response","The Thread Page bridge returned an invalid response"));return}let s=i.navigate===void 0?null:g(i.navigate);if(i.response.ok&&s){d(r,i.response),s.kind==="external"?l.external(s.url):l.inPlace(s.url);return}l.release(),d(r,i.response)}async function m(r,n){try{let i=await p({actionToken:t.actionToken,request:n});if(b(i)&&b(i.confirm)){let s=i.confirm;if(typeof s.challenge!="string"||typeof s.summary!="string"||s.requestId!==n.id){d(r,w(n.id,"invalid_response","The Thread Page bridge returned an invalid confirmation"));return}let f=n.method==="navigation.openExternal";if(!await o.confirm(s.summary,f?()=>l.reserveWindow():void 0)){d(r,w(n.id,"cancelled","You declined this action"));return}let a=await p({actionToken:t.actionToken,request:n,confirmation:s.challenge});y(r,n,a);return}y(r,n,i)}catch(i){l.release(),d(r,w(n.id,"unavailable",i instanceof Error?i.message:"The Thread Page bridge is unavailable"))}}async function v(r){let n=r.file;if(!n||typeof n.size!="number")throw new Error("Attachment is not a file");let i=n.name||"file";if(n.size<=0)throw new Error(`Attachment ${i} is empty`);if(n.size>t.maxUploadBytes)throw new Error(`Attachment ${i} is larger than ${Math.round(t.maxUploadBytes/(1024*1024))} MiB`);let s=await V(n),f=await c(t.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,pageRevision:t.pageRevision,name:i,content:s})}),u=await f.json().catch(()=>null);if(!f.ok||!u||u.ok!==!0||typeof u.name!="string"||typeof u.path!="string"||typeof u.sizeBytes!="number")throw new Error(u&&typeof u.message=="string"&&u.message||`Upload failed (${f.status})`);return{field:String(r.field||"file").slice(0,128),name:u.name,path:u.path,sizeBytes:u.sizeBytes}}async function k(r,n){let i=typeof n.submissionId=="string"?n.submissionId:"";try{let s=(Array.isArray(n.files)?n.files:[]).slice(0,t.maxUploads),f=[];for(let S=0;S<s.length;S+=1)d(r,{kind:"thread-page:submit-progress",submissionId:i,message:`Uploading ${S+1} of ${s.length}\\u2026`}),f.push(await v(s[S]));f.length>0&&d(r,{kind:"thread-page:submit-progress",submissionId:i,message:"Sending\\u2026"});let u=await c(t.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,submissionId:i,pageRevision:t.pageRevision,title:n.title,answers:n.answers,files:f})}),a=await u.json().catch(()=>({ok:!1,message:"Invalid server response"})),h=u.ok&&a.ok===!0;d(r,{kind:"thread-page:submit-result",submissionId:i,ok:h,message:typeof a.delivery=="string"?`Sent (${a.delivery})`:"Sent",error:typeof a.message=="string"?a.message:`Request failed (${u.status})`})}catch(s){d(r,{kind:"thread-page:submit-result",submissionId:i,ok:!1,error:s instanceof Error?s.message:"Request failed"})}}return{handle(r,n){if(b(n)){if(n.kind==="thread-page:dirty"){e.onDirty(!0);return}if(n.kind==="thread-page:clean"){e.onDirty(!1);return}if(n.kind==="thread-page:submit"){k(r,n);return}if(!T(n,t.pageRevision)){d(r,w(n.id,"invalid_request","Invalid Thread Page bridge request"));return}m(r,n)}}}}async function V(e){let t=new Uint8Array(await e.arrayBuffer()),o="",l=32768;for(let c=0;c<t.length;c+=l)o+=String.fromCharCode.apply(null,Array.from(t.subarray(c,c+l)));return btoa(o)}function L(e,t,o,l){let{frame:c,status:d,work:p,reload:g,dialog:y}=o,m=null,v=!0,k=t.stale,n=A(e,t,{setStatus(a,h){d.textContent=a,d.dataset.tone=h?"warn":""},setWorking(a){p.dataset.visible=a&&t.workingLabel?"true":"false"},showReload(a){g.dataset.visible=a?"true":"false"},onStaleChanged(a){k=a,m?.postMessage({kind:"thread-page:source-state",stale:a})},reloadView(){e.location.reload()}},l),i=O(e),s=D(y),f=I({config:t,confirmer:s,navigator:i,onDirty:a=>n.setDirty(a),...l?{fetchImpl:l}:{}});function u(){let a=new e.MessageChannel,h=a.port1;m=h,h.onmessage=S=>f.handle(h,S.data),h.start?.(),c.contentWindow?.postMessage({kind:"thread-page:connect",version:E},"*",[a.port2]),h.postMessage({kind:"thread-page:source-state",stale:k})}return e.addEventListener("message",a=>{if(!v||a.origin!=="null"||a.source!==c.contentWindow)return;let h=a.data;!b(h)||h.kind!=="thread-page:ready"||h.version!==E||(v=!1,u())}),g.addEventListener("click",()=>e.location.reload()),c.src=t.documentUrl,n.start(),{poller:n}}var W=P(document.currentScript),q=document.querySelector("iframe"),N=document.querySelector("[data-shell-status]"),U=document.querySelector("[data-shell-working]"),H=document.querySelector("[data-shell-reload]"),z=document.querySelector("dialog");if(!q||!N||!U||!H||!z)throw new Error("Thread Page shell: chrome is incomplete");L(window,W,{frame:q,status:N,work:U,reload:H,dialog:z});})();';
+var SHELL_RUNTIME = '"use strict";(()=>{var M=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var x=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],Y=new Set(x);var Q=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${M.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var E=1,_=1,$=new Set(x),j=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,F=/^[a-z][a-zA-Z0-9]*(?:\\.[a-z][a-zA-Z0-9]*)+$/;function b(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function R(e,t){return Object.keys(e).length===t.length&&t.every(l=>Object.prototype.hasOwnProperty.call(e,l))}function C(e){return typeof e=="string"&&j.test(e)}function T(e,t){return b(e)&&R(e,["v","id","method","params","pageRevision"])&&e.v===_&&C(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&F.test(e.method)&&e.pageRevision===t}function B(e,t){if(!b(e)||e.v!==_||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return R(e,["v","id","ok","result"]);if(!R(e,["v","id","ok","error"])||!b(e.error))return!1;let o=e.error;return R(o,["code","message"])&&typeof o.code=="string"&&$.has(o.code)&&typeof o.message=="string"&&o.message.length>0&&o.message.length<=512}function w(e,t,o){return{v:1,id:C(e)?e:"invalid",ok:!1,error:{code:t,message:o.slice(0,512)||"Request failed"}}}function P(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function D(e){let t=e.querySelector("p"),o=e.querySelector(\'button[value="cancel"]\'),l=e.querySelector(\'button[value="confirm"]\'),c=null,d;function p(g){let y=c;if(c=null,g&&d)try{d()}catch{}d=void 0,e.open&&e.close(),y?.(g)}return o?.addEventListener("click",g=>{g.preventDefault(),p(!1)}),l?.addEventListener("click",g=>{g.preventDefault(),p(!0)}),e.addEventListener("cancel",g=>{g.preventDefault(),p(!1)}),e.addEventListener("close",()=>{c&&p(!1)}),{confirm(g,y){return new Promise(m=>{if(c&&p(!1),t&&(t.textContent=g),c=m,d=y,typeof e.showModal=="function")try{e.showModal()}catch{p(!1)}else p(!1)})}}}function O(e){let t=null;return{inPlace(o){e.location.assign(o)},reserveWindow(){try{if(t=e.open("","_blank"),t)try{t.opener=null}catch{}}catch{t=null}},external(o){let l=t;if(t=null,l&&!l.closed)try{l.location.href=o;return}catch{try{l.close()}catch{}}e.location.assign(o)},release(){let o=t;t=null;try{o?.close()}catch{}}}}function A(e,t,o,l=e.fetch.bind(e)){let c=`"${t.pageRevision}"`,d=!1,p=!1,g=!1,y=t.stale,m=null,v=null;function k(i){m!==null&&clearTimeout(m),m=null,!(p||e.document.visibilityState!=="visible")&&(m=setTimeout(()=>{m=null,s()},i))}function r(){m!==null&&clearTimeout(m),m=null,v?.abort(),v=null}function n(){d?(o.setStatus("Page changed \\u2014 reload when ready",!0),o.showReload(!0)):o.reloadView()}async function s(){if(!(p||g||e.document.visibilityState!=="visible")){if(Date.now()>=t.expiresAt-3e4){p=!0,d?(o.setStatus("Session expiring \\u2014 reload when ready",!0),o.showReload(!0)):o.reloadView();return}g=!0,v=new AbortController;try{let i=await l(t.documentUrl,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":c},signal:v.signal});if(i.status===401||i.status===403){p=!0,o.setStatus("Session expired \\u2014 reload this page",!0),o.showReload(!0);return}if(!i.ok&&i.status!==304){o.setStatus("Page unavailable",!0);return}let f=i.headers.get("x-thread-page-stale")==="true";o.setWorking(i.headers.get("x-thread-page-activity")==="working"),f!==y&&(y=f,o.onStaleChanged(f)),o.setStatus(f?"Offline copy \\u2014 read-only":"",f);let u=i.headers.get("etag");u&&u!==c&&(c=u,n())}catch(i){i instanceof DOMException&&i.name==="AbortError"||o.setStatus("Cannot check for updates",!0)}finally{v=null,g=!1,k(t.pollMs)}}}return e.document.addEventListener("visibilitychange",()=>{e.document.visibilityState==="visible"?k(0):r()}),{start:()=>k(t.pollMs),setDirty:i=>{d=i},pollNow:()=>s(),isStopped:()=>p}}function I(e){let{config:t,confirmer:o,navigator:l}=e,c=e.fetchImpl??fetch;function d(r,n){r.postMessage(n)}async function p(r){return(await c(t.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify(r)})).json().catch(()=>null)}function g(r){return!b(r)||r.kind!=="page"&&r.kind!=="host"&&r.kind!=="external"||typeof r.url!="string"||r.kind==="external"&&!/^https?:\\/\\//i.test(r.url)||r.kind!=="external"&&!r.url.startsWith("/")?null:{kind:r.kind,url:r.url}}function y(r,n,s){if(!b(s)||!B(s.response,n.id)){d(r,w(n.id,"invalid_response","The Thread Page bridge returned an invalid response"));return}let i=s.navigate===void 0?null:g(s.navigate);if(s.response.ok&&i){d(r,s.response),i.kind==="external"?l.external(i.url):l.inPlace(i.url);return}l.release(),d(r,s.response)}async function m(r,n){try{let s=await p({actionToken:t.actionToken,request:n});if(b(s)&&b(s.confirm)){let i=s.confirm;if(typeof i.challenge!="string"||typeof i.summary!="string"||i.requestId!==n.id){d(r,w(n.id,"invalid_response","The Thread Page bridge returned an invalid confirmation"));return}let f=n.method==="navigation.openExternal";if(!await o.confirm(i.summary,f?()=>l.reserveWindow():void 0)){d(r,w(n.id,"cancelled","You declined this action"));return}let a=await p({actionToken:t.actionToken,request:n,confirmation:i.challenge});y(r,n,a);return}y(r,n,s)}catch(s){l.release(),d(r,w(n.id,"unavailable",s instanceof Error?s.message:"The Thread Page bridge is unavailable"))}}async function v(r){let n=r.file;if(!n||typeof n.size!="number")throw new Error("Attachment is not a file");let s=n.name||"file";if(n.size<=0)throw new Error(`Attachment ${s} is empty`);if(n.size>t.maxUploadBytes)throw new Error(`Attachment ${s} is larger than ${Math.round(t.maxUploadBytes/(1024*1024))} MiB`);let i=await V(n),f=await c(t.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,pageRevision:t.pageRevision,name:s,content:i})}),u=await f.json().catch(()=>null);if(!f.ok||!u||u.ok!==!0||typeof u.name!="string"||typeof u.path!="string"||typeof u.sizeBytes!="number")throw new Error(u&&typeof u.message=="string"&&u.message||`Upload failed (${f.status})`);return{field:String(r.field||"file").slice(0,128),name:u.name,path:u.path,sizeBytes:u.sizeBytes}}async function k(r,n){let s=typeof n.submissionId=="string"?n.submissionId:"";try{let i=(Array.isArray(n.files)?n.files:[]).slice(0,t.maxUploads),f=[];for(let S=0;S<i.length;S+=1)d(r,{kind:"thread-page:submit-progress",submissionId:s,message:`Uploading ${S+1} of ${i.length}\\u2026`}),f.push(await v(i[S]));f.length>0&&d(r,{kind:"thread-page:submit-progress",submissionId:s,message:"Sending\\u2026"});let u=await c(t.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,submissionId:s,pageRevision:t.pageRevision,title:n.title,answers:n.answers,files:f})}),a=await u.json().catch(()=>({ok:!1,message:"Invalid server response"})),h=u.ok&&a.ok===!0;d(r,{kind:"thread-page:submit-result",submissionId:s,ok:h,message:typeof a.delivery=="string"?`Sent (${a.delivery})`:"Sent",error:typeof a.message=="string"?a.message:`Request failed (${u.status})`})}catch(i){d(r,{kind:"thread-page:submit-result",submissionId:s,ok:!1,error:i instanceof Error?i.message:"Request failed"})}}return{handle(r,n){if(b(n)){if(n.kind==="thread-page:dirty"){e.onDirty(!0);return}if(n.kind==="thread-page:clean"){e.onDirty(!1);return}if(n.kind==="thread-page:submit"){k(r,n);return}if(!T(n,t.pageRevision)){d(r,w(n.id,"invalid_request","Invalid Thread Page bridge request"));return}m(r,n)}}}}async function V(e){let t=new Uint8Array(await e.arrayBuffer()),o="",l=32768;for(let c=0;c<t.length;c+=l)o+=String.fromCharCode.apply(null,Array.from(t.subarray(c,c+l)));return btoa(o)}function L(e,t,o,l){let{frame:c,status:d,work:p,reload:g,dialog:y}=o,m=null,v=!0,k=t.stale,n=A(e,t,{setStatus(a,h){d.textContent=a,d.dataset.tone=h?"warn":""},setWorking(a){p.dataset.visible=a&&t.workingLabel?"true":"false"},showReload(a){g.dataset.visible=a?"true":"false"},onStaleChanged(a){k=a,m?.postMessage({kind:"thread-page:source-state",stale:a})},reloadView(){e.location.reload()}},l),s=O(e),i=D(y),f=I({config:t,confirmer:i,navigator:s,onDirty:a=>n.setDirty(a),...l?{fetchImpl:l}:{}});function u(){let a=new e.MessageChannel,h=a.port1;m=h,h.onmessage=S=>f.handle(h,S.data),h.start?.(),c.contentWindow?.postMessage({kind:"thread-page:connect",version:E},"*",[a.port2]),h.postMessage({kind:"thread-page:source-state",stale:k})}return e.addEventListener("message",a=>{if(!v||a.origin!=="null"||a.source!==c.contentWindow)return;let h=a.data;!b(h)||h.kind!=="thread-page:ready"||h.version!==E||(v=!1,u())}),g.addEventListener("click",()=>e.location.reload()),c.src=t.documentUrl,n.start(),{poller:n}}var W=P(document.currentScript),q=document.querySelector("iframe"),N=document.querySelector("[data-shell-status]"),U=document.querySelector("[data-shell-working]"),H=document.querySelector("[data-shell-reload]"),z=document.querySelector("dialog");if(!q||!N||!U||!H||!z)throw new Error("Thread Page shell: chrome is incomplete");L(window,W,{frame:q,status:N,work:U,reload:H,dialog:z});})();';
 
 // src/serving/shell-html.ts
 var SHELL_CSS = `
@@ -12417,7 +12737,16 @@ async function createPlugin(bb, options = {}) {
   const site = options.site ? options.site(routeBase) : createCoreStorageSite(routeBase, (session) => `/api/v1/threads/${encodeURIComponent(session)}/thread-storage/files/`);
   const serving = {
     host,
-    pages: createPageStore(host),
+    // Strategy A cannot serve a sandboxed document's own files on an
+    // authenticated origin, so the document carries them. Delete this
+    // argument, and pages/inline.ts, once the host can authorise them.
+    pages: createPageStore(host, async (session, html) => {
+      const location = await host.sessions.storage(session);
+      return resolveOwnFiles(html, async (path) => {
+        const file = await host.files.read(location, path);
+        return file ? { bytes: file.bytes } : null;
+      });
+    }),
     settings,
     signingKey,
     site,
