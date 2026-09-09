@@ -1,6 +1,6 @@
 {
   "name": "@unifedev/thread-pages",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "Thread Pages for bb: every agent session gets one directly editable HTML page you can read and answer from, on any device.",
   "license": "MIT",
   "author": "Bartosz",
@@ -66,6 +66,7 @@
     "!src/**/*.test.ts",
     "dist/server.js",
     "dist/server.meta.json",
+    "docs/*.md",
     "README.md",
     "tsconfig.json",
     "package-lock.json"

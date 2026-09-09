@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 — 2026-09-09
+
+Page authors upgrading from 1.0.x: `docs/FOR-PAGE-AUTHORS-1.1.md` says what
+changed for a page you already wrote, and what now works that did not.
+
 
 Worked through the two field reports in `unife-bb-plugin/docs`. Full
 disposition: `unife-bb-plugin/docs/FIELD-ISSUES-RESOLUTION.md`.

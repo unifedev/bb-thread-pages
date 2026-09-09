@@ -26,6 +26,7 @@ export function buildGuide(registry: CapabilityRegistry, site: SiteStrategy): st
     composition(),
     home(),
     accessibility(),
+    upgrading(),
     limits(),
     limitations(site),
   ].join("\n\n");
@@ -383,6 +384,31 @@ const accessibility = () => `## Before you save
   requires no credential and a remote one does, so anything the page loads for
   itself can work for you and fail for them. Authentication is the one axis
   where behaviour genuinely differs between your machine and theirs.`;
+
+const upgrading = () => `## If your page predates 1.1
+
+Three things to fix in a page written against 1.0.x. Each is a one-line edit
+and none of them announces itself.
+
+1. **Add \`[hidden] { display: none !important; }\`** to your <style>. A class
+   rule that sets display outranks the attribute, so an element you wrote
+   \`hidden\` renders as an empty bar. New pages carry the fix; yours has its
+   own copy of the stylesheet and will not get it.
+2. **Delete the seed's old authoring comment** if it is still there. It spelled
+   tags out literally, so every string operation you run on your own file sees
+   a <main> and a <style> that are not elements, and the obvious splice starts
+   inside the comment.
+3. **Move inlined data back out.** 1.0 told you to inline anything the page
+   could not do without, because a file beside the page failed on the reader's
+   origin. That is fixed: reference it relatively and it works everywhere. Your
+   entry document gets small again, which makes it cheap to rewrite.
+
+Then check \`bb plugin logs thread-pages\` once, and read the page over the
+reader's real origin rather than loopback.
+
+Full notes, including what still is not possible:
+\`docs/FOR-PAGE-AUTHORS-1.1.md\` in the plugin, and \`docs/UPGRADING.md\` for
+the 0.3.x method names.`;
 
 const limits = () => `## Limits
 

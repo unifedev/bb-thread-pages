@@ -70,6 +70,17 @@ describe("the authoring guide", () => {
   // The one sentence that caused the worst field bug said subresources "load
   // normally". They do not, on the origin a reader actually uses, and the
   // guide must not imply that a file beside the page is served as a file.
+  // A page written against 1.0.x carries its own copy of the stylesheet and of
+  // the old seed comment, so two of the fixes cannot reach it. The guide has to
+  // carry the edits themselves, not only a pointer to a file.
+  it("tells an author with an older page exactly what to change", () => {
+    const section = coreGuide.slice(coreGuide.indexOf("## If your page predates 1.1"), coreGuide.indexOf("## Limits"));
+    expect(section).toContain("[hidden] { display: none !important; }");
+    expect(section).toContain("Delete the seed's old authoring comment");
+    expect(section).toContain("Move inlined data back out");
+    expect(section).toContain("docs/FOR-PAGE-AUTHORS-1.1.md");
+  });
+
   it("says how a page's own files actually reach the reader, and what it costs", () => {
     const section = coreGuide.slice(coreGuide.indexOf("## Files you show the reader"), coreGuide.indexOf("## Keeping a page's data current"));
     expect(section).toContain("carries no credential");
