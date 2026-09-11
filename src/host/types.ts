@@ -19,6 +19,8 @@ export interface SessionRecord {
   readonly attentionAtMs: number;
   /** Whether the reader has not looked since the last attention. */
   readonly unread: boolean;
+  /** The host's own pin mark, the one its sidebar shows. */
+  readonly pinned: boolean;
   /** The host's environment identity for `sessions.start` reuse; never shown to a page. */
   readonly environmentId: string | null;
 }

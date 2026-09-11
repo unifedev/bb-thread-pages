@@ -26,6 +26,7 @@ export function shellRoute(serving: ServingContext) {
         title: session.title,
         homeUrl: home,
         working: session.state === "working",
+        chrome: { hostUrl: serving.hostSessionUrl(id), pinned: session.pinned, unread: session.unread },
         config: {
           actionToken: token,
           pageRevision: page.revision,
@@ -34,6 +35,7 @@ export function shellRoute(serving: ServingContext) {
           submitUrl: `${serving.routeBase}/submit`,
           uploadUrl: `${serving.routeBase}/upload`,
           bridgeUrl: `${serving.routeBase}/bridge`,
+          chromeActionUrl: `${serving.routeBase}/chrome-action`,
           workingLabel: settings.workingLabel,
           stale: page.stale,
           pollMs: LIMITS.shellPollMs,

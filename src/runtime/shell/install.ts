@@ -1,4 +1,5 @@
 import { HANDSHAKE_VERSION, isRecord, type ShellConfig } from "../shared/protocol.ts";
+import { createChromeActions } from "./actions.ts";
 import { createConfirmer } from "./confirm.ts";
 import { createNavigator } from "./navigate.ts";
 import { createPoller, type Poller } from "./poll.ts";
@@ -15,6 +16,11 @@ export interface ShellElements {
   work: HTMLElement;
   reload: HTMLButtonElement;
   dialog: HTMLDialogElement;
+  acts: HTMLElement;
+  pin: HTMLButtonElement;
+  read: HTMLButtonElement;
+  archive: HTMLButtonElement;
+  title: HTMLElement;
 }
 
 export interface ShellHandle {
@@ -22,7 +28,7 @@ export interface ShellHandle {
 }
 
 export function installShell(win: Window & typeof globalThis, config: ShellConfig, elements: ShellElements, fetchImpl?: typeof fetch): ShellHandle {
-  const { frame, status, work, reload, dialog } = elements;
+  const { frame, status, work, reload, dialog, acts, pin, read, archive, title } = elements;
   let framePort: MessagePort | null = null;
   let awaitingReady = true;
   let lastStale = config.stale;
@@ -51,6 +57,18 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   const navigator = createNavigator(win);
   const confirmer = createConfirmer(dialog);
   const relay = createRelay({ config, confirmer, navigator, onDirty: (dirty) => poller.setDirty(dirty), ...(fetchImpl ? { fetchImpl } : {}) });
+  const homeLink = win.document.querySelector<HTMLAnchorElement>("a.home");
+  createChromeActions(config, { acts, pin, read, archive, title }, {
+    confirmer,
+    view: {
+      setStatus: (text, warn) => view.setStatus(text, warn),
+      navigateAway: () => {
+        if (homeLink?.href) win.location.assign(homeLink.href);
+        else win.location.reload();
+      },
+    },
+    ...(fetchImpl ? { fetchImpl } : {}),
+  });
 
   function connectFrame(): void {
     const channel = new win.MessageChannel();

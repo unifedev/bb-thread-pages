@@ -3,7 +3,7 @@
   "sdkVersion": "0.4.47",
   "artifactFormatVersion": 1,
   "pluginId": "thread-pages",
-  "pluginVersion": "1.1.0",
+  "pluginVersion": "1.2.0",
   "builtWith": {
     "bbVersion": "0.42.1",
     "pluginSdkVersion": "0.4.47"

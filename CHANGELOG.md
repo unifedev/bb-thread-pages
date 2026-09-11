@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.0 — 2026-09-11
+
+### The bar acts on the session you're reading
+
+- Every page's top bar now carries four actions for the session it shows:
+  ☆ pin in bb (the host's own pin, the one its sidebar shows), bb (open the
+  conversation in bb), Read/Unread (the reader's mark) and Archive. Archive
+  confirms in the shell's own dialog; afterwards the view goes home, or
+  reloads when there is none.
+- The actions post to a new `POST /chrome-action` route gated by the page's
+  action token, so a sandboxed page cannot reach it; only the trusted shell
+  holds that token. On a stale offline copy the buttons are disabled.
+- The shell is identical on every page, so the actions appear on every page at
+  once — existing pages included, no rewrite needed.
+- `SessionRecord` gains `pinned` and the host contract gains `sessions.pin`,
+  implemented over bb's `threads.pin` / `threads.unpin`.
+- The bar wraps and the title can shrink below its content width, so long
+  titles on phone-width screens no longer scroll the page horizontally.
+
 ## 1.1.0 — 2026-09-09
 
 Page authors upgrading from 1.0.x: `docs/FOR-PAGE-AUTHORS-1.1.md` says what

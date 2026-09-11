@@ -31,6 +31,8 @@ export interface SessionHost {
     archive(id: string): Promise<void>;
     /** Sets the reader's read mark; returns the mark afterwards. */
     markRead(id: string, read: boolean): Promise<{ unread: boolean }>;
+    /** Sets the host's own pin mark; returns the mark afterwards. */
+    pin(id: string, pinned: boolean): Promise<{ pinned: boolean }>;
     activity(id: string, limit: number): Promise<ActivityItem[]>;
     storage(id: string): Promise<StorageLocation>;
   };

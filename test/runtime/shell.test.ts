@@ -14,6 +14,7 @@ const config: ShellConfig = {
   submitUrl: "/submit",
   uploadUrl: "/upload",
   bridgeUrl: "/bridge",
+  chromeActionUrl: "/chrome-action",
   workingLabel: "Working",
   stale: false,
   pollMs: 10_000,

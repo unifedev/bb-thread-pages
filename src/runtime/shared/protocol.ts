@@ -58,6 +58,7 @@ export interface ShellConfig {
   submitUrl: string;
   uploadUrl: string;
   bridgeUrl: string;
+  chromeActionUrl: string;
   workingLabel: string;
   stale: boolean;
   pollMs: number;

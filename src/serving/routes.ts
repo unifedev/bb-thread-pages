@@ -2,6 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createDispatcher } from "./bridge/dispatcher.ts";
 import { ALL_HANDLERS } from "./bridge/handlers/index.ts";
 import { bridgeRoute } from "./bridge-route.ts";
+import { chromeActionRoute } from "./chrome-action-route.ts";
 import type { ServingContext } from "./context.ts";
 import { documentRoute } from "./document-route.ts";
 import { homeRoute } from "./home-route.ts";
@@ -23,4 +24,5 @@ export function registerRoutes(bb: BbPluginApi, serving: ServingContext): void {
   bb.http.route("POST", "/submit", submitRoute(serving), { auth: "local" });
   bb.http.route("POST", "/upload", uploadRoute(serving), { auth: "local" });
   bb.http.route("POST", "/bridge", bridgeRoute(dispatch), { auth: "local" });
+  bb.http.route("POST", "/chrome-action", chromeActionRoute(serving), { auth: "local" });
 }

@@ -41,6 +41,7 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
       updatedAtMs: typeof thread.updatedAt === "number" ? Math.max(0, Math.trunc(thread.updatedAt)) : 0,
       attentionAtMs: typeof thread.latestAttentionAt === "number" ? Math.max(0, Math.trunc(thread.latestAttentionAt)) : 0,
       unread: unreadOf(thread),
+      pinned: typeof thread.pinnedAt === "number",
       environmentId: typeof thread.environmentId === "string" ? thread.environmentId : null,
     };
   }
@@ -113,6 +114,11 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
         const after = (read ? await bb.sdk.threads.markRead({ threadId: id }) : await bb.sdk.threads.markUnread({ threadId: id })) as unknown;
         const record = asRecord(after);
         return { unread: record ? unreadOf(record) : !read };
+      },
+      async pin(id, pinned) {
+        const after = (pinned ? await bb.sdk.threads.pin({ threadId: id }) : await bb.sdk.threads.unpin({ threadId: id })) as unknown;
+        const record = asRecord(after);
+        return { pinned: record ? typeof record.pinnedAt === "number" : pinned };
       },
       async activity(id, limit): Promise<ActivityItem[]> {
         const events = (await bb.sdk.threads.events.list({

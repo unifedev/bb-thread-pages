@@ -42,6 +42,7 @@ export function sessionRecord(overrides: Partial<SessionRecord> & { id: string }
     updatedAtMs: 1_700_000_000_000,
     attentionAtMs: 1_700_000_000_000,
     unread: false,
+    pinned: false,
     environmentId: "env_a",
     ...overrides,
   };
@@ -97,12 +98,20 @@ export function createFakeHost(): { host: SessionHost; state: FakeHostState } {
       },
       async archive(id) {
         record("sessions.archive", id);
+        const session = state.sessions.get(id);
+        if (session) state.sessions.set(id, { ...session, archived: true });
       },
       async markRead(id, read) {
         record("sessions.markRead", id, read);
         const session = state.sessions.get(id);
         if (session) state.sessions.set(id, { ...session, unread: !read });
         return { unread: !read };
+      },
+      async pin(id, pinned) {
+        record("sessions.pin", id, pinned);
+        const session = state.sessions.get(id);
+        if (session) state.sessions.set(id, { ...session, pinned });
+        return { pinned };
       },
       async activity(id, limit) {
         record("sessions.activity", id, limit);

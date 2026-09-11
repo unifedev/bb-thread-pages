@@ -17,7 +17,7 @@ describe("bb adapter", () => {
       },
     });
     const session = await host.sessions.get("thr_a");
-    expect(session).toEqual({ id: "thr_a", title: "Fallback", projectId: "proj_a", state: "waiting", visibility: "visible", parentId: null, forkOfId: null, archived: false, deleted: false, updatedAtMs: 42, attentionAtMs: 41, unread: true, environmentId: "env_1" });
+    expect(session).toEqual({ id: "thr_a", title: "Fallback", projectId: "proj_a", state: "waiting", visibility: "visible", parentId: null, forkOfId: null, archived: false, deleted: false, updatedAtMs: 42, attentionAtMs: 41, unread: true, pinned: false, environmentId: "env_1" });
     expect(fake.harness.inspection.sdk.callsTo("threads.interactions.list")).toHaveLength(1);
   });
 
@@ -48,6 +48,19 @@ describe("bb adapter", () => {
     expect(await host.sessions.markRead("thr_a", false)).toEqual({ unread: true });
     expect(fake.harness.inspection.sdk.callsTo("threads.markRead")).toHaveLength(1);
     expect(fake.harness.inspection.sdk.callsTo("threads.markUnread")).toHaveLength(1);
+  });
+
+  it("pins and unpins through bb and reports the resulting mark", async () => {
+    const { host, fake } = hostWith({
+      threads: {
+        pin: async () => makeThreadResponse({ id: "thr_a", pinnedAt: 42 }),
+        unpin: async () => makeThreadResponse({ id: "thr_a", pinnedAt: null }),
+      },
+    });
+    expect(await host.sessions.pin("thr_a", true)).toEqual({ pinned: true });
+    expect(await host.sessions.pin("thr_a", false)).toEqual({ pinned: false });
+    expect(fake.harness.inspection.sdk.callsTo("threads.pin")).toHaveLength(1);
+    expect(fake.harness.inspection.sdk.callsTo("threads.unpin")).toHaveLength(1);
   });
 
   it("reads models from the catalog object per provider and drops what it cannot use", async () => {
