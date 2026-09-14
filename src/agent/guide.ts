@@ -374,6 +374,13 @@ capabilities act for it. Each document has its own revision, so saving one
 reloads only a reader who is looking at it. Its own relative references
 resolve from its own directory.
 
+Every document is part of the same page and should look it: a document opened
+in place arrives with only the styles it carries itself. Keep the page's look
+in one stylesheet in your page root and link it from every document —
+\`<link rel="stylesheet" href="page.css">\`, or \`../page.css\` from a nested one —
+so none arrives unstyled. That stylesheet belongs to this page alone; other
+pages are not yours to style.
+
 What does not carry over: script state. Each document starts fresh, like a
 page load. When state has to survive switching — a half-typed answer on one
 view while the reader looks at another — keep the views in one document and

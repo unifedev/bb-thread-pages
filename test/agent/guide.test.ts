@@ -122,6 +122,13 @@ describe("the authoring guide", () => {
     expect(documents).toContain("back and forward");
     expect(documents).toContain("script state");
   });
+
+  it("keeps every document of a page styled with one stylesheet in the page root", () => {
+    const documents = section(coreGuide, "## Several documents in one page", "## The home page");
+    expect(documents).toContain('<link rel="stylesheet" href="page.css">');
+    expect(documents).toContain("../page.css");
+    expect(documents).toContain("unstyled");
+  });
 });
 
 describe("an operator's own seed", () => {
