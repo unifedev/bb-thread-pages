@@ -38,6 +38,20 @@ describe("action tokens", () => {
     const forged = `${Buffer.from(JSON.stringify({ ...(JSON.parse(Buffer.from(payload, "base64url").toString()) as object), session: "thr_b" })).toString("base64url")}.${signature}`;
     expect(openToken(forged, key)).toBeNull();
   });
+
+  it("binds the document it was minted for, and refuses a signed path that is not a document", () => {
+    const { token } = mintActionToken({ session: "thr_a", revision: REV, path: "guides/a.html", now: NOW }, key);
+    expect(verifyActionToken(token, key, NOW)?.path).toBe("guides/a.html");
+    expect(verifyActionToken(mintActionToken({ session: "thr_a", revision: REV, path: "index.html", now: NOW }, key).token, key, NOW)?.path).toBeNull();
+    const [payload, signature] = token.split(".") as [string, string];
+    const moved = `${Buffer.from(JSON.stringify({ ...(JSON.parse(Buffer.from(payload, "base64url").toString()) as object), path: "b.html" })).toString("base64url")}.${signature}`;
+    expect(verifyActionToken(moved, key, NOW)).toBeNull();
+    const signed = (path: unknown) => signPayload({ v: 3, scope: "action", session: "thr_a", revision: REV, path, iat: NOW, exp: NOW + LIMITS.actionTokenMs }, key);
+    expect(verifyActionToken(signed("ok.html"), key, NOW)?.path).toBe("ok.html");
+    for (const path of ["../x.html", "uploads/x.html", "data.json", "index.html", "/x.html", 7, null]) {
+      expect(verifyActionToken(signed(path), key, NOW), String(path)).toBeNull();
+    }
+  });
 });
 
 describe("confirmation challenges", () => {

@@ -71,6 +71,22 @@ describe("shell relay", () => {
     expect(onDirty).toHaveBeenCalledWith(true);
   });
 
+  // A hostile frame names the path; the shell opens only a document of the page. spec R1.12a, 03 §hostile page
+  it("opens only a document of the page when the frame asks, whatever the frame sends", async () => {
+    const fetchImpl = vi.fn();
+    const onOpenDocument = vi.fn();
+    const { relay } = relayWith(fetchImpl as never, { onOpenDocument });
+    const { port, sent } = fakePort();
+    for (const path of ["../x.html", "/etc/x.html", "https://evil.example/x.html", "uploads/x.html", "data.json", "", 42, null]) {
+      relay.handle(port, { kind: "thread-page:open-document", path });
+    }
+    relay.handle(port, { kind: "thread-page:open-document", path: "guides/next.html" });
+    await flush();
+    expect(onOpenDocument.mock.calls).toEqual([["guides/next.html"]]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(0);
+  });
+
   it("carries a request with the action token and forwards the host's response", async () => {
     const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)) as { actionToken: string; request: { id: string } };
