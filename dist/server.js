@@ -1326,8 +1326,8 @@ async function defineSettings(bb) {
     agentInstructions: {
       type: "boolean",
       label: "Agent instructions",
-      description: "Inject the standing Thread Pages instruction into every eligible new session.",
-      default: false
+      description: "Inject the standing Thread Pages instruction into every eligible new session. On from install; turn it off to stop new sessions writing pages.",
+      default: true
     },
     agentInstructionText: {
       type: "string",
@@ -1370,7 +1370,8 @@ async function defineSettings(bb) {
 }
 function readSettings(values) {
   return {
-    agentInstructions: values.agentInstructions === true,
+    // On unless turned off. spec R6.16, R7.2, DECISIONS D17
+    agentInstructions: values.agentInstructions !== false,
     agentInstructionText: isPastDefault("agentInstructionText", values.agentInstructionText) ? DEFAULT_AGENT_INSTRUCTION : values.agentInstructionText,
     pageSeedHtml: isPastDefault("pageSeedHtml", values.pageSeedHtml) ? "" : values.pageSeedHtml,
     workingLabel: values.workingLabel.trim(),

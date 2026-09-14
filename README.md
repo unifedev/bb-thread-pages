@@ -7,9 +7,10 @@ site the reader can read and answer from on any device.
 bb plugin install git:https://github.com/unifedev/bb-thread-pages.git@^1.0.0
 ```
 
-Then turn on **Agent instructions** in the plugin's settings (or
-`bb plugin config thread-pages set agentInstructions true`). Every new session
-then writes a page for its task, built for that task, and answers you from it.
+Every new session then writes a page for its task, built for that task, and
+answers you from it. The standing instruction that asks it to is on from
+install; turn off **Agent instructions** in the plugin's settings (or
+`bb plugin config thread-pages set agentInstructions false`) to stop it.
 
 Home works from the start: every page links to a built-in hub of your sessions.
 If you want a home of your own, ask a session to build one; it runs

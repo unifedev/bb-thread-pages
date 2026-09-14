@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.1 — 2026-09-14
+
+- **Agent instructions are on by default.** A session started right after
+  install writes a page for its task; turning the setting off stops it. An
+  install that stored `false` keeps it.
+- `PLUGIN_OVERVIEW.md`: the long-form description the BB Community marketplace
+  shows.
+
 ## 1.3.0 — 2026-09-14
 
 Implements spec 1.1 (`unife-bb-plugin`, DECISIONS D11–D16).

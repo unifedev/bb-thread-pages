@@ -110,17 +110,19 @@ describe("bb thread-page guide and status", () => {
   });
 
   it("shows settings, the effective instruction, and this session's page", async () => {
+    // On from install. spec R6.16, R7.2
+    const on = await fixture.cli(["status"], "thr_a");
+    expect(on.stdout).toContain("agentInstructions: on");
+    expect(on.stdout).toContain("pageSeedHtml: (empty — init creates no file");
+    expect(on.stdout).toContain("# The page is the conversation");
+    expect(on.stdout).toContain("revision: This session has no page yet");
+    await fixture.harness.behavior.setSettings({ agentInstructions: false });
+    fixture.state.files.set(fileKey("thr_a", "index.html"), Buffer.from(PAGE));
     const off = await fixture.cli(["status"], "thr_a");
     expect(off.stdout).toContain("agentInstructions: off");
-    expect(off.stdout).toContain("pageSeedHtml: (empty — init creates no file");
     expect(off.stdout).toContain("(none — agentInstructions is off)");
-    expect(off.stdout).toContain("revision: This session has no page yet");
-    await fixture.harness.behavior.setSettings({ agentInstructions: true });
-    fixture.state.files.set(fileKey("thr_a", "index.html"), Buffer.from(PAGE));
-    const on = await fixture.cli(["status"], "thr_a");
-    expect(on.stdout).toContain("# The page is the conversation");
-    expect(on.stdout).toContain("page: /storage/thr_a/index.html");
-    expect(on.stdout).toMatch(/revision: [a-f0-9]{64}/);
+    expect(off.stdout).toContain("page: /storage/thr_a/index.html");
+    expect(off.stdout).toMatch(/revision: [a-f0-9]{64}/);
   });
 
   it("rejects unknown arguments with usage", async () => {
@@ -130,11 +132,12 @@ describe("bb thread-page guide and status", () => {
 });
 
 describe("the standing instruction", () => {
-  it("is injected only into root, non-fork sessions and only when enabled", async () => {
+  it("is injected only into root, non-fork sessions, from install, until turned off", async () => {
     const root = makePluginAgentConfigurationContext({ thread: { id: "thr_a", parentThreadId: null, sourceThreadId: null } });
+    expect((await fixture.harness.behavior.resolveAgentConfiguration(root)).instructions).toBe(DEFAULT_AGENT_INSTRUCTION);
+    await fixture.harness.behavior.setSettings({ agentInstructions: false });
     expect((await fixture.harness.behavior.resolveAgentConfiguration(root)).instructions).toBeNull();
     await fixture.harness.behavior.setSettings({ agentInstructions: true });
-    expect((await fixture.harness.behavior.resolveAgentConfiguration(root)).instructions).toBe(DEFAULT_AGENT_INSTRUCTION);
     const child = makePluginAgentConfigurationContext({ thread: { id: "thr_c", parentThreadId: "thr_a", sourceThreadId: null } });
     expect((await fixture.harness.behavior.resolveAgentConfiguration(child)).instructions).toBeNull();
     const fork = makePluginAgentConfigurationContext({ origin: { kind: "fork", pluginId: "side-chat" } });
