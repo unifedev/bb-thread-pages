@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.0 — unreleased
+## 1.3.0 — 2026-09-14
 
 Implements spec 1.1 (`unife-bb-plugin`, DECISIONS D11–D16).
 
@@ -53,6 +53,10 @@ Implements spec 1.1 (`unife-bb-plugin`, DECISIONS D11–D16).
   provided to fill in and the page is built for this task; the reader answers
   where they read, with one empty text field for anything else; chat carries
   only the link. No control recipes, no styling, no home-page section.
+- After six agent scenarios: a page that should stay put starts sessions from
+  every form, its field for anything else included, and tells the reader it
+  stays put; a page must read on a phone and in dark mode; the text is concise
+  and actionable, and what the page shows does the explaining.
 
 ### Controls anywhere on the page
 

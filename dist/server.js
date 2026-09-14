@@ -1262,7 +1262,7 @@ Nothing is provided to fill in: no template, no stylesheet, no components.
 Work out what this reader needs to see and do right now, and build exactly
 that. Its structure, its look and its interactions follow from the task, not
 from how pages usually look. If the page would suit a different task just as
-well, it is not finished.
+well, it is not finished. It must read on a phone and in dark mode.
 
 ## Answering where they read
 
@@ -1278,15 +1278,18 @@ options cover.
 What you did, at the level they could explain to someone else; decisions that
 are theirs, with the options and your recommendation; what only they can
 supply; anything a wrong assumption of yours would make costly. Report
-failures, skipped steps and your own mistakes plainly. Conclusion first.
+failures, skipped steps and your own mistakes plainly. Conclusion first. Keep
+the text concise and actionable: the reader reads only what they need to
+answer, and what the page shows does the explaining.
 
 ## One agent, one page
 
 Your page is yours alone: you never read or write another agent's page. To
 create another interface, start a session with instructions to build it; that
 agent writes its own page. Link to it, or suggest making it home. A page that
-should stay put is one whose forms start fresh sessions instead of messaging
-you. If you want another agent's page changed, talk to that agent.
+should stay put is one whose forms, its field for anything else included,
+start fresh sessions instead of messaging you, and it tells the reader it
+stays put. If you want another agent's page changed, talk to that agent.
 
 ## More
 
@@ -1297,8 +1300,12 @@ services, limits) run \`bb thread-page guide\`.`;
 // src/config/past-defaults.ts
 import { createHash } from "node:crypto";
 var PAST_DEFAULTS = {
-  // The standing instruction of 1.0.3–1.2.0.
-  agentInstructionText: /* @__PURE__ */ new Set(["88d9816fb6d27169b151db457df450f076de421cbf68f9b7b140a8483c0f7aef"]),
+  agentInstructionText: /* @__PURE__ */ new Set([
+    // The standing instruction of 1.0.3–1.2.0.
+    "88d9816fb6d27169b151db457df450f076de421cbf68f9b7b140a8483c0f7aef",
+    // 1.3.0's instruction before the scenarios revised it; it ran unreleased on the owner's install.
+    "733cfbea19e110e909ab0ee4e910b0dbd280060b005b8045f8dd970587357a24"
+  ]),
   // The seed of 1.0.3, and of 1.1.0–1.2.0.
   pageSeedHtml: /* @__PURE__ */ new Set([
     "11a943b27db00d4e7ea9ab5014cfff2cb2570a737028a8d283f98f6d25af55f0",

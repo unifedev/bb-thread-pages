@@ -12,8 +12,12 @@ import { createHash } from "node:crypto";
 export type PastDefaultKey = "agentInstructionText" | "pageSeedHtml";
 
 export const PAST_DEFAULTS: Readonly<Record<PastDefaultKey, ReadonlySet<string>>> = {
-  // The standing instruction of 1.0.3–1.2.0.
-  agentInstructionText: new Set(["88d9816fb6d27169b151db457df450f076de421cbf68f9b7b140a8483c0f7aef"]),
+  agentInstructionText: new Set([
+    // The standing instruction of 1.0.3–1.2.0.
+    "88d9816fb6d27169b151db457df450f076de421cbf68f9b7b140a8483c0f7aef",
+    // 1.3.0's instruction before the scenarios revised it; it ran unreleased on the owner's install.
+    "733cfbea19e110e909ab0ee4e910b0dbd280060b005b8045f8dd970587357a24",
+  ]),
   // The seed of 1.0.3, and of 1.1.0–1.2.0.
   pageSeedHtml: new Set([
     "11a943b27db00d4e7ea9ab5014cfff2cb2570a737028a8d283f98f6d25af55f0",

@@ -147,7 +147,11 @@ describe("the standing instruction", () => {
     expect(DEFAULT_AGENT_INSTRUCTION.length).toBeLessThan(4096);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/yours alone/);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/start a\s+session with instructions to build it/);
-    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/forms\s+start fresh sessions/);
+    // A page that stays put: its open field starts a session too, and it says so. Scenario 03.
+    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/forms, its field for anything else included,\s+start fresh sessions/);
+    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/tells the reader it\s+stays put/);
+    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/read on a phone and in dark mode/);
+    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/concise and actionable/);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/SKIP/);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/bb thread-page guide/);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/only the link/);
