@@ -1,4 +1,4 @@
-import type { ShellConfig } from "../shared/protocol.ts";
+import { EMPTY_PAGE_STATUS, type ShellConfig } from "../shared/protocol.ts";
 
 /**
  * The revision poll: a conditional GET of the document every few seconds
@@ -94,7 +94,8 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
         lastStale = stale;
         view.onStaleChanged(stale);
       }
-      view.setStatus(stale ? "Offline copy — read-only" : "", stale);
+      const empty = response.headers.get("x-thread-page-empty") === "true";
+      view.setStatus(stale ? "Offline copy — read-only" : empty ? EMPTY_PAGE_STATUS : "", stale);
       const next = response.headers.get("etag");
       if (next && next !== etag) {
         etag = next;

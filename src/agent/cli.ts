@@ -6,7 +6,7 @@ import { LIMITS } from "../domain/limits.ts";
 import type { SessionRecord } from "../host/types.ts";
 import { ENTRY_FILE, LEGACY_ENTRY_FILE, UPLOAD_DIR, entryPath, joinPath, legacyEntryPath } from "../pages/layout.ts";
 import { homeUrl, pageUrl, type ServingContext } from "../serving/context.ts";
-import { renderSeed } from "./seed/seed.ts";
+import { hasSeed, renderSeed } from "./seed/seed.ts";
 
 /**
  * `bb thread-page init | home [--clear] | guide | status`. spec 06 §The command, RW-11
@@ -21,10 +21,10 @@ export interface CliDeps {
 export function registerCli(bb: BbPluginApi, deps: CliDeps): void {
   bb.cli.register({
     name: "thread-page",
-    summary: "The page this session writes for its reader: create it, print the authoring guide, make it home",
+    summary: "The page this session writes for its reader: print its path and link, the authoring guide, make it home",
     commands: [
-      { name: "init", summary: "Create this session's page if absent; print its path and link", usage: "bb thread-page init" },
-      { name: "guide", summary: "Print the authoring guide (forms, files, capabilities, limits)", usage: "bb thread-page guide" },
+      { name: "init", summary: "Print this session's page path and link, and whether the page exists yet", usage: "bb thread-page init" },
+      { name: "guide", summary: "Print the authoring guide (forms, files, other services, capabilities, limits)", usage: "bb thread-page guide" },
       { name: "home", summary: "Make this session's page the home page every page links back to", usage: "bb thread-page home [--clear]" },
       { name: "status", summary: "Show settings, the instruction new sessions get, and this session's page", usage: "bb thread-page status" },
     ],
@@ -75,27 +75,49 @@ async function link(deps: CliDeps, path: string): Promise<string> {
   return origin ? `${origin}${path}` : path;
 }
 
-async function ensurePage(deps: CliDeps, id: string, title: string): Promise<{ absolutePath: string; state: "created" | "existing"; legacy: boolean; problem: string | null }> {
+type PageState = "absent" | "created" | "existing";
+
+interface PageReport {
+  absolutePath: string;
+  state: PageState;
+  legacy: boolean;
+  problem: string | null;
+}
+
+/** Where the page is and whether it exists, touching nothing. spec R6.10 */
+async function inspectPage(deps: CliDeps, id: string): Promise<PageReport> {
   const { serving } = deps;
   const location = await serving.host.sessions.storage(id);
-  const seed = renderSeed(serving.settings.current().pageSeedHtml, title);
-  const outcome = await serving.host.files.write(location, ENTRY_FILE, Buffer.from(seed, "utf8"), { onlyIfAbsent: true });
-  const state = outcome === "written" ? "created" : "existing";
+  const absolutePath = entryPath(location.rootPath);
+  const legacyPath = legacyEntryPath(location.rootPath);
+  const existence = await serving.host.files.exist(location.hostId, [absolutePath, legacyPath]);
+  const state: PageState = existence[absolutePath] === true ? "existing" : "absent";
   let problem: string | null = null;
-  if (state === "created") {
-    await serving.pages.remember(id, seed);
-  } else {
+  if (state === "existing") {
     try {
       await serving.pages.load(id);
     } catch (error) {
       problem = PageError.is(error) ? error.message : errorText(error);
     }
   }
-  const legacy = await serving.host.files
-    .exist(location.hostId, [legacyEntryPath(location.rootPath)])
-    .then((existence) => existence[legacyEntryPath(location.rootPath)] === true)
-    .catch(() => false);
-  return { absolutePath: entryPath(location.rootPath), state, legacy, problem };
+  return { absolutePath, state, legacy: existence[legacyPath] === true, problem };
+}
+
+/**
+ * The product ships no starting file, so `init` creates a page only when an
+ * operator configured one. spec R6.4, R6.18–R6.20
+ */
+async function ensurePage(deps: CliDeps, id: string, title: string): Promise<PageReport> {
+  const { serving } = deps;
+  const report = await inspectPage(deps, id);
+  const template = serving.settings.current().pageSeedHtml;
+  if (report.state !== "absent" || !hasSeed(template)) return report;
+  const location = await serving.host.sessions.storage(id);
+  const seed = renderSeed(template, title);
+  const outcome = await serving.host.files.write(location, ENTRY_FILE, Buffer.from(seed, "utf8"), { onlyIfAbsent: true });
+  if (outcome !== "written") return { ...report, state: "existing" };
+  await serving.pages.remember(id, seed);
+  return { ...report, state: "created" };
 }
 
 /** Tells the agent whether the reader has a home page, and how one comes to exist. */
@@ -106,8 +128,14 @@ async function homeLine(deps: CliDeps, current: string): Promise<string> {
       ? "home: this page is the home page; every other page links back to it."
       : `home: ${await link(deps, homeUrl(deps.serving.routeBase))}  (every page links back to it; you never write that link)`;
   }
-  return "home: none set. If the reader wants one place to see and steer their sessions, run `bb thread-page home` in a session dedicated to it and build the hub from `bb thread-page guide` §The home page.";
+  return "home: none set. If the reader wants one place to see and steer their sessions, run `bb thread-page home` in a session dedicated to it and build that page there.";
 }
+
+const STATE_LINES: Record<PageState, string> = {
+  absent: "state: NEW — no page yet. Write the whole document at the path above; nothing is provided to fill in. Then reply in chat with only the link.",
+  created: "state: NEW — created from the operator's starting file; it is yours to rewrite for this task. Then reply in chat with only the link.",
+  existing: "state: EXISTING — read it before editing; update it this turn, keep a way to answer, then reply in chat with only the link.",
+};
 
 async function init(deps: CliDeps, context: PluginCliContext): Promise<PluginCliResult> {
   const current = await currentSession(deps, context);
@@ -117,11 +145,9 @@ async function init(deps: CliDeps, context: PluginCliContext): Promise<PluginCli
   const lines = [
     `page: ${absolutePath}`,
     `link: [Open the Thread Page](${url})`,
-    state === "created"
-      ? "state: NEW — seeded; make this page fit the task, keep a way to answer, then reply in chat with the link and one line."
-      : "state: EXISTING — read it before editing; update it this turn, keep a way to answer, then reply in chat with the link and one line.",
+    STATE_LINES[state],
     `site: files beside ${ENTRY_FILE} are served relatively (nested paths included); ${UPLOAD_DIR}/ holds what the reader attaches.`,
-    "guide: bb thread-page guide  (files, charts, live session state, starting sessions, links, limits)",
+    "guide: bb thread-page guide  (controls anywhere on the page, your own files, other services and servers, live session state, starting sessions, limits)",
     await homeLine(deps, current.id),
   ];
   if (problem) lines.push(`warning: the existing page cannot be served — ${problem}`);
@@ -139,16 +165,16 @@ async function home(deps: CliDeps, context: PluginCliContext): Promise<PluginCli
     const other = await serving.host.sessions.get(previous).catch(() => null);
     lines.push(`warning: home was ${other ? `“${other.title}” (${previous})` : previous}; it now points here instead.`);
   }
-  const { state } = await ensurePage(deps, current.id, current.session.title);
+  const { state } = await inspectPage(deps, current.id);
   await serving.settings.set({ homeSessionId: current.id });
   const url = await link(deps, homeUrl(serving.routeBase));
   lines.push(
     `home: ${current.id}`,
     `link: [Sessions](${url})`,
     "Every other page now shows a “← Sessions” link back to this one.",
-    state === "created"
-      ? "state: NEW — a plain seed was created for this session; build the hub yourself (sessions.snapshot, projects.list, pages.open, sessions.start). See bb thread-page guide §The home page."
-      : "state: EXISTING — this session's page was left untouched.",
+    state === "existing"
+      ? "state: EXISTING — this session's page was left untouched."
+      : "state: NO PAGE YET — write this session's page; every other page links back to it. See bb thread-page guide §The home page.",
   );
   return { exitCode: 0, stdout: `${lines.join("\n")}\n` };
 }
@@ -166,6 +192,7 @@ async function status(deps: CliDeps, context: PluginCliContext): Promise<PluginC
     "# Thread Pages status",
     "",
     `agentInstructions: ${settings.agentInstructions ? "on" : "off"}`,
+    `pageSeedHtml: ${hasSeed(settings.pageSeedHtml) ? `set (${settings.pageSeedHtml.length} characters) — init starts new pages from it` : "(empty — init creates no file; the agent writes the whole page)"}`,
     `workingLabel: ${settings.workingLabel ? JSON.stringify(settings.workingLabel) : "(blank — indicator hidden)"}`,
     `homeSessionId: ${settings.homeSessionId || "(none — pages show no Sessions link)"}`,
     `site strategy: ${serving.site.name}`,

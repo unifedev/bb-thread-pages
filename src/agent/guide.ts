@@ -2,18 +2,17 @@ import type { CapabilityRegistry } from "../domain/capabilities/registry.ts";
 import { LIMITS, kibibytes, mebibytes } from "../domain/limits.ts";
 import { ENTRY_FILE, UPLOAD_DIR } from "../pages/layout.ts";
 import type { SiteStrategy } from "../pages/site.ts";
-import { starterHubForGuide } from "./starter-hub.ts";
 
 /**
  * The authoring guide, printed by `bb thread-page guide`. Assembled from
  * prose, the limits table and the capability registry at load, so every
- * number and every capability in it is the implementation's own.
- * spec R6.24–R6.26
+ * number and every capability in it is the implementation's own. It carries
+ * no example pages, page shapes or component snippets: code in it states a
+ * mechanism and nothing more. spec R6.24–R6.27, DECISIONS D11
  */
 export function buildGuide(registry: CapabilityRegistry, site: SiteStrategy): string {
   return [
     intro(),
-    plainHtml(),
     forms(),
     uploads(),
     ownFiles(site),
@@ -34,41 +33,21 @@ export function buildGuide(registry: CapabilityRegistry, site: SiteStrategy): st
 
 const intro = () => `# Thread Pages — authoring guide
 
-A page is a complete HTML document you edit directly; saving publishes it. It
-runs in a sandboxed frame on an opaque origin with no host credentials, and
-talks to the host only through captured forms and \`window.threadPage\`. Use
-the smallest shape that makes the task easier: plain semantic HTML first, a
-mini-app only when the shape of the thing is not prose.
+A page is a complete HTML document you write and edit directly; saving
+publishes it. Nothing is provided to fill in — no template, no stylesheet, no
+components — so its structure, its look and its interactions are yours, and
+the task decides them. It runs in a sandboxed frame on an opaque origin with
+no host credentials, and talks to the host only through captured forms and
+\`window.threadPage\`.
 
 Your page root is your session's storage directory (\`$BB_THREAD_STORAGE\`):
 
-    ${ENTRY_FILE}       the entry document — the page
+    ${ENTRY_FILE}       the entry document — the page; \`init\` does not create it, you do
     <any files>      served beside it, nested directories included
-    ${UPLOAD_DIR}/         files the reader attached, named by the host`;
+    ${UPLOAD_DIR}/         files the reader attached, named by the host
 
-const plainHtml = () => `## What plain HTML already gives you
-
-The seed carries its own stylesheet, so semantic HTML is already styled.
-
-    h2, p, ul, table      the page's type scale and rhythm
-    form                  a panel wired to your session, with a status line
-    fieldset + legend     a named group; the legend becomes the question
-    label wrapping one    the label becomes that answer's name
-    small inside a label  a hint (never part of the answer's name)
-    input type=range      a slider with a live value readout
-    input type=file       uploaded on submit, path sent to you
-    details/summary       detail on demand; add name="x" for an accordion
-    div.card              a boxed aside
-    p.needs-you           a flagged block, for what is blocked on the reader
-    span.label            a small uppercase tag
-
-Three class names; everything else keys off what the element is. The look is
-three attributes on <html>: data-theme (paper | terminal | atrium | volume |
-bloom), data-mode (system | light | dark), data-atmos (on | off). Extra CSS
-goes in one more <style>, everything inside @scope (main), colour and shape
-from var(--token) only — that is what keeps a bespoke chart right in every
-world and in dark mode. You may replace the stylesheet entirely; the page is
-yours.`;
+Until ${ENTRY_FILE} exists, the page's link shows the reader that it has not been
+written yet, and the page appears there as soon as you save it.`;
 
 const forms = () => `## Forms
 
@@ -80,18 +59,31 @@ own script owns; the host then leaves it entirely alone.
   suppressed, and a blank field arrives as "(left blank)".
 - Answer names come from, in order: data-label on the control, the enclosing
   fieldset's legend, aria-label, the wrapping label's text, a <label for>,
-  the field name. Hints, options and nested controls are excluded.
+  the field name. Hints (<small>), options and nested controls are excluded.
 - Groups collapse: one checkbox is Yes/No; several checkboxes with one name
   are a list of the checked values; radios are the one checked value or
   blank; a multiple <select> is a list.
-- The submit button's value leads the message as **Action**, so several
-  <button name="action" value="…"> give one-click answers.
+- The submit button's value leads the message as **Action**.
 - Each form has its own pending, dirty and status state. While a submission
   is in flight its controls are disabled; afterwards the status line says
   "Sent (queued)" or why it failed.
 - Typing into a captured form marks the page dirty, so a new version of the
   page does not reload under the reader. Custom state the host cannot see:
   window.threadPage.setDirty(true|false).
+
+### Controls anywhere on the page
+
+A control does not have to sit inside its form. Give the form an id and the
+control \`form="that-id"\`, and it belongs to that form wherever it is in the
+document: its answer is delivered with the form, typing into it marks the page
+dirty, and it is disabled while the form sends. A question can therefore sit
+beside the thing it asks about and still arrive in one answer. Its name
+follows the rules above, looked up around the control itself. The form's
+status line appears inside the form element, so put that element where the
+reader expects to send from.
+
+Always include one empty text field for anything else: the reader may want
+something none of your options cover.
 
 The message you receive looks like:
 
@@ -279,16 +271,48 @@ The confirmation names the project and the prompt. Handle \`cancelled\`:
 \`sessions.send\` steers an existing session the same way; it refuses your own
 session — use \`session.reply\` for that.`;
 
-const network = () => `## Network
+const network = () => `## Network, other services and servers
 
 Pages have internet access: fetch any origin, load remote fonts, scripts,
 stylesheets, images and media, open WebSockets. The page still holds no host
 credential — reaching a URL and acting as the host are different things.
 
-Two consequences to know: page script runs in the reader's browser, so it can
-reach what that device can reach, including its own network; and script can
-navigate its own frame with data in the URL. Both are accepted, documented
-properties of the model, not bugs to work around.`;
+**What your page is, to another server.** Its origin is \`null\`. Every request
+it makes carries \`Origin: null\` and no cookie of any kind — not the host's, and
+not the reader's session with any other service. The sandbox gives it no
+storage of its own either: \`document.cookie\`, \`localStorage\`,
+\`sessionStorage\` and IndexedDB throw. Keep what must survive a reload with
+\`storage.set\` (${kibibytes(LIMITS.storageValueBytes)} per key).
+
+**Acting on another service as the reader.** Authenticate with a token in a
+request header — an API key or personal token the reader gives the page, kept
+with \`storage.set\`. That works whenever the service answers a cross-origin
+request from \`Origin: null\`, and many APIs do; an unauthenticated call that
+comes back as a readable 401 tells you the origin is accepted. Two things do
+not work, and the host offers no mechanism for either, by design: a sign-in
+flow that sends the reader to a login page and back (a page has no popups and
+no top-level navigation, and login pages refuse to load in a frame), and an
+SDK that checks a registered JavaScript origin, because \`null\` cannot be
+registered.
+
+**A server of your own.** Page script runs in the reader's browser, so where
+the reader is decides what it can reach:
+
+- a server on the reader's machine at a loopback address, such as
+  \`http://127.0.0.1:8000\`, when the page is read on that machine — also through
+  the host's remote address (a browser may ask the reader's permission first);
+- any public URL, from any device — for a phone, give your server a public
+  address and its own token;
+- **not** anything behind the host's own authentication: its API, its file
+  route, or a port it shares for you. Those need a cookie the page cannot send.
+
+A server your page calls must answer CORS for \`Origin: null\`, preflights
+included, and check its own token.
+
+Two more consequences to know: script can reach whatever the reader's device
+can reach, including its own network, and it can navigate its own frame with
+data in the URL. Both are accepted, documented properties of the model, not
+bugs to work around.`;
 
 const unavailable = () => `## What the sandbox silences
 
@@ -298,8 +322,8 @@ These do nothing, silently — the worst failure mode — so never rely on them:
   for the host application, and a plain <a href="https://…"> or
   \`navigation.openExternal\` for the web.
 - \`window.prompt\`, \`alert\`, \`confirm\` — build the input or the question into
-  the page (an <input>, a <dialog> with data-thread-page-manual, a second
-  form), or use a confirmed capability, which renders its own dialog.
+  the page, or use a confirmed capability, which renders its own dialog. A
+  <dialog> you script yourself needs data-thread-page-manual on its form.
 - top-level navigation — \`pages.open\` and \`sessions.openHost\` navigate the
   reader's view in place through trusted chrome; the back button returns.
 
@@ -321,9 +345,8 @@ and then stopped.
 
 **The whole file is yours.** There is no page-editing API and there is not
 meant to be one: ${ENTRY_FILE} is a file in your storage directory that you
-read and write with your ordinary tools. Nothing in it is reserved — not the
-stylesheet, not the header, not the comment the seed came with. Rewriting the
-document whole is the expected way to change it, and safer than splicing,
+read and write with your ordinary tools. Nothing in it is reserved. Rewriting
+the document whole is the expected way to change it, and safer than splicing,
 because a splice computed from string indices can silently eat content that a
 whole-document write cannot.
 
@@ -339,47 +362,21 @@ const home = () => `## The home page
 
 One page is home; every other page shows a "← Sessions" link back to it in
 chrome you never write. \`bb thread-page home\` sets the pointer for the
-current session (\`--clear\` removes it) and creates the plain seed if the
-session has no page yet; it never touches an existing page. Home is an
-ordinary page — a hub is one an agent builds, and the right place to build it
-is a session dedicated to it, so nothing else ever rewrites it.
+current session (\`--clear\` removes it) and never creates or touches page
+content. Home is an ordinary page. If the reader asks for one place to see and
+steer their sessions, build it in a session dedicated to it — start one for
+the purpose if you are mid-task — so nothing else ever rewrites it: its
+buttons open other pages and start fresh sessions, and nothing messages its
+own session. The reader can ask that session to change it at any time.
 
-### Setting one up, step by step
-
-1. In the session that should own it (start one for the purpose if you are
-   mid-task), run \`bb thread-page home\`. It prints the link every page will
-   carry.
-2. Replace <main> in that session's index.html with the starter hub below,
-   then stop. The page stays put because its buttons open other pages or
-   start fresh sessions; nothing messages this session.
-3. Tell the reader the link and that the hub is theirs to change: they can
-   ask this session to regroup, restyle or add jobs any time.
-
-### A starter hub
-
-Complete and working as written; drop it into <main>. It follows what the
-reader already sees in bb: no archived sessions, sub-agents hidden, the
-sessions that need them first (working, waiting on them, unread — a failed
-session only until they have looked), five recent per project then "Show
-more", one line per session, search with "/", Read/Unread, Stop, Archive and
-start-a-session with the confirmations handled. Views and
-collapsed projects persist in \`storage\`. It widens the page for the list;
-that is allowed — the page owns its stylesheet.
-
-${starterHubForGuide()}
-
-Refresh on a slow watch, not a tight timer: the page shares a rate budget of
-${LIMITS.ratePerMinute} requests a minute with its own forms. Grouping is yours to change: a
-group can be any set of projects, and \`data-theme\` on a group's element can
-give it its own look.`;
+Refresh a page like this on a slow watch, not a tight timer: it shares a rate
+budget of ${LIMITS.ratePerMinute} requests a minute with its own forms.`;
 
 const accessibility = () => `## Before you save
 
 - Read it once at 320px wide, once in dark mode, once with reduced motion.
 - Every action reachable by keyboard; nothing pointer-only.
-- Inline SVG for diagrams and charts, with var(--accent) inside it; a zero
-  gets a visible stub or the eye reads missing data.
-- grep -o '#[0-9a-fA-F]\\{3,8\\}' ${ENTRY_FILE} inside your <style> should be empty.
+- A zero in a chart gets a visible mark, or the eye reads missing data.
 - Read it once over the reader's real origin, not only loopback. A local bb
   requires no credential and a remote one does, so anything the page loads for
   itself can work for you and fail for them. Authentication is the one axis
@@ -390,10 +387,9 @@ const upgrading = () => `## If your page predates 1.1
 Three things to fix in a page written against 1.0.x. Each is a one-line edit
 and none of them announces itself.
 
-1. **Add \`[hidden] { display: none !important; }\`** to your <style>. A class
-   rule that sets display outranks the attribute, so an element you wrote
-   \`hidden\` renders as an empty bar. New pages carry the fix; yours has its
-   own copy of the stylesheet and will not get it.
+1. **Add \`[hidden] { display: none !important; }\`** to your <style> if it came
+   from the old starting file. A class rule that sets display outranks the
+   attribute, so an element you wrote \`hidden\` renders as an empty bar.
 2. **Delete the seed's old authoring comment** if it is still there. It spelled
    tags out literally, so every string operation you run on your own file sees
    a <main> and a <style> that are not elements, and the obvious splice starts

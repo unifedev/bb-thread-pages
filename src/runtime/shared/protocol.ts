@@ -61,10 +61,15 @@ export interface ShellConfig {
   chromeActionUrl: string;
   workingLabel: string;
   stale: boolean;
+  /** The agent has not written the page yet; the frame holds host text. spec R6.19 */
+  empty: boolean;
   pollMs: number;
   maxUploadBytes: number;
   maxUploads: number;
 }
+
+/** What the shell's status says while a page does not exist yet, in chrome the page cannot touch. spec R6.19 */
+export const EMPTY_PAGE_STATUS = "Not written yet — the page appears here as soon as the agent saves it";
 
 const ERROR_CODES: ReadonlySet<string> = new Set(BRIDGE_ERROR_CODES);
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;

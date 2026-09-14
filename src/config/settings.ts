@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { DEFAULT_AGENT_INSTRUCTION } from "../agent/instruction.ts";
-import { DEFAULT_PAGE_SEED } from "../agent/seed/seed.ts";
+import { isPastDefault } from "./past-defaults.ts";
 
 /**
  * The five settings and nothing more. spec 07
@@ -11,6 +11,7 @@ import { DEFAULT_PAGE_SEED } from "../agent/seed/seed.ts";
 export interface Settings {
   readonly agentInstructions: boolean;
   readonly agentInstructionText: string;
+  /** An operator's own starting file; empty (the default) means `init` creates nothing. */
   readonly pageSeedHtml: string;
   readonly workingLabel: string;
   readonly homeSessionId: string;
@@ -40,10 +41,11 @@ export async function defineSettings(bb: BbPluginApi): Promise<LiveSettings> {
     },
     pageSeedHtml: {
       type: "string",
-      label: "New-page seed",
-      description: "The complete HTML a new page starts from. {{TITLE}} is replaced, escaped. Existing pages are never rewritten.",
+      label: "New-page starting file",
+      description:
+        "Optional. HTML a new page starts from; {{TITLE}} and {{DATE}} are replaced, escaped. Empty (the default): `bb thread-page init` creates no file and the agent writes the whole page. Existing pages are never rewritten.",
       experimental_multiline: true,
-      default: DEFAULT_PAGE_SEED,
+      default: "",
     },
     workingLabel: {
       type: "string",
@@ -58,24 +60,33 @@ export async function defineSettings(bb: BbPluginApi): Promise<LiveSettings> {
       default: "",
     },
   });
-  let current = normalize(await handle.get());
+  let current = readSettings(await handle.get());
   handle.onChange((next) => {
-    current = normalize(next);
+    current = readSettings(next);
   });
   return {
     current: () => current,
     async set(values) {
-      current = normalize(await handle.experimental_set(values));
+      current = readSettings(await handle.experimental_set(values));
       return current;
     },
   };
 }
 
-function normalize(values: { agentInstructions: boolean; agentInstructionText: string; pageSeedHtml: string; workingLabel: string; homeSessionId: string }): Settings {
+interface StoredSettings {
+  agentInstructions: boolean;
+  agentInstructionText: string;
+  pageSeedHtml: string;
+  workingLabel: string;
+  homeSessionId: string;
+}
+
+/** Normalises stored values; a stored past default reads as today's default. */
+export function readSettings(values: StoredSettings): Settings {
   return {
     agentInstructions: values.agentInstructions === true,
-    agentInstructionText: values.agentInstructionText,
-    pageSeedHtml: values.pageSeedHtml,
+    agentInstructionText: isPastDefault("agentInstructionText", values.agentInstructionText) ? DEFAULT_AGENT_INSTRUCTION : values.agentInstructionText,
+    pageSeedHtml: isPastDefault("pageSeedHtml", values.pageSeedHtml) ? "" : values.pageSeedHtml,
     workingLabel: values.workingLabel.trim(),
     homeSessionId: values.homeSessionId.trim(),
   };

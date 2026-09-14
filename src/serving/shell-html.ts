@@ -1,6 +1,6 @@
 import { escapeHtml } from "../domain/html/escape.ts";
 import { SHELL_RUNTIME } from "../generated/shell-runtime.ts";
-import type { ShellConfig } from "../runtime/shared/protocol.ts";
+import { EMPTY_PAGE_STATUS, type ShellConfig } from "../runtime/shared/protocol.ts";
 
 /**
  * The trusted shell document: title bar, home link, working indicator,
@@ -66,7 +66,7 @@ export function renderShell(view: ShellView): string {
     ${view.homeUrl ? `<a class="home" href="${escapeHtml(view.homeUrl)}" title="All sessions">← Sessions</a>` : ""}
     <span class="title">${title}</span>
     <span class="work" role="status" data-shell-working data-visible="${working}"><span class="dot" aria-hidden="true"></span><span class="word">${escapeHtml(view.config.workingLabel)}</span></span>
-    <span class="status" role="status" data-shell-status${view.config.stale ? ' data-tone="warn"' : ""}>${view.config.stale ? "Offline copy — read-only" : ""}</span>
+    <span class="status" role="status" data-shell-status${view.config.stale ? ' data-tone="warn"' : ""}>${view.config.stale ? "Offline copy — read-only" : view.config.empty ? escapeHtml(EMPTY_PAGE_STATUS) : ""}</span>
     <span class="acts" data-shell-acts data-enabled="${view.config.stale ? "false" : "true"}">
       <button type="button" class="act" data-act="pin" data-on="${view.chrome.pinned}" aria-pressed="${view.chrome.pinned}" title="${view.chrome.pinned ? "Pinned in bb" : "Pin in bb"}">${view.chrome.pinned ? "★" : "☆"}</button>
       <a class="act" href="${escapeHtml(view.chrome.hostUrl)}" title="Open this session in bb">bb</a>

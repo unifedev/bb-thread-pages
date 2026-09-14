@@ -1,10 +1,8 @@
-import { parse as parseHtml } from "parse5";
 import { describe, expect, it } from "vitest";
 import { buildGuide } from "../../src/agent/guide.ts";
-import { DEFAULT_PAGE_SEED, renderSeed } from "../../src/agent/seed/seed.ts";
+import { hasSeed, renderSeed } from "../../src/agent/seed/seed.ts";
 import { capabilityRegistry } from "../../src/domain/capabilities/index.ts";
 import { LIMITS } from "../../src/domain/limits.ts";
-import { injectKernel } from "../../src/domain/html/document.ts";
 import { createCoreStorageSite, createPluginPrefixSite } from "../../src/pages/site.ts";
 import { KERNEL_RUNTIME } from "../../src/generated/kernel-runtime.ts";
 import { SHELL_RUNTIME } from "../../src/generated/shell-runtime.ts";
@@ -12,6 +10,10 @@ import { bundleRuntime, RUNTIMES } from "../../scripts/build-runtime.mjs";
 
 const coreGuide = buildGuide(capabilityRegistry, createCoreStorageSite("/base", () => "/files/"));
 const prefixGuide = buildGuide(capabilityRegistry, createPluginPrefixSite("/base"));
+
+function section(guide: string, from: string, to: string): string {
+  return guide.slice(guide.indexOf(from), guide.indexOf(to));
+}
 
 describe("the authoring guide", () => {
   it("documents every capability with its parameters and whether it confirms", () => {
@@ -48,17 +50,32 @@ describe("the authoring guide", () => {
     expect(coreGuide).toContain("320px");
   });
 
-  it("carries a complete starter hub that only uses real capabilities", () => {
-    const section = coreGuide.slice(coreGuide.indexOf("### A starter hub"), coreGuide.indexOf("## Before you save"));
-    for (const method of section.matchAll(/invoke\("([a-z.A-Z]+)"/g)) {
-      expect(capabilityRegistry.get(method[1]!)?.implemented, method[1]).toBe(true);
+  // The product ships nothing for a page to fill in, and the guide may not
+  // smuggle a starting point back in as prose. spec R6.27, DECISIONS D11
+  it("carries no starting design, template, starter page or page shapes", () => {
+    for (const leftover of ["data-theme", "var(--", "starter hub", "What plain HTML already gives you", "@scope", "div.card", "needs-you", "smallest shape"]) {
+      expect(coreGuide, leftover).not.toContain(leftover);
     }
-    expect(section).toContain('e.code === "cancelled"');
-    expect(section).not.toMatch(/window\.(open|prompt|alert|confirm)/);
-    for (const method of ["sessions.snapshot", "projects.list", "pages.open", "sessions.openHost", "sessions.stop", "sessions.archive", "sessions.markRead", "sessions.start", "storage.get", "storage.set"]) {
-      expect(section).toContain(`"${method}"`);
-    }
-    expect(section).toContain("unread");
+    expect(coreGuide).toContain("`init` does not create it, you do");
+    expect(coreGuide).toContain("Nothing is provided to fill in");
+  });
+
+  it("documents controls anywhere on the page, and the open field for anything else", () => {
+    const forms = section(coreGuide, "## Forms", "## Files the reader sends you");
+    expect(forms).toContain('form="that-id"');
+    expect(forms).toContain("marks the page\ndirty");
+    expect(forms).toContain("Always include one empty text field for anything else");
+  });
+
+  it("says what a page is to other services and which servers it can reach", () => {
+    const network = section(coreGuide, "## Network, other services and servers", "## What the sandbox silences");
+    expect(network).toContain("`Origin: null`");
+    expect(network).toContain("`localStorage`");
+    expect(network).toContain("`storage.set`");
+    expect(network).toContain("sign-in");
+    expect(network).toContain("`http://127.0.0.1:8000`");
+    expect(network).toContain("a port it shares for you");
+    expect(network).toContain("preflights");
   });
 
   it("tells the truth about own-file fetch per site strategy", () => {
@@ -67,73 +84,44 @@ describe("the authoring guide", () => {
     expect(prefixGuide).not.toContain("is refused (403)");
   });
 
-  // The one sentence that caused the worst field bug said subresources "load
-  // normally". They do not, on the origin a reader actually uses, and the
-  // guide must not imply that a file beside the page is served as a file.
   // A page written against 1.0.x carries its own copy of the stylesheet and of
   // the old seed comment, so two of the fixes cannot reach it. The guide has to
   // carry the edits themselves, not only a pointer to a file.
   it("tells an author with an older page exactly what to change", () => {
-    const section = coreGuide.slice(coreGuide.indexOf("## If your page predates 1.1"), coreGuide.indexOf("## Limits"));
-    expect(section).toContain("[hidden] { display: none !important; }");
-    expect(section).toContain("Delete the seed's old authoring comment");
-    expect(section).toContain("Move inlined data back out");
-    expect(section).toContain("docs/FOR-PAGE-AUTHORS-1.1.md");
+    const upgrading = section(coreGuide, "## If your page predates 1.1", "## Limits");
+    expect(upgrading).toContain("[hidden] { display: none !important; }");
+    expect(upgrading).toContain("Delete the seed's old authoring comment");
+    expect(upgrading).toContain("Move inlined data back out");
+    expect(upgrading).toContain("docs/FOR-PAGE-AUTHORS-1.1.md");
   });
 
+  // The one sentence that caused the worst field bug said subresources "load
+  // normally". They do not, on the origin a reader actually uses, and the
+  // guide must not imply that a file beside the page is served as a file.
   it("says how a page's own files actually reach the reader, and what it costs", () => {
-    const section = coreGuide.slice(coreGuide.indexOf("## Files you show the reader"), coreGuide.indexOf("## Keeping a page's data current"));
-    expect(section).toContain("carries no credential");
-    expect(section).toContain("`data:` URL");
-    expect(section).toContain("count against the");
-    expect(section).toContain("left as you wrote");
-    expect(section).not.toContain("load normally");
-    expect(section).toContain("so an open page");
+    const files = section(coreGuide, "## Files you show the reader", "## Keeping a page's data current");
+    expect(files).toContain("carries no credential");
+    expect(files).toContain("`data:` URL");
+    expect(files).toContain("count against the");
+    expect(files).toContain("left as you wrote");
+    expect(files).not.toContain("load normally");
+    expect(files).toContain("so an open page");
+  });
+
+  it("describes home as a pointer that never creates content", () => {
+    const home = section(coreGuide, "## The home page", "## Before you save");
+    expect(home).toContain("never creates or touches page");
+    expect(home).not.toContain("invoke(");
   });
 });
 
-describe("the seed", () => {
-  it("is a complete document with a captured form, its own stylesheet and an escaped title", () => {
-    const html = renderSeed(DEFAULT_PAGE_SEED, `Plan <b>"go"</b>`, new Date("2026-09-08T00:00:00Z"));
-    expect(html.startsWith("<!doctype html>")).toBe(true);
-    expect(html).toContain("<title>Plan &lt;b&gt;&quot;go&quot;&lt;/b&gt;</title>");
-    expect(html).toContain("8 September 2026");
-    expect(html).toContain("<form");
-    expect(html).not.toContain("data-thread-page-manual>");
-    expect(html).toContain("<style>");
-    expect(html).not.toContain("{{");
-    const injected = injectKernel(html, { kernel: "K()", config: {}, baseHref: null });
-    expect(injected.indexOf("data-thread-page-kernel")).toBeLessThan(injected.indexOf("<style>"));
-  });
-
-  it("keeps its comment free of tags that would end it early", () => {
-    const comment = DEFAULT_PAGE_SEED.slice(DEFAULT_PAGE_SEED.indexOf("<!--"), DEFAULT_PAGE_SEED.indexOf("-->"));
-    expect(comment).not.toContain("-->");
-  });
-
-  // An agent edits its page with string operations, because the page is a file
-  // and there is no page-editing API. A comment that spells tags out literally
-  // makes every count and every index lie: the seed once mentioned <main> in
-  // prose, so a structural check on a healthy page reported two of them and the
-  // obvious splice started inside the comment. spec R6.18-R6.23
-  it("contains no tag token that is not a real element", () => {
-    const html = renderSeed(DEFAULT_PAGE_SEED, "Title", new Date("2026-09-08T00:00:00Z"));
-    const document = parseHtml(html);
-    const counted = new Map<string, number>();
-    const walk = (node: { tagName?: string; childNodes?: unknown[] }): void => {
-      if (node.tagName) counted.set(node.tagName, (counted.get(node.tagName) ?? 0) + 1);
-      for (const child of node.childNodes ?? []) walk(child as { tagName?: string; childNodes?: unknown[] });
-    };
-    walk(document as unknown as { childNodes: unknown[] });
-
-    for (const tag of ["main", "form", "script", "style", "link", "img", "textarea", "button"]) {
-      const tokens = html.match(new RegExp(`<${tag}[\\s>/]`, "g"))?.length ?? 0;
-      expect(tokens, `<${tag}> tokens in the raw text vs elements in the DOM`).toBe(counted.get(tag) ?? 0);
-    }
-  });
-
-  it("tells an author what to do when the page should stay put", () => {
-    expect(DEFAULT_PAGE_SEED).toContain("delete the reply form");
+describe("an operator's own seed", () => {
+  it("is optional, and substitutes an escaped title and date", () => {
+    expect(hasSeed("")).toBe(false);
+    expect(hasSeed(" \n ")).toBe(false);
+    expect(hasSeed("<!doctype html>")).toBe(true);
+    const html = renderSeed("<title>{{TITLE}}</title><p>{{DATE}}</p>", `Plan <b>"go"</b>`, new Date("2026-09-08T00:00:00Z"));
+    expect(html).toBe("<title>Plan &lt;b&gt;&quot;go&quot;&lt;/b&gt;</title><p>8 September 2026</p>");
   });
 });
 

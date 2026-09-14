@@ -238,6 +238,54 @@ describe("kernel read-only mode", () => {
   });
 });
 
+describe("controls outside their form", () => {
+  const JOINED = `<head></head><body><h1>Joined</h1>
+<section><fieldset><legend>Pick a plan</legend>
+  <label><input type="radio" name="plan" value="a" form="answer" checked> A</label>
+  <label><input type="radio" name="plan" value="b" form="answer"> B</label>
+</fieldset></section>
+<section><label>Notes on B <textarea name="notes" form="answer"></textarea></label>
+  <label>Depth <input type="range" name="depth" value="3" form="answer"></label></section>
+<form id="answer" data-title="Joined"></form>
+<button id="far" form="answer" name="action" value="Send from the card">Send</button>
+</body>`;
+
+  // A question beside the content it concerns still arrives as one answer.
+  // spec R4.5a, DECISIONS D12
+  it("delivers, names, dirties and locks a control joined with form=", () => {
+    const { posted, handle } = install(JOINED);
+    const form = document.getElementById("answer") as HTMLFormElement;
+    const notes = document.querySelector("textarea")!;
+    const far = document.getElementById("far") as HTMLButtonElement;
+    expect(document.querySelector("output[data-thread-page-range]")?.textContent).toBe("3");
+    notes.value = "because";
+    notes.dispatchEvent(new window.Event("input", { bubbles: true }));
+    expect(posted.messages).toContainEqual({ kind: "thread-page:dirty" });
+    submit(form, far);
+    const message = posted.messages.find((entry) => (entry as { kind?: string }).kind === "thread-page:submit") as { submissionId: string; title: string; answers: unknown[] };
+    expect(message.title).toBe("Joined");
+    expect(message.answers).toEqual([
+      { name: "action", label: "Action", value: "Send from the card" },
+      { name: "plan", label: "Pick a plan", value: "a" },
+      { name: "notes", label: "Notes on B", value: "because" },
+      { name: "depth", label: "Depth", value: "3" },
+    ]);
+    expect(notes.disabled).toBe(true);
+    expect(far.disabled).toBe(true);
+    handle.deliver({ kind: "thread-page:submit-result", submissionId: message.submissionId, ok: true, message: "Sent (queued)" });
+    expect(notes.disabled).toBe(false);
+    expect(far.disabled).toBe(false);
+    expect(posted.messages).toContainEqual({ kind: "thread-page:clean" });
+  });
+
+  it("locks joined controls in read-only mode and leaves a manual form's joined controls alone", () => {
+    install(`<head></head><body><form id="a"></form><input name="x" form="a"><form id="m" data-thread-page-manual></form><input name="y" form="m"></body>`, true);
+    const [x, y] = Array.from(document.querySelectorAll("input"));
+    expect(x!.disabled).toBe(true);
+    expect(y!.disabled).toBe(false);
+  });
+});
+
 describe("anchors", () => {
   const base = "https://bb.example/api/v1/threads/thr_a/thread-storage/files/";
   const documentUrl = "https://bb.example/api/v1/plugins/thread-pages/http/document?session=thr_a";

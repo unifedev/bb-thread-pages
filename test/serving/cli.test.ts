@@ -1,6 +1,8 @@
 import { makePluginAgentConfigurationContext } from "@get-bb/plugin-sdk/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_AGENT_INSTRUCTION } from "../../src/agent/instruction.ts";
+import { isPastDefault, PAST_DEFAULTS, sha256Hex } from "../../src/config/past-defaults.ts";
+import { readSettings } from "../../src/config/settings.ts";
 import { fileKey, seedSession, sessionRecord } from "../support/fake-host.ts";
 import { loadPlugin, PAGE, ROUTE_BASE, type PluginFixture } from "../support/plugin.ts";
 
@@ -13,29 +15,36 @@ beforeEach(async () => {
 
 afterEach(() => fixture.dispose());
 
+const writes = () => fixture.state.calls.filter((call) => call.method === "files.write");
+const fileText = (session: string) => Buffer.from(fixture.state.files.get(fileKey(session, "index.html"))!).toString("utf8");
+
 describe("bb thread-page init", () => {
-  it("creates the page from the seed once and reports the existing page afterwards", async () => {
+  it("creates nothing by default, tells the agent to write the page, and reports it once it exists", async () => {
     const first = await fixture.cli(["init"], "thr_a");
     expect(first.exitCode).toBe(0);
     expect(first.stdout).toContain("page: /storage/thr_a/index.html");
     expect(first.stdout).toContain(`link: [Open the Thread Page](${ROUTE_BASE}/page?session=thr_a)`);
-    expect(first.stdout).toContain("state: NEW");
+    expect(first.stdout).toContain("state: NEW — no page yet. Write the whole document");
+    expect(first.stdout).toContain("reply in chat with only the link");
     expect(first.stdout).toContain("home: none set. If the reader wants one place to see and steer their sessions, run `bb thread-page home`");
-    const written = Buffer.from(fixture.state.files.get(fileKey("thr_a", "index.html"))!).toString("utf8");
-    expect(written).toContain("<title>My task</title>");
-    expect(written).toContain("<form");
-    const second = await fixture.cli(["init"], "thr_a");
-    expect(second.stdout).toContain("state: EXISTING");
-    expect(Buffer.from(fixture.state.files.get(fileKey("thr_a", "index.html"))!).toString("utf8")).toBe(written);
-    expect(fixture.state.calls.filter((call) => call.method === "files.write")).toHaveLength(2);
+    expect(fixture.state.files.has(fileKey("thr_a", "index.html"))).toBe(false);
+    expect((await fixture.cli(["init"], "thr_a")).stdout).toContain("state: NEW");
+    expect(writes()).toHaveLength(0);
+    fixture.state.files.set(fileKey("thr_a", "index.html"), Buffer.from(PAGE));
+    expect((await fixture.cli(["init"], "thr_a")).stdout).toContain("state: EXISTING");
+    expect(fileText("thr_a")).toBe(PAGE);
   });
 
-  it("escapes the title and prints the public origin when there is one", async () => {
+  it("starts a page from an operator's own seed, escaped and once, and prints the public origin", async () => {
+    await fixture.harness.behavior.setSettings({ pageSeedHtml: "<!doctype html><title>{{TITLE}}</title>" });
     fixture.state.sessions.set("thr_a", sessionRecord({ id: "thr_a", title: `<b>"x"</b>` }));
     fixture.state.publicOrigin = "https://bart.getbb.app";
     const result = await fixture.cli(["init"], "thr_a");
-    expect(Buffer.from(fixture.state.files.get(fileKey("thr_a", "index.html"))!).toString("utf8")).toContain("<title>&lt;b&gt;&quot;x&quot;&lt;/b&gt;</title>");
+    expect(result.stdout).toContain("state: NEW — created from the operator's starting file");
+    expect(fileText("thr_a")).toBe("<!doctype html><title>&lt;b&gt;&quot;x&quot;&lt;/b&gt;</title>");
     expect(result.stdout).toContain("https://bart.getbb.app/api/v1/plugins/thread-pages/http/page?session=thr_a");
+    expect((await fixture.cli(["init"], "thr_a")).stdout).toContain("state: EXISTING");
+    expect(writes()).toHaveLength(1);
   });
 
   it("tells an ineligible or missing session to skip and creates nothing", async () => {
@@ -59,21 +68,29 @@ describe("bb thread-page init", () => {
 });
 
 describe("bb thread-page home", () => {
-  it("sets a pointer, seeds a missing page, never overwrites an existing one, and warns about a previous home", async () => {
+  it("sets a pointer, creates nothing, never overwrites an existing page, and warns about a previous home", async () => {
     const result = await fixture.cli(["home"], "thr_a");
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("home: thr_a");
-    expect(result.stdout).toContain("state: NEW");
+    expect(result.stdout).toContain("state: NO PAGE YET");
+    expect(fixture.state.files.has(fileKey("thr_a", "index.html"))).toBe(false);
     expect(fixture.serving.settings.current().homeSessionId).toBe("thr_a");
     expect((await fixture.cli(["init"], "thr_a")).stdout).toContain("home: this page is the home page");
     seedSession(fixture.state, "thr_b", PAGE, { title: "Hub" });
     const second = await fixture.cli(["home"], "thr_b");
     expect(second.stdout).toContain("warning: home was “My task” (thr_a)");
     expect(second.stdout).toContain("state: EXISTING");
-    expect(Buffer.from(fixture.state.files.get(fileKey("thr_b", "index.html"))!).toString("utf8")).toBe(PAGE);
+    expect(fileText("thr_b")).toBe(PAGE);
     const cleared = await fixture.cli(["home", "--clear"]);
     expect(cleared.stdout).toContain("cleared");
     expect(fixture.serving.settings.current().homeSessionId).toBe("");
+  });
+
+  it("creates nothing even when an operator seed is configured", async () => {
+    await fixture.harness.behavior.setSettings({ pageSeedHtml: "<title>{{TITLE}}</title>" });
+    await fixture.cli(["home"], "thr_a");
+    expect(fixture.state.files.has(fileKey("thr_a", "index.html"))).toBe(false);
+    expect(writes()).toHaveLength(0);
   });
 
   it("refuses an ineligible session", async () => {
@@ -95,10 +112,11 @@ describe("bb thread-page guide and status", () => {
   it("shows settings, the effective instruction, and this session's page", async () => {
     const off = await fixture.cli(["status"], "thr_a");
     expect(off.stdout).toContain("agentInstructions: off");
+    expect(off.stdout).toContain("pageSeedHtml: (empty — init creates no file");
     expect(off.stdout).toContain("(none — agentInstructions is off)");
     expect(off.stdout).toContain("revision: This session has no page yet");
     await fixture.harness.behavior.setSettings({ agentInstructions: true });
-    await fixture.cli(["init"], "thr_a");
+    fixture.state.files.set(fileKey("thr_a", "index.html"), Buffer.from(PAGE));
     const on = await fixture.cli(["status"], "thr_a");
     expect(on.stdout).toContain("# The page is the conversation");
     expect(on.stdout).toContain("page: /storage/thr_a/index.html");
@@ -125,25 +143,42 @@ describe("the standing instruction", () => {
     expect((await fixture.harness.behavior.resolveAgentConfiguration(root)).instructions).toBe("Custom text");
   });
 
-  it("stays under the host's 4096-character cap and teaches one-agent-one-page", () => {
+  it("stays under the host's 4096-character cap, teaches one-agent-one-page, and prescribes no design", () => {
     expect(DEFAULT_AGENT_INSTRUCTION.length).toBeLessThan(4096);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/yours alone/);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/start a\s+session with instructions to build it/);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/forms\s+start fresh sessions/);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/SKIP/);
     expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/bb thread-page guide/);
-    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/## The home page/);
+    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/only the link/);
+    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/when the session starts/);
+    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/## Built for this task/);
+    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/## Answering where they read/);
+    expect(DEFAULT_AGENT_INSTRUCTION).toMatch(/empty\s+text field for anything else/);
+    expect(DEFAULT_AGENT_INSTRUCTION).not.toMatch(/already styled|<fieldset>|radios|checkboxes|## The home page/);
   });
 });
 
 describe("settings", () => {
   it("apply live and never rewrite an existing page", async () => {
-    await fixture.cli(["init"], "thr_a");
-    const before = Buffer.from(fixture.state.files.get(fileKey("thr_a", "index.html"))!).toString("utf8");
-    await fixture.harness.behavior.setSettings({ pageSeedHtml: "<!doctype html><html><head><title>{{TITLE}}</title></head><body><form></form></body></html>" });
-    expect(Buffer.from(fixture.state.files.get(fileKey("thr_a", "index.html"))!).toString("utf8")).toBe(before);
+    seedSession(fixture.state, "thr_b", PAGE);
+    await fixture.harness.behavior.setSettings({ pageSeedHtml: "<!doctype html><html><head><title>{{TITLE}}</title></head><body></body></html>" });
+    expect(fileText("thr_b")).toBe(PAGE);
     fixture.state.sessions.set("thr_new", sessionRecord({ id: "thr_new", title: "N" }));
     await fixture.cli(["init"], "thr_new");
-    expect(Buffer.from(fixture.state.files.get(fileKey("thr_new", "index.html"))!).toString("utf8")).toContain("<title>N</title>");
+    expect(fileText("thr_new")).toContain("<title>N</title>");
+  });
+
+  // An install upgraded from 1.2.0 stores the old seed and instruction as its
+  // own values; without this, neither new default would ever reach it.
+  it("read a stored value that is exactly a past default as today's default, and keep an edited one", () => {
+    const known = { agentInstructionText: new Set([sha256Hex("old instruction")]), pageSeedHtml: new Set([sha256Hex("old seed")]) };
+    expect(isPastDefault("pageSeedHtml", "old seed", known)).toBe(true);
+    expect(isPastDefault("pageSeedHtml", "old seed ", known)).toBe(false);
+    expect(isPastDefault("agentInstructionText", "old instruction", known)).toBe(true);
+    expect(PAST_DEFAULTS.pageSeedHtml.has("b1da21f912d912ee3400d40fabc7a1a677679ae55d076b20b5cf0ee299c89593")).toBe(true);
+    expect(PAST_DEFAULTS.agentInstructionText.has("88d9816fb6d27169b151db457df450f076de421cbf68f9b7b140a8483c0f7aef")).toBe(true);
+    const kept = readSettings({ agentInstructions: true, agentInstructionText: "Mine", pageSeedHtml: "<p>mine</p>", workingLabel: " W ", homeSessionId: "" });
+    expect(kept).toEqual({ agentInstructions: true, agentInstructionText: "Mine", pageSeedHtml: "<p>mine</p>", workingLabel: "W", homeSessionId: "" });
   });
 });

@@ -15,6 +15,7 @@ const config: ShellConfig = {
   chromeActionUrl: "/chrome-action",
   workingLabel: "Working",
   stale: false,
+  empty: false,
   pollMs: 10_000,
   maxUploadBytes: 1024,
   maxUploads: 2,

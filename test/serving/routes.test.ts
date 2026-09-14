@@ -36,11 +36,33 @@ describe("the shell", () => {
     const child = await fixture.get(`${ROUTE_BASE}/page?session=thr_child`);
     expect(child.status).toBe(404);
     expect(await child.text()).toMatch(/child of another session/);
-    fixture.state.sessions.set("thr_empty", { ...fixture.state.sessions.get("thr_a")!, id: "thr_empty" });
-    const empty = await fixture.get(`${ROUTE_BASE}/page?session=thr_empty`);
-    expect(empty.status).toBe(404);
-    expect(await empty.text()).toMatch(/bb thread-page init/);
     expect((await fixture.get(`${ROUTE_BASE}/page?session=..%2F..`)).status).toBe(400);
+  });
+
+  // The product ships no starting file, so a link is valid before the first
+  // save. spec R6.18–R6.19
+  it("shows a page its agent has not written yet, and picks it up on the first save", async () => {
+    fixture.state.sessions.set("thr_empty", { ...fixture.state.sessions.get("thr_a")!, id: "thr_empty" });
+    const shell = await fixture.get(`${ROUTE_BASE}/page?session=thr_empty`);
+    expect(shell.status).toBe(200);
+    const html = await shell.text();
+    // The shell's own runtime carries the same sentence, so look at the status element itself.
+    expect(html).toMatch(/data-shell-status>Not written yet/);
+    expect(html).toContain("&quot;empty&quot;:true");
+    const placeholder = await fixture.get(`${ROUTE_BASE}/document?session=thr_empty`);
+    expect(placeholder.status).toBe(200);
+    expect(placeholder.headers.get("x-thread-page-empty")).toBe("true");
+    const etag = placeholder.headers.get("etag")!;
+    expect(await placeholder.text()).toContain("has not written its page yet");
+    expect((await fixture.get(`${ROUTE_BASE}/document?session=thr_empty`, { "if-none-match": etag })).status).toBe(304);
+    fixture.state.files.set(fileKey("thr_empty", "index.html"), Buffer.from(PAGE));
+    const written = await fixture.get(`${ROUTE_BASE}/document?session=thr_empty`, { "if-none-match": etag });
+    expect(written.status).toBe(200);
+    expect(written.headers.get("x-thread-page-empty")).toBeNull();
+    expect(written.headers.get("etag")).toBe(`"${revisionOf(PAGE)}"`);
+    const after = await (await fixture.get(`${ROUTE_BASE}/page?session=thr_empty`)).text();
+    expect(after).not.toMatch(/data-shell-status>Not written yet/);
+    expect(after).toContain("&quot;empty&quot;:false");
   });
 
   it("links to home from every page but home, and degrades on a stale pointer", async () => {

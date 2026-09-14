@@ -17,6 +17,7 @@ const config: ShellConfig = {
   chromeActionUrl: "/chrome-action",
   workingLabel: "Working",
   stale: false,
+  empty: false,
   pollMs: 10_000,
   maxUploadBytes: 1024,
   maxUploads: 2,
@@ -188,6 +189,21 @@ describe("shell poller", () => {
     expect(seen.setStatus).toHaveBeenCalledWith("Page changed — reload when ready", true);
     poller.setDirty(false);
     etag.value = `"${"3".repeat(64)}"`;
+    await poller.pollNow();
+    expect(seen.reloadView).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps saying a page is not written yet until the agent saves it, then reloads", async () => {
+    let empty = "true";
+    let etag = `"${REV}"`;
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 304, headers: { etag, "x-thread-page-activity": "idle", "x-thread-page-stale": "false", ...(empty === "true" ? { "x-thread-page-empty": "true" } : {}) } }));
+    const seen = view();
+    const poller = createPoller(window, { ...config, empty: true }, seen, fetchImpl as never);
+    await poller.pollNow();
+    expect(seen.setStatus).toHaveBeenLastCalledWith("Not written yet — the page appears here as soon as the agent saves it", false);
+    expect(seen.reloadView).not.toHaveBeenCalled();
+    empty = "false";
+    etag = `"${"4".repeat(64)}"`;
     await poller.pollNow();
     expect(seen.reloadView).toHaveBeenCalledTimes(1);
   });

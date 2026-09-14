@@ -274,736 +274,10 @@ function escapeHtml(value) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
-// src/agent/seed/theme-css.ts
-var THEME_CSS = String.raw`
-  :root {
-    --bg:        #fbfbfa;
-    --surface:   #ffffff;
-    --ink:       #16181d;
-    --ink-2:     #4a5058;
-    --ink-3:     #767d87;
-    --rule:      #e3e4e6;
-    --rule-soft: #eeeff0;
-    --accent:    #2f5cc7;
-    --flag:      #a8410f;
-    --ok:        #1f6b45;
-    --code-bg:   #f2f3f4;
-    --measure:   34rem;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg:        #121316;
-      --surface:   #191b1f;
-      --ink:       #e9eaec;
-      --ink-2:     #b0b5bc;
-      --ink-3:     #838a93;
-      --rule:      #2c2f35;
-      --rule-soft: #232227;
-      --accent:    #8aa9f0;
-      --flag:      #e8a37a;
-      --ok:        #79c69d;
-      --code-bg:   #22242a;
-    }
-  }
-
-  *, *::before, *::after { box-sizing: border-box; }
-
-  /* A class rule that sets display outranks the user-agent rule for the
-     hidden attribute, so a page that styles .banner with display:flex would
-     render a hidden banner as an empty bar. This keeps hidden meaning hidden. */
-  [hidden] { display: none !important; }
-
-  html { -webkit-text-size-adjust: 100%; }
-
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--ink);
-    font: 400 16.5px/1.6 ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
-    font-feature-settings: "kern", "liga";
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
-  }
-
-  .wrap {
-    max-width: calc(var(--measure) + 6rem);
-    margin: 0 auto;
-    padding: 4.5rem 3rem 8rem;
-  }
-  @media (max-width: 640px) { .wrap { padding: 2.5rem 1.25rem 5rem; } }
-
-  /* ---- header ---- */
-
-  header.brief-head {
-    padding-bottom: 1.75rem;
-    margin-bottom: 3rem;
-    border-bottom: 1px solid var(--rule);
-  }
-  header.brief-head h1 {
-    margin: 0;
-    font-size: 1.9rem;
-    line-height: 1.2;
-    font-weight: 640;
-    letter-spacing: -0.021em;
-    text-wrap: balance;
-  }
-  .brief-meta {
-    margin: 0.85rem 0 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.45rem 1.15rem;
-    font-size: 0.78rem;
-    line-height: 1.4;
-    color: var(--ink-3);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* ---- rhythm ---- */
-
-  main > * + * { margin-top: 1.05rem; }
-
-  h2 {
-    margin: 3rem 0 0;
-    font-size: 1.16rem;
-    line-height: 1.3;
-    font-weight: 620;
-    letter-spacing: -0.012em;
-  }
-  h2 + * { margin-top: 0.85rem; }
-
-  h3 {
-    margin: 2rem 0 0;
-    font-size: 0.94rem;
-    line-height: 1.35;
-    font-weight: 640;
-    letter-spacing: 0.005em;
-    color: var(--ink-2);
-  }
-  h3 + * { margin-top: 0.6rem; }
-
-  p, li { max-width: var(--measure); color: var(--ink-2); }
-  p { margin: 0; }
-  main > p:first-child { font-size: 1.06rem; color: var(--ink); }
-
-  ul, ol { margin: 0; padding-left: 1.3rem; }
-  li + li { margin-top: 0.42rem; }
-  li::marker { color: var(--ink-3); }
-
-  strong { font-weight: 620; color: var(--ink); }
-  em { font-style: italic; }
-
-  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
-  a:hover { text-decoration-thickness: 2px; }
-
-  code {
-    font: 0.85em/1.5 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-    background: var(--code-bg);
-    padding: 0.13em 0.36em;
-    border-radius: 4px;
-  }
-  pre {
-    margin: 0;
-    background: var(--code-bg);
-    border: 1px solid var(--rule-soft);
-    border-radius: 8px;
-    padding: 0.9rem 1.05rem;
-    overflow-x: auto;
-    font: 0.83rem/1.6 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-  }
-  pre code { background: none; padding: 0; }
-
-  hr {
-    margin: 3rem 0;
-    border: 0;
-    border-top: 1px solid var(--rule);
-  }
-
-  /* ---- callouts: use sparingly ---- */
-
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    border-radius: 10px;
-    padding: 1.15rem 1.3rem;
-  }
-  .card > * + * { margin-top: 0.7rem; }
-  .card > h3:first-child { margin-top: 0; }
-
-  .needs-you {
-    border-left: 3px solid var(--flag);
-    padding: 0.15rem 0 0.15rem 1.05rem;
-  }
-  .needs-you > * + * { margin-top: 0.55rem; }
-
-  .label {
-    display: inline-block;
-    font-size: 0.68rem;
-    font-weight: 660;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-    color: var(--flag);
-  }
-  .label.done { color: var(--ok); }
-
-  table {
-    border-collapse: collapse;
-    width: 100%;
-    font-size: 0.9rem;
-  }
-  th, td {
-    text-align: left;
-    padding: 0.55rem 0.9rem 0.55rem 0;
-    border-bottom: 1px solid var(--rule-soft);
-    vertical-align: top;
-  }
-  th {
-    font-weight: 620;
-    font-size: 0.75rem;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-  }
-  td { color: var(--ink-2); }
-
-  /* ---- forms ----------------------------------------------------------
-     Styled off semantic structure, not classes, so a page only ever needs
-     plain HTML: fieldset/legend for a group, a wrapping label for a single
-     control, small for a hint, button for an action. ------------------- */
-
-  form {
-    margin-top: 1.75rem;
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    border-radius: 10px;
-    padding: 1.4rem 1.45rem 1.3rem;
-  }
-  form > * + * { margin-top: 1.25rem; }
-
-  /* 'margin: 0' here used to beat 'form > * + *' on specificity, so two groups
-     of choices in a row ran together with no gap between them. */
-  form fieldset { padding: 0; border: 0; min-width: 0; }
-  form > fieldset { margin: 0; }
-  form > fieldset + fieldset,
-  form > * + fieldset,
-  form > fieldset + * { margin-top: 1.25rem; }
-  form legend,
-  form > label,
-  .field > label {
-    display: block;
-    padding: 0;
-    font-size: 0.82rem;
-    font-weight: 620;
-    letter-spacing: 0.005em;
-    color: var(--ink);
-  }
-  form legend { margin-bottom: 0.5rem; }
-
-  form small, .field .hint {
-    display: block;
-    margin-top: 0.35rem;
-    font-size: 0.78rem;
-    line-height: 1.45;
-    color: var(--ink-3);
-  }
-
-  form input[type="file"] {
-    display: block; margin-top: 0.45rem; font: inherit; font-size: 0.85rem;
-    color: var(--ink-2); max-width: 100%;
-  }
-  form input[type="file"]::file-selector-button {
-    font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer;
-    color: var(--accent); background: transparent;
-    border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * 0.6);
-    padding: 0.35rem 0.75rem; margin-right: 0.6rem;
-  }
-  form input[type="text"], form input[type="number"], form input[type="url"],
-  form input[type="email"], form input[type="date"], form textarea, form select {
-    display: block;
-    width: 100%;
-    margin-top: 0.45rem;
-    font: inherit;
-    font-size: 0.92rem;
-    color: var(--ink);
-    background: var(--bg);
-    border: 1px solid var(--rule);
-    border-radius: 7px;
-    padding: 0.5rem 0.65rem;
-  }
-  form textarea { resize: vertical; min-height: 4.5rem; line-height: 1.55; }
-  form :focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -1px;
-  }
-
-  /* One option row: a label wrapping a radio or checkbox. */
-  form label:has(> input[type="radio"]),
-  form label:has(> input[type="checkbox"]),
-  .choice {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.55rem;
-    font-size: 0.9rem;
-    font-weight: 400;
-    color: var(--ink-2);
-    cursor: pointer;
-  }
-  form label:has(> input[type="radio"]) + label,
-  form label:has(> input[type="checkbox"]) + label,
-  .choice + .choice { margin-top: 0.4rem; }
-  form input[type="radio"], form input[type="checkbox"] {
-    margin: 0.3rem 0 0;
-    flex: none;
-    accent-color: var(--accent);
-  }
-
-  form label:has(> input[type="range"]) {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    font-size: 0.9rem;
-    font-weight: 400;
-    color: var(--ink-2);
-  }
-  form input[type="range"] { flex: 1; min-width: 8rem; accent-color: var(--accent); }
-  [data-thread-page-range] {
-    flex: none;
-    min-width: 2.2rem;
-    text-align: right;
-    font-size: 0.85rem;
-    font-variant-numeric: tabular-nums;
-    color: var(--ink);
-  }
-
-  [data-thread-page-status] {
-    margin-top: 0.9rem;
-    font-size: 0.82rem;
-    line-height: 1.5;
-    color: var(--ink-3);
-  }
-  [data-thread-page-status][data-state="error"] { color: var(--flag); }
-  [data-thread-page-status][data-state="sent"] { color: var(--ok); }
-
-  @media print {
-    body { background: #fff; color: #000; }
-    .wrap { padding: 0; max-width: none; }
-    form { display: none; }
-  }
-  /* ====================================================================
-     FIVE WORLDS
-
-     A theme here is not a palette. It is a palette, a typeface, a shape
-     language, a way a screen arrives, an atmosphere, and — the part that
-     matters most — its own idea of what an interactive thing looks like.
-     Picking one changes how you choose and how you commit, not just what
-     it costs to look at.
-
-     Each theme declares both palettes at once as --l-* and --d-*; one
-     resolver below maps the live half onto the tokens the base stylesheet
-     already uses. The same declarations carry [data-world="x"], which is how
-     a card on screen 1 renders a fragment of a page in a world you have not
-     entered yet.
-     ==================================================================== */
-
-  /* ---- 1. paper — quiet document. Nothing to notice. ---- */
-  [data-theme="paper"], [data-world="paper"] {
-    --l-bg:#fbfbfa; --l-surface:#ffffff; --l-ink:#16181d; --l-ink-2:#4a5058;
-    --l-ink-3:#6c737c; --l-rule:#e3e4e6; --l-rule-soft:#eeeff0; --l-code:#f2f3f4;
-    --l-ah:222; --l-as:62; --l-al:48; --l-flag:#a8410f; --l-ok:#1f6b45;
-    --d-bg:#121316; --d-surface:#191b1f; --d-ink:#e9eaec; --d-ink-2:#b0b5bc;
-    --d-ink-3:#838a93; --d-rule:#2c2f35; --d-rule-soft:#232227; --d-code:#22242a;
-    --d-ah:222; --d-as:70; --d-al:74; --d-flag:#e8a37a; --d-ok:#79c69d;
-    --font-body: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
-    --font-head: var(--font-body);
-    --radius:10px; --rule-w:1px; --head-weight:640; --head-track:-0.021em;
-    --measure:34rem; --shadow:none; --label-case:uppercase; --caps-track:0.07em;
-    --h1-size:1.9rem; --h1-lh:1.2;
-  }
-
-  /* ---- 2. terminal — console. Everything on a grid, nothing rounded. ---- */
-  [data-theme="terminal"], [data-world="terminal"] {
-    --l-bg:#f6f6f2; --l-surface:#ffffff; --l-ink:#15201a; --l-ink-2:#3c4a42;
-    --l-ink-3:#646f69; --l-rule:#c9d2cb; --l-rule-soft:#e2e7e2; --l-code:#eaeee9;
-    --l-ah:150; --l-as:88; --l-al:26; --l-flag:#a33a10; --l-ok:#14663c;
-    --d-bg:#080b09; --d-surface:#0d120e; --d-ink:#cfe6d5; --d-ink-2:#94b39d;
-    --d-ink-3:#6b8573; --d-rule:#20301e; --d-rule-soft:#161f16; --d-code:#111811;
-    --d-ah:150; --d-as:64; --d-al:62; --d-flag:#e0a44f; --d-ok:#63d18e;
-    --font-body: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-    --font-head: var(--font-body);
-    --radius:0px; --rule-w:1px; --head-weight:700; --head-track:0em;
-    --measure:33rem; --shadow:none; --label-case:uppercase; --caps-track:0.14em;
-    --h1-size:1.6rem; --h1-lh:1.25;
-  }
-
-  /* ---- 3. atrium — daylight on paper. Warm, serif, things have weight. ---- */
-  [data-theme="atrium"], [data-world="atrium"] {
-    --l-bg:#f6f2e9; --l-surface:#fffdf8; --l-ink:#1e1a14; --l-ink-2:#4b4337;
-    --l-ink-3:#726958; --l-rule:#ddd5c4; --l-rule-soft:#ebe5d8; --l-code:#efe9db;
-    --l-ah:142; --l-as:34; --l-al:30; --l-flag:#8a4b18; --l-ok:#2c5f3f;
-    --d-bg:#16150f; --d-surface:#1f1d15; --d-ink:#f1ebdc; --d-ink-2:#c2b9a3;
-    --d-ink-3:#8f8672; --d-rule:#33301f; --d-rule-soft:#262418; --d-code:#242216;
-    --d-ah:130; --d-as:32; --d-al:66; --d-flag:#d99a5e; --d-ok:#8fc2a0;
-    --font-body: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
-    --font-head: var(--font-body);
-    --radius:14px; --rule-w:1px; --head-weight:600; --head-track:-0.008em;
-    --measure:38rem;
-    --shadow: 0 1px 2px rgba(40,30,10,.06), 0 10px 30px -14px rgba(40,30,10,.28);
-    --label-case:none; --caps-track:0.02em;
-    --h1-size:2.15rem; --h1-lh:1.15;
-  }
-
-  /* ---- 4. volume — depth. A lit scene with the page standing in it. ---- */
-  [data-theme="volume"], [data-world="volume"] {
-    --l-bg:#eef1f6; --l-surface:#ffffff; --l-ink:#0d1424; --l-ink-2:#3a4658;
-    --l-ink-3:#5e687b; --l-rule:#ccd4e2; --l-rule-soft:#e0e6ef; --l-code:#e6ebf3;
-    --l-ah:196; --l-as:78; --l-al:32; --l-flag:#9c4415; --l-ok:#136b58;
-    --d-bg:#080b12; --d-surface:#111823; --d-ink:#dfe8f5; --d-ink-2:#a3b2c8;
-    --d-ink-3:#74849b; --d-rule:#1e2a3c; --d-rule-soft:#151d2a; --d-code:#131b27;
-    --d-ah:190; --d-as:82; --d-al:62; --d-flag:#e2a06b; --d-ok:#4fc7ad;
-    --font-body: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
-    --font-head: var(--font-body);
-    --radius:6px; --rule-w:1px; --head-weight:700; --head-track:-0.03em;
-    --measure:34rem;
-    --shadow: 0 2px 4px rgba(0,0,0,.18), 0 22px 40px -20px rgba(0,0,0,.45);
-    --label-case:uppercase; --caps-track:0.11em;
-    --h1-size:2.1rem; --h1-lh:1.1;
-  }
-
-  /* ---- 5. bloom — shapes and colour. Big type, soft mass, round everything. ---- */
-  [data-theme="bloom"], [data-world="bloom"] {
-    --l-bg:#fdf7f4; --l-surface:#ffffff; --l-ink:#1d1226; --l-ink-2:#4c3a59;
-    --l-ink-3:#75647f; --l-rule:#ecdfe6; --l-rule-soft:#f5eef1; --l-code:#f6eef4;
-    --l-ah:330; --l-as:62; --l-al:42; --l-flag:#b03d24; --l-ok:#2f6b58;
-    --d-bg:#150e1c; --d-surface:#211729; --d-ink:#f4ecf6; --d-ink-2:#c0aecb;
-    --d-ink-3:#95839f; --d-rule:#33243d; --d-rule-soft:#261a2e; --d-code:#281c32;
-    --d-ah:326; --d-as:76; --d-al:72; --d-flag:#f0a184; --d-ok:#7fd0b4;
-    --font-body: "Avenir Next", Avenir, "Futura", ui-rounded, ui-sans-serif, -apple-system, system-ui, sans-serif;
-    --font-head: var(--font-body);
-    --radius:22px; --rule-w:1.5px; --head-weight:700; --head-track:-0.035em;
-    --measure:32rem;
-    --shadow: 0 2px 6px rgba(60,20,60,.06), 0 18px 40px -18px rgba(60,20,60,.22);
-    --label-case:none; --caps-track:0.03em;
-    --h1-size:2.6rem; --h1-lh:1.02;
-  }
-
-  /* ---- the resolver: which half of a palette is live ---- */
-
-  :root, [data-world] {
-    --bg:var(--l-bg); --surface:var(--l-surface); --ink:var(--l-ink);
-    --ink-2:var(--l-ink-2); --ink-3:var(--l-ink-3); --rule:var(--l-rule);
-    --rule-soft:var(--l-rule-soft); --code-bg:var(--l-code);
-    --ah:var(--l-ah); --as:var(--l-as); --al:var(--l-al);
-    --flag:var(--l-flag); --ok:var(--l-ok);
-  }
-  @media (prefers-color-scheme: dark) {
-    :root[data-mode="system"], :root[data-mode="system"] [data-world] {
-      --bg:var(--d-bg); --surface:var(--d-surface); --ink:var(--d-ink);
-      --ink-2:var(--d-ink-2); --ink-3:var(--d-ink-3); --rule:var(--d-rule);
-      --rule-soft:var(--d-rule-soft); --code-bg:var(--d-code);
-      --ah:var(--d-ah); --as:var(--d-as); --al:var(--d-al);
-      --flag:var(--d-flag); --ok:var(--d-ok);
-    }
-  }
-  :root[data-mode="dark"], :root[data-mode="dark"] [data-world] {
-    --bg:var(--d-bg); --surface:var(--d-surface); --ink:var(--d-ink);
-    --ink-2:var(--d-ink-2); --ink-3:var(--d-ink-3); --rule:var(--d-rule);
-    --rule-soft:var(--d-rule-soft); --code-bg:var(--d-code);
-    --ah:var(--d-ah); --as:var(--d-as); --al:var(--d-al);
-    --flag:var(--d-flag); --ok:var(--d-ok);
-  }
-
-  /* Accent is composed, so the hue slider moves one number and saturation and
-     lightness stay where the theme put them — which is what stops a dragged
-     hue quietly failing contrast. */
-  :root, [data-world] {
-    --accent: hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 1%));
-    --accent-soft: hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 1%) / 0.12);
-    --accent-line: hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 1%) / 0.42);
-  }
-
-  /* ---- motion, declared at its reduced value ----
-     Stillness is the default and movement is the enhancement, so a reader who
-     asked for less and a reader who said nothing get the same page. */
-  :root { --dur: 0ms; --slow: 0ms; --ease: cubic-bezier(.2,.75,.25,1); }
-  @media (prefers-reduced-motion: no-preference) {
-    :root { --dur: 220ms; --slow: 620ms; }
-  }
-
-  /* ---- density: two numbers the reader drags ---- */
-  :root { --space: 1; --size: 16.5px; }
-
-  body { font-family: var(--font-body); font-size: var(--size); }
-  h1, h2, h3, legend, .h { font-family: var(--font-head); }
-  /* The base sheet sizes the h1 through 'header.brief-head h1', which outranks a
-     bare 'h1' — so the world's own display scale has to be stated there too. */
-  header.brief-head h1, h1 {
-    font-size: var(--h1-size); line-height: var(--h1-lh);
-    font-weight: var(--head-weight); letter-spacing: var(--head-track);
-  }
-  h2 { font-weight: var(--head-weight); letter-spacing: var(--head-track); }
-  p, li { max-width: var(--measure); }
-
-  /* Prose stays inside --measure through 'p, li'; the page itself is wider so a
-     picker is not forced into one column. */
-  .wrap { max-width: calc(var(--measure) + 12rem);
-          padding: calc(3rem * var(--space)) 3rem calc(5rem * var(--space)); }
-  /* This rule sits after the base sheet's own narrow-screen padding and so
-     replaced it. On a 320 px screen that was 48 px of gutter each side — a
-     third of the width — until it was measured. */
-  @media (max-width: 40rem) {
-    .wrap { padding: calc(2.2rem * var(--space)) 1.15rem calc(4rem * var(--space)); }
-  }
-  main > * + * { margin-top: calc(1.05rem * var(--space)); }
-  h2 { margin-top: calc(2.4rem * var(--space)); }
-  h2 + * { margin-top: calc(0.8rem * var(--space)); }
-  .card { border-radius: var(--radius); box-shadow: var(--shadow);
-          padding: calc(1.1rem * var(--space)) 1.25rem; }
-  form { border-radius: var(--radius); box-shadow: var(--shadow); }
-  pre, code { border-radius: calc(var(--radius) * 0.35); }
-  th, .label { text-transform: var(--label-case); letter-spacing: var(--caps-track); }
-  hr, header.brief-head { border-color: var(--rule); }
-  header.brief-head { border-bottom-width: var(--rule-w); }
-
-  body { transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
-
-  /* ---- atmosphere -----------------------------------------------------
-     Every peak colour below is opaque and sits a few percent from its own
-     --bg, so the composite between them is bounded by two colours that can
-     both be measured. That is what makes an atmosphere layer checkable
-     rather than hoped about, and the page is complete with it off. */
-
-  [data-theme="paper"],    [data-world="paper"]    { --l-atmos-1:#fbfbfa; --l-atmos-2:#fbfbfa; --d-atmos-1:#121316; --d-atmos-2:#121316; }
-  [data-theme="terminal"], [data-world="terminal"] { --l-atmos-1:#f0f2ec; --l-atmos-2:#f2f4ef; --d-atmos-1:#0b110c; --d-atmos-2:#091009; }
-  [data-theme="atrium"],   [data-world="atrium"]   { --l-atmos-1:#fdf8ec; --l-atmos-2:#f2ecdf; --d-atmos-1:#1e1c13; --d-atmos-2:#100f0a; }
-  [data-theme="volume"],   [data-world="volume"]   { --l-atmos-1:#ffffff; --l-atmos-2:#e4e9f1; --d-atmos-1:#101927; --d-atmos-2:#04060a; }
-  [data-theme="bloom"],    [data-world="bloom"]    { --l-atmos-1:#fbe9f1; --l-atmos-2:#ebf1fd; --d-atmos-1:#241430; --d-atmos-2:#10182c; }
-
-  :root, [data-world] { --atmos-1:var(--l-atmos-1); --atmos-2:var(--l-atmos-2); }
-  @media (prefers-color-scheme: dark) {
-    :root[data-mode="system"], :root[data-mode="system"] [data-world] {
-      --atmos-1:var(--d-atmos-1); --atmos-2:var(--d-atmos-2);
-    }
-  }
-  :root[data-mode="dark"], :root[data-mode="dark"] [data-world] {
-    --atmos-1:var(--d-atmos-1); --atmos-2:var(--d-atmos-2);
-  }
-
-  html { background: var(--bg); }
-  body { background: none; }
-
-  .atmosphere { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
-  :root[data-atmos="off"] .atmosphere { display: none; }
-
-  :root[data-theme="paper"] .atmosphere { display: none; }
-
-  /* terminal: a faint character grid, because that is what it is made of */
-  :root[data-theme="terminal"] .atmosphere {
-    background-image:
-      linear-gradient(to right, var(--atmos-1) 1px, transparent 1px),
-      linear-gradient(to bottom, var(--atmos-1) 1px, transparent 1px);
-    background-size: 1.1rem 1.65rem;
-  }
-  /* atrium: light from the upper left, and the floor falling away */
-  :root[data-theme="atrium"] .atmosphere {
-    background:
-      radial-gradient(70rem 42rem at 12% -12%, var(--atmos-1), transparent 68%),
-      linear-gradient(to bottom, transparent 55%, var(--atmos-2));
-  }
-  /* volume: one light source and a hard vignette, so the page reads as an object */
-  :root[data-theme="volume"] .atmosphere {
-    background:
-      radial-gradient(46rem 34rem at 50% -8%, var(--atmos-1), transparent 62%),
-      radial-gradient(90rem 70rem at 50% 120%, var(--atmos-2), transparent 70%);
-  }
-  /* bloom: mass and colour, nothing representational */
-  :root[data-theme="bloom"] .atmosphere {
-    background:
-      radial-gradient(32rem 32rem at 8% 4%, var(--atmos-1), transparent 62%),
-      radial-gradient(28rem 28rem at 96% 22%, var(--atmos-2), transparent 60%),
-      radial-gradient(38rem 26rem at 40% 108%, var(--atmos-1), transparent 66%);
-  }
-
-
-  /* ====================================================================
-     THE WORLD, APPLIED TO A PAGE
-
-     Above this line is the design system: five worlds, one resolver. Below
-     it is how a page written in plain semantic HTML picks the current world
-     up — no class names, because the authoring rule is that a page is plain
-     HTML and the conventions live here.
-
-     To change the whole system's look, change one attribute on <html>:
-         data-theme="paper | terminal | atrium | volume | bloom"
-     ==================================================================== */
-
-  /* ---- choosing: how a picked option reads, per world ---------------- */
-
-  form label:has(> input[type="radio"]),
-  form label:has(> input[type="checkbox"]) {
-    flex-wrap: wrap;
-    padding: 0.28rem 0.5rem;
-    margin-left: -0.5rem;
-    border-radius: calc(var(--radius) * 0.6);
-    transition: transform var(--dur) var(--ease), background-color var(--dur) var(--ease),
-                box-shadow var(--dur) var(--ease), color var(--dur) var(--ease);
-  }
-  /* A hint belongs under the option it qualifies, not squeezed beside it. */
-  form label:has(> input[type="radio"]) > small,
-  form label:has(> input[type="checkbox"]) > small {
-    flex: 0 0 100%; margin-left: 1.35rem; margin-top: 0.2rem;
-  }
-  form label:has(input:checked) { color: var(--ink); }
-
-  :root[data-theme="paper"] form label:has(input:checked) {
-    box-shadow: inset 2px 0 0 var(--accent);
-  }
-
-  /* terminal draws its own control, because a native radio is not made of
-     characters and everything else in this world is */
-  :root[data-theme="terminal"] form input[type="radio"],
-  :root[data-theme="terminal"] form input[type="checkbox"] { position: absolute; opacity: 0; }
-  :root[data-theme="terminal"] form label:has(> input[type="radio"])::before,
-  :root[data-theme="terminal"] form label:has(> input[type="checkbox"])::before {
-    content: "[ ]"; flex: none; color: var(--ink-3); letter-spacing: -0.05em;
-  }
-  :root[data-theme="terminal"] form label:has(input:checked)::before {
-    content: "[\2588]"; color: var(--accent);
-  }
-  :root[data-theme="terminal"] form label:has(input:checked) { background: var(--rule-soft); }
-  :root[data-theme="terminal"] form label:has(> input[type="radio"]) > small,
-  :root[data-theme="terminal"] form label:has(> input[type="checkbox"]) > small { margin-left: 2.1rem; }
-
-  :root[data-theme="atrium"] form label:has(input:checked) {
-    background: var(--surface); transform: translateY(-2px); box-shadow: var(--shadow);
-  }
-
-  :root[data-theme="volume"] form fieldset { perspective: 900px; }
-  :root[data-theme="volume"] form label:has(input:checked) {
-    background: var(--surface); box-shadow: var(--shadow);
-    border-left: 2px solid var(--accent);
-    transform: rotateY(-2.2deg) translateZ(16px);
-  }
-
-  :root[data-theme="bloom"] form label:has(> input[type="radio"]),
-  :root[data-theme="bloom"] form label:has(> input[type="checkbox"]) {
-    border-radius: 99px; margin-left: 0; padding: 0.34rem 0.85rem;
-  }
-  :root[data-theme="bloom"] form label:has(input:checked) {
-    background: var(--accent); color: var(--bg);
-  }
-
-  /* ---- committing: the primary action in the world's own material -----
-     Scoped to a form's own children so the dictation button, which lives
-     inside a .voice-field, keeps its own shape. */
-
-  form > button, form > p > button {
-    font: inherit; font-size: 0.9rem; font-weight: 640; cursor: pointer;
-    color: var(--bg); background: var(--accent);
-    border: var(--rule-w) solid var(--accent);
-    border-radius: calc(var(--radius) * 0.7);
-    padding: 0.55rem 1.15rem;
-    transition: transform var(--dur) var(--ease), filter var(--dur) var(--ease),
-                box-shadow var(--dur) var(--ease);
-  }
-  form > button + button, form > p > button + button { margin-left: 0.45rem; }
-  form > button:first-of-type, form > p > button:first-of-type {
-    color: var(--bg); background: var(--accent); border-color: var(--accent);
-  }
-  /* A second button is the alternative, not a rival. */
-  form > button:not(:first-of-type), form > p > button:not(:first-of-type) {
-    color: var(--accent); background: transparent; border-color: var(--rule);
-  }
-  form > button:hover:not(:disabled), form > p > button:hover:not(:disabled) { filter: brightness(1.08); }
-  form > button:disabled, form > p > button:disabled { opacity: 0.5; cursor: default; filter: none; }
-
-  :root[data-theme="terminal"] form > button:first-of-type,
-  :root[data-theme="terminal"] form > p > button:first-of-type {
-    background: var(--surface); color: var(--accent); border-color: var(--rule);
-  }
-  :root[data-theme="terminal"] form > button:hover:not(:disabled),
-  :root[data-theme="terminal"] form > p > button:hover:not(:disabled) { border-color: var(--accent); }
-
-  :root[data-theme="atrium"] form > button:first-of-type,
-  :root[data-theme="atrium"] form > p > button:first-of-type { border-radius: 99px; box-shadow: var(--shadow); }
-
-  /* volume commits by pressing an object, so the button is one: a lit face
-     over a darker edge that the press pushes into the surface */
-  :root[data-theme="volume"] form > button:first-of-type,
-  :root[data-theme="volume"] form > p > button:first-of-type {
-    box-shadow: 0 2px 0 hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 0.6%)),
-                0 8px 16px -8px rgba(0, 0, 0, 0.55);
-  }
-  :root[data-theme="volume"] form > button:active:not(:disabled),
-  :root[data-theme="volume"] form > p > button:active:not(:disabled) {
-    transform: translateY(2px);
-    box-shadow: 0 0 0 hsl(var(--ah) calc(var(--as) * 1%) calc(var(--al) * 0.6%));
-  }
-
-  :root[data-theme="bloom"] form > button:first-of-type,
-  :root[data-theme="bloom"] form > p > button:first-of-type {
-    border-radius: 99px; padding: 0.6rem 1.35rem; font-weight: 700;
-  }
-`;
-
 // src/agent/seed/seed.ts
-var DEFAULT_PAGE_SEED = `<!doctype html>
-<html lang="en" data-theme="volume" data-mode="system" data-atmos="on">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>{{TITLE}}</title>
-  <style>${THEME_CSS}</style>
-</head>
-<body>
-  <div class="atmosphere" aria-hidden="true"></div>
-  <div class="wrap">
-
-  <header class="brief-head">
-    <h1>{{TITLE}}</h1>
-    <p class="brief-meta"><span>{{DATE}}</span></p>
-  </header>
-
-  <!--
-    Everything below is yours: this whole file, including the stylesheet in
-    the head. Rewrite it however the task needs. Two things the file cannot
-    tell you, because they are behaviour rather than markup:
-
-    1. Every form element in this document is captured and delivered to this
-       session as a message. That includes a dialog form you only meant as a
-       local confirm; put data-thread-page-manual on any form that is not
-       meant to answer. Nothing is required and blank is a real answer.
-    2. window.prompt, alert, confirm and window.open do nothing here \u2014 the
-       sandbox silences them. Build the input into the page instead.
-
-    The look is three attributes on the html element. data-theme: paper,
-    terminal, atrium, volume or bloom. data-mode: system, light or dark.
-    data-atmos: on or off.
-
-    If this page should stay put \u2014 a dashboard, a console, a page nobody
-    should have to rewrite \u2014 delete the reply form below and let its buttons
-    start fresh sessions instead. See the guide.
-
-    Everything else \u2014 files beside this one, charts, live session state,
-    starting sessions, links, limits \u2014 is in: bb thread-page guide
-
-    This comment deliberately names no HTML tags. An earlier version spelled
-    them out, and every agent that edited its page by string surgery found
-    tags here that were not in the document. Keep it that way.
-  -->
-  <main>
-    <p>Replace this with what changed and what you need from the reader.</p>
-
-    <form data-title="{{TITLE}}">
-      <label>Reply
-        <textarea name="reply" rows="4"></textarea>
-      </label>
-      <button name="action" value="Reply">Reply</button>
-    </form>
-  </main>
-
-  </div>
-</body>
-</html>
-`;
+function hasSeed(template) {
+  return template.trim().length > 0;
+}
 function renderSeed(template, title2, now = /* @__PURE__ */ new Date()) {
   const date = now.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
   return template.replaceAll("{{TITLE}}", escapeHtml(title2)).replaceAll("{{DATE}}", escapeHtml(date));
@@ -1013,10 +287,10 @@ function renderSeed(template, title2, now = /* @__PURE__ */ new Date()) {
 function registerCli(bb, deps) {
   bb.cli.register({
     name: "thread-page",
-    summary: "The page this session writes for its reader: create it, print the authoring guide, make it home",
+    summary: "The page this session writes for its reader: print its path and link, the authoring guide, make it home",
     commands: [
-      { name: "init", summary: "Create this session's page if absent; print its path and link", usage: "bb thread-page init" },
-      { name: "guide", summary: "Print the authoring guide (forms, files, capabilities, limits)", usage: "bb thread-page guide" },
+      { name: "init", summary: "Print this session's page path and link, and whether the page exists yet", usage: "bb thread-page init" },
+      { name: "guide", summary: "Print the authoring guide (forms, files, other services, capabilities, limits)", usage: "bb thread-page guide" },
       { name: "home", summary: "Make this session's page the home page every page links back to", usage: "bb thread-page home [--clear]" },
       { name: "status", summary: "Show settings, the instruction new sessions get, and this session's page", usage: "bb thread-page status" }
     ],
@@ -1066,32 +340,47 @@ async function link(deps, path) {
   const origin = await deps.serving.host.origin.public();
   return origin ? `${origin}${path}` : path;
 }
-async function ensurePage(deps, id, title2) {
+async function inspectPage(deps, id) {
   const { serving } = deps;
   const location = await serving.host.sessions.storage(id);
-  const seed = renderSeed(serving.settings.current().pageSeedHtml, title2);
-  const outcome = await serving.host.files.write(location, ENTRY_FILE, Buffer.from(seed, "utf8"), { onlyIfAbsent: true });
-  const state = outcome === "written" ? "created" : "existing";
+  const absolutePath = entryPath(location.rootPath);
+  const legacyPath = legacyEntryPath(location.rootPath);
+  const existence = await serving.host.files.exist(location.hostId, [absolutePath, legacyPath]);
+  const state = existence[absolutePath] === true ? "existing" : "absent";
   let problem = null;
-  if (state === "created") {
-    await serving.pages.remember(id, seed);
-  } else {
+  if (state === "existing") {
     try {
       await serving.pages.load(id);
     } catch (error) {
       problem = PageError.is(error) ? error.message : errorText(error);
     }
   }
-  const legacy = await serving.host.files.exist(location.hostId, [legacyEntryPath(location.rootPath)]).then((existence) => existence[legacyEntryPath(location.rootPath)] === true).catch(() => false);
-  return { absolutePath: entryPath(location.rootPath), state, legacy, problem };
+  return { absolutePath, state, legacy: existence[legacyPath] === true, problem };
+}
+async function ensurePage(deps, id, title2) {
+  const { serving } = deps;
+  const report = await inspectPage(deps, id);
+  const template = serving.settings.current().pageSeedHtml;
+  if (report.state !== "absent" || !hasSeed(template)) return report;
+  const location = await serving.host.sessions.storage(id);
+  const seed = renderSeed(template, title2);
+  const outcome = await serving.host.files.write(location, ENTRY_FILE, Buffer.from(seed, "utf8"), { onlyIfAbsent: true });
+  if (outcome !== "written") return { ...report, state: "existing" };
+  await serving.pages.remember(id, seed);
+  return { ...report, state: "created" };
 }
 async function homeLine(deps, current) {
   const home3 = deps.serving.settings.current().homeSessionId;
   if (isSessionId(home3)) {
     return home3 === current ? "home: this page is the home page; every other page links back to it." : `home: ${await link(deps, homeUrl(deps.serving.routeBase))}  (every page links back to it; you never write that link)`;
   }
-  return "home: none set. If the reader wants one place to see and steer their sessions, run `bb thread-page home` in a session dedicated to it and build the hub from `bb thread-page guide` \xA7The home page.";
+  return "home: none set. If the reader wants one place to see and steer their sessions, run `bb thread-page home` in a session dedicated to it and build that page there.";
 }
+var STATE_LINES = {
+  absent: "state: NEW \u2014 no page yet. Write the whole document at the path above; nothing is provided to fill in. Then reply in chat with only the link.",
+  created: "state: NEW \u2014 created from the operator's starting file; it is yours to rewrite for this task. Then reply in chat with only the link.",
+  existing: "state: EXISTING \u2014 read it before editing; update it this turn, keep a way to answer, then reply in chat with only the link."
+};
 async function init(deps, context) {
   const current = await currentSession(deps, context);
   if ("skip" in current) return skipLine(current.skip);
@@ -1100,9 +389,9 @@ async function init(deps, context) {
   const lines = [
     `page: ${absolutePath}`,
     `link: [Open the Thread Page](${url})`,
-    state === "created" ? "state: NEW \u2014 seeded; make this page fit the task, keep a way to answer, then reply in chat with the link and one line." : "state: EXISTING \u2014 read it before editing; update it this turn, keep a way to answer, then reply in chat with the link and one line.",
+    STATE_LINES[state],
     `site: files beside ${ENTRY_FILE} are served relatively (nested paths included); ${UPLOAD_DIR}/ holds what the reader attaches.`,
-    "guide: bb thread-page guide  (files, charts, live session state, starting sessions, links, limits)",
+    "guide: bb thread-page guide  (controls anywhere on the page, your own files, other services and servers, live session state, starting sessions, limits)",
     await homeLine(deps, current.id)
   ];
   if (problem) lines.push(`warning: the existing page cannot be served \u2014 ${problem}`);
@@ -1121,14 +410,14 @@ async function home(deps, context) {
     const other = await serving.host.sessions.get(previous).catch(() => null);
     lines.push(`warning: home was ${other ? `\u201C${other.title}\u201D (${previous})` : previous}; it now points here instead.`);
   }
-  const { state } = await ensurePage(deps, current.id, current.session.title);
+  const { state } = await inspectPage(deps, current.id);
   await serving.settings.set({ homeSessionId: current.id });
   const url = await link(deps, homeUrl(serving.routeBase));
   lines.push(
     `home: ${current.id}`,
     `link: [Sessions](${url})`,
     "Every other page now shows a \u201C\u2190 Sessions\u201D link back to this one.",
-    state === "created" ? "state: NEW \u2014 a plain seed was created for this session; build the hub yourself (sessions.snapshot, projects.list, pages.open, sessions.start). See bb thread-page guide \xA7The home page." : "state: EXISTING \u2014 this session's page was left untouched."
+    state === "existing" ? "state: EXISTING \u2014 this session's page was left untouched." : "state: NO PAGE YET \u2014 write this session's page; every other page links back to it. See bb thread-page guide \xA7The home page."
   );
   return { exitCode: 0, stdout: `${lines.join("\n")}
 ` };
@@ -1145,6 +434,7 @@ async function status(deps, context) {
     "# Thread Pages status",
     "",
     `agentInstructions: ${settings.agentInstructions ? "on" : "off"}`,
+    `pageSeedHtml: ${hasSeed(settings.pageSeedHtml) ? `set (${settings.pageSeedHtml.length} characters) \u2014 init starts new pages from it` : "(empty \u2014 init creates no file; the agent writes the whole page)"}`,
     `workingLabel: ${settings.workingLabel ? JSON.stringify(settings.workingLabel) : "(blank \u2014 indicator hidden)"}`,
     `homeSessionId: ${settings.homeSessionId || "(none \u2014 pages show no Sessions link)"}`,
     `site strategy: ${serving.site.name}`,
@@ -1172,214 +462,10 @@ async function status(deps, context) {
 ` };
 }
 
-// src/agent/starter-hub.ts
-var STARTER_HUB_MAIN = String.raw`<div class="hub-bar">
-  <input type="search" data-search placeholder="Find a session…  (press /)" aria-label="Find a session" autocomplete="off">
-  <span class="hub-views" role="group" aria-label="View">
-    <button type="button" data-view="attention" aria-pressed="true">Needs you</button>
-    <button type="button" data-view="all" aria-pressed="false">All</button>
-  </span>
-  <button type="button" data-refresh title="Refresh">↻</button>
-  <span class="hub-meta" data-meta></span>
-</div>
-<p data-error class="needs-you" hidden></p>
-<div data-groups aria-live="polite"></div>
-<p class="hub-foot">Rows follow bb: no archived sessions, sub-agents hidden, five per project then “more”. This page belongs to the session that built it; ask that session to change it.</p>
-
-<style>
-/* The hub is a list, so it takes the width the seed's prose does not need. */
-.wrap { max-width: 68rem; }
-@scope (main) {
-  .hub-bar { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; padding: .6rem 0; background: var(--bg); border-bottom: var(--rule-w) solid var(--rule); }
-  .hub-bar input[type="search"] { flex: 1 1 16rem; min-width: 0; margin: 0; padding: .45rem .6rem; font: inherit; font-size: .92rem; color: var(--ink); background: var(--surface); border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * .7); }
-  .hub-views { display: inline-flex; border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * .7); overflow: hidden; }
-  .hub-views button, .hub-bar > button { margin: 0; padding: .4rem .7rem; font: inherit; font-size: .85rem; font-weight: 600; color: var(--ink-2); background: var(--surface); border: 0; border-radius: 0; box-shadow: none; cursor: pointer; }
-  .hub-views button[aria-pressed="true"] { color: var(--bg); background: var(--accent); }
-  .hub-bar > button[data-refresh] { border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * .7); }
-  .hub-meta { margin-left: auto; font-size: .78rem; color: var(--ink-3); font-variant-numeric: tabular-nums; }
-  .group { margin-top: 1rem; }
-  .group-head { display: flex; align-items: baseline; gap: .6rem; padding: .3rem 0; border-bottom: var(--rule-w) solid var(--rule-soft); }
-  .group-head h2 { margin: 0; font-size: .95rem; cursor: pointer; }
-  .group-head .counts { font-size: .75rem; color: var(--ink-3); font-variant-numeric: tabular-nums; }
-  .group-head .counts b { color: var(--ok); font-weight: 600; }
-  .group-head .counts i { color: var(--accent); font-style: normal; font-weight: 600; }
-  .group-head .counts s { color: var(--flag); text-decoration: none; font-weight: 600; }
-  .group-head button { margin: 0 0 0 auto; padding: .15rem .55rem; font: inherit; font-size: .78rem; font-weight: 600; color: var(--accent); background: transparent; border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * .6); box-shadow: none; cursor: pointer; }
-  .row { display: grid; grid-template-columns: .6rem minmax(0, 1fr) auto auto; gap: .6rem; align-items: center; min-height: 2.1rem; padding: .1rem 0; border-bottom: var(--rule-w) solid var(--rule-soft); }
-  .row .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--rule); }
-  .row[data-status="working"] .dot { background: var(--ok); }
-  .row[data-status="waiting"] .dot { background: var(--flag); }
-  .row[data-status="failed"] .dot { background: var(--flag); box-shadow: 0 0 0 2px color-mix(in srgb, var(--flag) 35%, transparent); }
-  .row[data-unread="true"] .dot { outline: 2px solid var(--accent); outline-offset: 1px; }
-  @media (prefers-reduced-motion: no-preference) { .row[data-status="working"] .dot { animation: hub-pulse 1.4s ease-in-out infinite; } }
-  @keyframes hub-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
-  .row .title { margin: 0; padding: .2rem 0; font: inherit; font-size: .92rem; text-align: left; color: var(--ink); background: transparent; border: 0; border-radius: 0; box-shadow: none; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row[data-unread="true"] .title { font-weight: 700; }
-  .row .title:hover, .row .title:focus-visible { color: var(--accent); }
-  .row .when { font-size: .75rem; color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .row .when em { font-style: normal; color: var(--flag); }
-  .row .acts { display: flex; gap: .3rem; }
-  .row .acts button { margin: 0; padding: .1rem .5rem; font: inherit; font-size: .75rem; font-weight: 600; color: var(--ink-2); background: transparent; border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * .6); box-shadow: none; cursor: pointer; }
-  .row .acts button:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
-  .row .acts button[data-danger]:hover:not(:disabled) { color: var(--flag); border-color: var(--flag); }
-  .more { margin: .3rem 0 0; padding: .2rem 0; font: inherit; font-size: .78rem; color: var(--accent); background: transparent; border: 0; box-shadow: none; cursor: pointer; }
-  .starter { margin: .5rem 0 0; display: grid; gap: .4rem; }
-  .starter textarea { width: 100%; min-height: 3.2rem; margin: 0; padding: .5rem .65rem; font: inherit; font-size: .88rem; line-height: 1.5; color: var(--ink); background: var(--surface); border: var(--rule-w) solid var(--rule); border-radius: calc(var(--radius) * .7); resize: vertical; }
-  .starter textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .starter button { justify-self: start; margin: 0; padding: .4rem .9rem; font: inherit; font-size: .85rem; font-weight: 600; color: var(--bg); background: var(--accent); border: var(--rule-w) solid var(--accent); border-radius: calc(var(--radius) * .7); box-shadow: none; cursor: pointer; }
-  .starter button:disabled { opacity: .6; cursor: default; }
-  .starter .say { font-size: .78rem; color: var(--ink-3); }
-  .empty { margin: .6rem 0; font-size: .85rem; color: var(--ink-3); }
-  .hub-foot { margin-top: 1.5rem; font-size: .75rem; color: var(--ink-3); }
-  @media (max-width: 40rem) { .row { grid-template-columns: .6rem minmax(0, 1fr) auto; } .row .when { display: none; } }
-}
-</style>
-
-<script>
-(async () => {
-  const tp = window.threadPage;
-  const $ = (s) => document.querySelector(s);
-  const groupsEl = $("[data-groups]"), errorEl = $("[data-error]"), metaEl = $("[data-meta]"), searchEl = $("[data-search]");
-  const PER_PROJECT = 5, MORE = 10;
-  const el = (tag, text, cls) => { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n; };
-  const fail = (m) => { errorEl.hidden = false; errorEl.textContent = m; };
-  // Needs you: running, waiting on you, or unread — a failed session only until you have looked at it.
-  const needsYou = (s) => s.status === "working" || s.status === "waiting" || s.unread;
-  const recency = (s) => Math.max(s.attentionAtMs || 0, s.updatedAtMs || 0);
-  const ago = (ms) => { const d = Date.now() - ms; if (d < 60e3) return "now"; if (d < 3600e3) return Math.round(d / 60e3) + "m"; if (d < 86400e3) return Math.round(d / 3600e3) + "h"; return Math.round(d / 86400e3) + "d"; };
-
-  let projects = [], sessions = [], prefs = { view: "attention", collapsed: {} };
-  const expanded = {}, starters = new Set();
-
-  async function loadPrefs() {
-    try { const r = await tp.invoke("storage.get", { key: "home.prefs" }); if (r.found && r.value && typeof r.value === "object") prefs = { view: "attention", collapsed: {}, ...r.value }; } catch {}
-  }
-  const savePrefs = () => tp.invoke("storage.set", { key: "home.prefs", value: prefs }).catch(() => {});
-
-  async function fetchAll() {
-    const out = []; let cursor = null;
-    for (let page = 0; page < 5; page += 1) {
-      const r = await tp.invoke("sessions.snapshot", cursor ? { limit: 200, cursor } : { limit: 200 });
-      out.push(...r.sessions); cursor = r.nextCursor; if (!cursor) break;
-    }
-    return out;
-  }
-
-  function act(label, run, danger) {
-    const b = el("button", label); b.type = "button"; if (danger) b.dataset.danger = "";
-    b.addEventListener("click", async (e) => { e.stopPropagation(); b.disabled = true;
-      try { await run(); } catch (err) { if (err.code !== "cancelled") fail((err.code ? err.code + ": " : "") + err.message); }
-      finally { b.disabled = false; } });
-    return b;
-  }
-
-  function row(s) {
-    const r = el("div", undefined, "row"); r.dataset.status = s.status; r.dataset.unread = String(!!s.unread);
-    const title = el("button", s.title || "(untitled)", "title"); title.type = "button";
-    title.title = s.page.available ? "Open its page" : "No page yet — opens the session in bb";
-    title.addEventListener("click", () => tp.invoke(s.page.available ? "pages.open" : "sessions.openHost", { sessionId: s.id }).catch((e) => fail(e.message)));
-    const when = el("span", undefined, "when");
-    if (s.status === "failed") when.append(el("em", "failed · ")); else if (s.status === "waiting") when.append(el("em", "needs you · ")); else if (s.status === "working") when.append(el("em", "working · "));
-    when.append(document.createTextNode(ago(recency(s))));
-    const acts = el("span", undefined, "acts");
-    if (s.page.available) acts.append(act("bb", () => tp.invoke("sessions.openHost", { sessionId: s.id })));
-    if (s.status === "working") acts.append(act("Stop", async () => { await tp.invoke("sessions.stop", { sessionId: s.id }); await load(); }, true));
-    acts.append(act(s.unread ? "Read" : "Unread", async () => { const r = await tp.invoke("sessions.markRead", { sessionId: s.id, read: !!s.unread }); s.unread = r.unread; render(); }));
-    acts.append(act("Archive", async () => { await tp.invoke("sessions.archive", { sessionId: s.id }); sessions = sessions.filter((x) => x.id !== s.id); render(); }, true));
-    r.append(el("span", undefined, "dot"), title, when, acts);
-    return r;
-  }
-
-  function starter(project) {
-    const box = el("div", undefined, "starter");
-    const text = el("textarea"); text.placeholder = "What should the new session in " + project.name + " do? Say what to report and what not to change."; text.setAttribute("aria-label", text.placeholder);
-    const say = el("span", undefined, "say");
-    const go = act("Start session", async () => {
-      const prompt = text.value.trim(); if (!prompt) { say.textContent = "Say what it should do."; return; }
-      say.textContent = "Waiting for your confirmation…";
-      try { await tp.invoke("sessions.start", { projectId: project.id, prompt }); say.textContent = "Started."; text.value = ""; starters.delete(project.id); await load(); }
-      catch (e) { say.textContent = e.code === "cancelled" ? "Nothing started." : e.message; }
-    });
-    box.append(text, go, say);
-    return box;
-  }
-
-  function render() {
-    const q = searchEl.value.trim().toLowerCase();
-    const view = q ? "all" : prefs.view;
-    groupsEl.textContent = "";
-    let shown = 0, attention = 0;
-    const byProject = new Map(projects.map((p) => [p.id, []]));
-    for (const s of sessions) { if (byProject.has(s.projectId)) byProject.get(s.projectId).push(s); }
-    const order = projects.slice().sort((a, b) => {
-      const A = byProject.get(a.id), B = byProject.get(b.id);
-      const na = A.filter(needsYou).length, nb = B.filter(needsYou).length;
-      if ((na > 0) !== (nb > 0)) return na > 0 ? -1 : 1;
-      return Math.max(0, ...B.map(recency)) - Math.max(0, ...A.map(recency));
-    });
-    for (const project of order) {
-      const all = byProject.get(project.id).sort((a, b) => recency(b) - recency(a));
-      attention += all.filter(needsYou).length;
-      let list = q ? all.filter((s) => (s.title || "").toLowerCase().includes(q) || project.name.toLowerCase().includes(q)) : view === "attention" ? all.filter(needsYou) : all;
-      if (view === "attention" && !q && list.length === 0) continue;
-      const group = el("section", undefined, "group");
-      const head = el("div", undefined, "group-head");
-      const h = el("h2", project.name); h.title = "Collapse or expand";
-      h.addEventListener("click", () => { prefs.collapsed[project.id] = !prefs.collapsed[project.id]; savePrefs(); render(); });
-      const counts = el("span", undefined, "counts");
-      const w = all.filter((s) => s.status === "working").length, u = all.filter((s) => s.unread).length, f = all.filter((s) => s.status === "waiting" || (s.status === "failed" && s.unread)).length;
-      counts.append(document.createTextNode(all.length + " "));
-      if (w) counts.append(el("b", w + " working ")); if (u) counts.append(el("i", u + " unread ")); if (f) counts.append(el("s", f + " need you"));
-      const add = act("+ New", async () => { if (starters.has(project.id)) starters.delete(project.id); else starters.add(project.id); render(); });
-      head.append(h, counts, add);
-      group.append(head);
-      if (!prefs.collapsed[project.id]) {
-        let visible = list;
-        if (view === "all" && !q) { const limit = PER_PROJECT + (expanded[project.id] || 0); visible = list.filter((s, i) => i < limit || needsYou(s)); }
-        for (const s of visible) group.append(row(s));
-        if (visible.length < list.length) { const more = el("button", "Show " + Math.min(MORE, list.length - visible.length) + " more of " + list.length, "more"); more.type = "button"; more.addEventListener("click", () => { expanded[project.id] = (expanded[project.id] || 0) + MORE; render(); }); group.append(more); }
-        if (list.length === 0) group.append(el("p", q ? "No match." : "Nothing here.", "empty"));
-        shown += visible.length;
-      }
-      if (starters.has(project.id)) group.append(starter(project));
-      groupsEl.append(group);
-    }
-    if (!groupsEl.children.length) groupsEl.append(el("p", view === "attention" ? "Nothing needs you right now." : "No sessions.", "empty"));
-    for (const b of document.querySelectorAll("[data-view]")) b.setAttribute("aria-pressed", String(b.dataset.view === prefs.view));
-    metaEl.textContent = shown + " shown · " + attention + " need you · " + sessions.length + " total";
-  }
-
-  async function load() {
-    try {
-      errorEl.hidden = true;
-      const [p, s] = await Promise.all([tp.invoke("projects.list"), fetchAll()]);
-      projects = p.projects; sessions = s; render();
-    } catch (e) { fail((e.code ? e.code + ": " : "") + e.message); }
-  }
-
-  for (const b of document.querySelectorAll("[data-view]")) b.addEventListener("click", () => { prefs.view = b.dataset.view; savePrefs(); render(); });
-  $("[data-refresh]").addEventListener("click", () => load());
-  searchEl.addEventListener("input", render);
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "/" && document.activeElement !== searchEl && !/^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName)) { e.preventDefault(); searchEl.focus(); }
-    if (e.key === "Escape" && document.activeElement === searchEl) { searchEl.value = ""; render(); searchEl.blur(); }
-  });
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") load(); });
-
-  await loadPrefs();
-  await load();
-  tp.watch("session.activity", { limit: 1 }, () => load(), { intervalMs: 15000 });
-})();
-</script>`;
-function starterHubForGuide() {
-  return STARTER_HUB_MAIN.split("\n").map((line) => line.length ? `    ${line}` : "").join("\n");
-}
-
 // src/agent/guide.ts
 function buildGuide(registry, site) {
   return [
     intro(),
-    plainHtml(),
     forms(),
     uploads(),
     ownFiles(site),
@@ -1399,40 +485,21 @@ function buildGuide(registry, site) {
 }
 var intro = () => `# Thread Pages \u2014 authoring guide
 
-A page is a complete HTML document you edit directly; saving publishes it. It
-runs in a sandboxed frame on an opaque origin with no host credentials, and
-talks to the host only through captured forms and \`window.threadPage\`. Use
-the smallest shape that makes the task easier: plain semantic HTML first, a
-mini-app only when the shape of the thing is not prose.
+A page is a complete HTML document you write and edit directly; saving
+publishes it. Nothing is provided to fill in \u2014 no template, no stylesheet, no
+components \u2014 so its structure, its look and its interactions are yours, and
+the task decides them. It runs in a sandboxed frame on an opaque origin with
+no host credentials, and talks to the host only through captured forms and
+\`window.threadPage\`.
 
 Your page root is your session's storage directory (\`$BB_THREAD_STORAGE\`):
 
-    ${ENTRY_FILE}       the entry document \u2014 the page
+    ${ENTRY_FILE}       the entry document \u2014 the page; \`init\` does not create it, you do
     <any files>      served beside it, nested directories included
-    ${UPLOAD_DIR}/         files the reader attached, named by the host`;
-var plainHtml = () => `## What plain HTML already gives you
+    ${UPLOAD_DIR}/         files the reader attached, named by the host
 
-The seed carries its own stylesheet, so semantic HTML is already styled.
-
-    h2, p, ul, table      the page's type scale and rhythm
-    form                  a panel wired to your session, with a status line
-    fieldset + legend     a named group; the legend becomes the question
-    label wrapping one    the label becomes that answer's name
-    small inside a label  a hint (never part of the answer's name)
-    input type=range      a slider with a live value readout
-    input type=file       uploaded on submit, path sent to you
-    details/summary       detail on demand; add name="x" for an accordion
-    div.card              a boxed aside
-    p.needs-you           a flagged block, for what is blocked on the reader
-    span.label            a small uppercase tag
-
-Three class names; everything else keys off what the element is. The look is
-three attributes on <html>: data-theme (paper | terminal | atrium | volume |
-bloom), data-mode (system | light | dark), data-atmos (on | off). Extra CSS
-goes in one more <style>, everything inside @scope (main), colour and shape
-from var(--token) only \u2014 that is what keeps a bespoke chart right in every
-world and in dark mode. You may replace the stylesheet entirely; the page is
-yours.`;
+Until ${ENTRY_FILE} exists, the page's link shows the reader that it has not been
+written yet, and the page appears there as soon as you save it.`;
 var forms = () => `## Forms
 
 Every <form> in the document is captured and delivered to your session as a
@@ -1443,18 +510,31 @@ own script owns; the host then leaves it entirely alone.
   suppressed, and a blank field arrives as "(left blank)".
 - Answer names come from, in order: data-label on the control, the enclosing
   fieldset's legend, aria-label, the wrapping label's text, a <label for>,
-  the field name. Hints, options and nested controls are excluded.
+  the field name. Hints (<small>), options and nested controls are excluded.
 - Groups collapse: one checkbox is Yes/No; several checkboxes with one name
   are a list of the checked values; radios are the one checked value or
   blank; a multiple <select> is a list.
-- The submit button's value leads the message as **Action**, so several
-  <button name="action" value="\u2026"> give one-click answers.
+- The submit button's value leads the message as **Action**.
 - Each form has its own pending, dirty and status state. While a submission
   is in flight its controls are disabled; afterwards the status line says
   "Sent (queued)" or why it failed.
 - Typing into a captured form marks the page dirty, so a new version of the
   page does not reload under the reader. Custom state the host cannot see:
   window.threadPage.setDirty(true|false).
+
+### Controls anywhere on the page
+
+A control does not have to sit inside its form. Give the form an id and the
+control \`form="that-id"\`, and it belongs to that form wherever it is in the
+document: its answer is delivered with the form, typing into it marks the page
+dirty, and it is disabled while the form sends. A question can therefore sit
+beside the thing it asks about and still arrive in one answer. Its name
+follows the rules above, looked up around the control itself. The form's
+status line appears inside the form element, so put that element where the
+reader expects to send from.
+
+Always include one empty text field for anything else: the reader may want
+something none of your options cover.
 
 The message you receive looks like:
 
@@ -1631,16 +711,48 @@ The confirmation names the project and the prompt. Handle \`cancelled\`:
 
 \`sessions.send\` steers an existing session the same way; it refuses your own
 session \u2014 use \`session.reply\` for that.`;
-var network = () => `## Network
+var network = () => `## Network, other services and servers
 
 Pages have internet access: fetch any origin, load remote fonts, scripts,
 stylesheets, images and media, open WebSockets. The page still holds no host
 credential \u2014 reaching a URL and acting as the host are different things.
 
-Two consequences to know: page script runs in the reader's browser, so it can
-reach what that device can reach, including its own network; and script can
-navigate its own frame with data in the URL. Both are accepted, documented
-properties of the model, not bugs to work around.`;
+**What your page is, to another server.** Its origin is \`null\`. Every request
+it makes carries \`Origin: null\` and no cookie of any kind \u2014 not the host's, and
+not the reader's session with any other service. The sandbox gives it no
+storage of its own either: \`document.cookie\`, \`localStorage\`,
+\`sessionStorage\` and IndexedDB throw. Keep what must survive a reload with
+\`storage.set\` (${kibibytes(LIMITS.storageValueBytes)} per key).
+
+**Acting on another service as the reader.** Authenticate with a token in a
+request header \u2014 an API key or personal token the reader gives the page, kept
+with \`storage.set\`. That works whenever the service answers a cross-origin
+request from \`Origin: null\`, and many APIs do; an unauthenticated call that
+comes back as a readable 401 tells you the origin is accepted. Two things do
+not work, and the host offers no mechanism for either, by design: a sign-in
+flow that sends the reader to a login page and back (a page has no popups and
+no top-level navigation, and login pages refuse to load in a frame), and an
+SDK that checks a registered JavaScript origin, because \`null\` cannot be
+registered.
+
+**A server of your own.** Page script runs in the reader's browser, so where
+the reader is decides what it can reach:
+
+- a server on the reader's machine at a loopback address, such as
+  \`http://127.0.0.1:8000\`, when the page is read on that machine \u2014 also through
+  the host's remote address (a browser may ask the reader's permission first);
+- any public URL, from any device \u2014 for a phone, give your server a public
+  address and its own token;
+- **not** anything behind the host's own authentication: its API, its file
+  route, or a port it shares for you. Those need a cookie the page cannot send.
+
+A server your page calls must answer CORS for \`Origin: null\`, preflights
+included, and check its own token.
+
+Two more consequences to know: script can reach whatever the reader's device
+can reach, including its own network, and it can navigate its own frame with
+data in the URL. Both are accepted, documented properties of the model, not
+bugs to work around.`;
 var unavailable = () => `## What the sandbox silences
 
 These do nothing, silently \u2014 the worst failure mode \u2014 so never rely on them:
@@ -1649,8 +761,8 @@ These do nothing, silently \u2014 the worst failure mode \u2014 so never rely on
   for the host application, and a plain <a href="https://\u2026"> or
   \`navigation.openExternal\` for the web.
 - \`window.prompt\`, \`alert\`, \`confirm\` \u2014 build the input or the question into
-  the page (an <input>, a <dialog> with data-thread-page-manual, a second
-  form), or use a confirmed capability, which renders its own dialog.
+  the page, or use a confirmed capability, which renders its own dialog. A
+  <dialog> you script yourself needs data-thread-page-manual on its form.
 - top-level navigation \u2014 \`pages.open\` and \`sessions.openHost\` navigate the
   reader's view in place through trusted chrome; the back button returns.
 
@@ -1671,9 +783,8 @@ and then stopped.
 
 **The whole file is yours.** There is no page-editing API and there is not
 meant to be one: ${ENTRY_FILE} is a file in your storage directory that you
-read and write with your ordinary tools. Nothing in it is reserved \u2014 not the
-stylesheet, not the header, not the comment the seed came with. Rewriting the
-document whole is the expected way to change it, and safer than splicing,
+read and write with your ordinary tools. Nothing in it is reserved. Rewriting
+the document whole is the expected way to change it, and safer than splicing,
 because a splice computed from string indices can silently eat content that a
 whole-document write cannot.
 
@@ -1688,46 +799,20 @@ var home2 = () => `## The home page
 
 One page is home; every other page shows a "\u2190 Sessions" link back to it in
 chrome you never write. \`bb thread-page home\` sets the pointer for the
-current session (\`--clear\` removes it) and creates the plain seed if the
-session has no page yet; it never touches an existing page. Home is an
-ordinary page \u2014 a hub is one an agent builds, and the right place to build it
-is a session dedicated to it, so nothing else ever rewrites it.
+current session (\`--clear\` removes it) and never creates or touches page
+content. Home is an ordinary page. If the reader asks for one place to see and
+steer their sessions, build it in a session dedicated to it \u2014 start one for
+the purpose if you are mid-task \u2014 so nothing else ever rewrites it: its
+buttons open other pages and start fresh sessions, and nothing messages its
+own session. The reader can ask that session to change it at any time.
 
-### Setting one up, step by step
-
-1. In the session that should own it (start one for the purpose if you are
-   mid-task), run \`bb thread-page home\`. It prints the link every page will
-   carry.
-2. Replace <main> in that session's index.html with the starter hub below,
-   then stop. The page stays put because its buttons open other pages or
-   start fresh sessions; nothing messages this session.
-3. Tell the reader the link and that the hub is theirs to change: they can
-   ask this session to regroup, restyle or add jobs any time.
-
-### A starter hub
-
-Complete and working as written; drop it into <main>. It follows what the
-reader already sees in bb: no archived sessions, sub-agents hidden, the
-sessions that need them first (working, waiting on them, unread \u2014 a failed
-session only until they have looked), five recent per project then "Show
-more", one line per session, search with "/", Read/Unread, Stop, Archive and
-start-a-session with the confirmations handled. Views and
-collapsed projects persist in \`storage\`. It widens the page for the list;
-that is allowed \u2014 the page owns its stylesheet.
-
-${starterHubForGuide()}
-
-Refresh on a slow watch, not a tight timer: the page shares a rate budget of
-${LIMITS.ratePerMinute} requests a minute with its own forms. Grouping is yours to change: a
-group can be any set of projects, and \`data-theme\` on a group's element can
-give it its own look.`;
+Refresh a page like this on a slow watch, not a tight timer: it shares a rate
+budget of ${LIMITS.ratePerMinute} requests a minute with its own forms.`;
 var accessibility = () => `## Before you save
 
 - Read it once at 320px wide, once in dark mode, once with reduced motion.
 - Every action reachable by keyboard; nothing pointer-only.
-- Inline SVG for diagrams and charts, with var(--accent) inside it; a zero
-  gets a visible stub or the eye reads missing data.
-- grep -o '#[0-9a-fA-F]\\{3,8\\}' ${ENTRY_FILE} inside your <style> should be empty.
+- A zero in a chart gets a visible mark, or the eye reads missing data.
 - Read it once over the reader's real origin, not only loopback. A local bb
   requires no credential and a remote one does, so anything the page loads for
   itself can work for you and fail for them. Authentication is the one axis
@@ -1737,10 +822,9 @@ var upgrading = () => `## If your page predates 1.1
 Three things to fix in a page written against 1.0.x. Each is a one-line edit
 and none of them announces itself.
 
-1. **Add \`[hidden] { display: none !important; }\`** to your <style>. A class
-   rule that sets display outranks the attribute, so an element you wrote
-   \`hidden\` renders as an empty bar. New pages carry the fix; yours has its
-   own copy of the stylesheet and will not get it.
+1. **Add \`[hidden] { display: none !important; }\`** to your <style> if it came
+   from the old starting file. A class rule that sets display outranks the
+   attribute, so an element you wrote \`hidden\` renders as an empty bar.
 2. **Delete the seed's old authoring comment** if it is still there. It spelled
    tags out literally, so every string operation you run on your own file sees
    a <main> and a <style> that are not elements, and the obvious splice starts
@@ -2127,26 +1211,30 @@ var DEFAULT_AGENT_INSTRUCTION = `# The page is the conversation
 
 The reader does not read chat. Every turn you write or update one HTML page;
 they read it and answer from inside it, and the answer arrives as your next
-message. Chat carries the link and one line. A page they cannot answer from is
-a dead end.
+message. Chat carries only the link and nothing else.
 
-Start every turn with \`bb thread-page init\`. It prints the page path and the
-link. Read an existing page before editing it; saving publishes it at once and
-an open page reloads itself. If init says SKIP, this session is a helper:
-answer in chat and stay off the page.
+Run \`bb thread-page init\` when the session starts, and again whenever you no
+longer have the page's path or link. The first time there is no file: you write
+the whole document. Read an existing page before editing it; saving publishes
+it at once and an open page reloads itself. If init says SKIP, this session is
+a helper: answer in chat and stay off the page.
 
-## Every page ends with a way to answer
+## Built for this task
 
-Any <form> is wired automatically; nothing is required and blank is a real
-answer. Plain semantic HTML is already styled: <fieldset><legend> names a
-group, a wrapping <label> names one control, <small> is a hint, several
-<button name value> give one-click answers.
+Nothing is provided to fill in: no template, no stylesheet, no components.
+Work out what this reader needs to see and do right now, and build exactly
+that. Its structure, its look and its interactions follow from the task, not
+from how pages usually look. If the page would suit a different task just as
+well, it is not finished.
 
-Asking well is most of the work: buttons and radios for decisions, checkboxes
-for multi-select, free text only where the answer is genuinely open. A scale
-needs a meaning at both ends, never a bare 1-to-5. Always leave one open field
-for what you failed to anticipate: a form that permits only the answers you
-expect takes the decision away from the reader.
+## Answering where they read
+
+Every <form> answers this session automatically; blank is a real answer. How
+the reader answers follows from the content as much as what you show does: let
+them respond at the point they are reading, in whatever form suits that piece,
+deciding with as little effort as the decision allows. Always include one empty
+text field for anything else: the reader may want something none of your
+options cover.
 
 ## What belongs on the page
 
@@ -2158,24 +1246,34 @@ failures, skipped steps and your own mistakes plainly. Conclusion first.
 ## One agent, one page
 
 Your page is yours alone: you never read or write another agent's page. To
-create another interface \u2014 a dashboard, a console, a second view \u2014 start a
-session with instructions to build it; that agent writes its own page. Link to
-it, or suggest making it home. A page that should stay put is one whose forms
-start fresh sessions instead of messaging you: nothing then asks you to
-rewrite it. If you want another agent's page changed, talk to that agent.
-
-## The home page
-
-One page is home; every other page links back to it in chrome you never
-write. init says whether one exists. When the reader asks for one place to
-see and steer their sessions, build it in a session dedicated to it: run
-\`bb thread-page home\` there and follow \`bb thread-page guide\` \xA7The home page.
+create another interface, start a session with instructions to build it; that
+agent writes its own page. Link to it, or suggest making it home. A page that
+should stay put is one whose forms start fresh sessions instead of messaging
+you. If you want another agent's page changed, talk to that agent.
 
 ## More
 
-A page that needs more than prose and a form \u2014 files beside it, a chart, live
-session state, starting or steering sessions, links \u2014 runs
-\`bb thread-page guide\` first.`;
+Before relying on anything beyond one HTML file (other documents beside it,
+controls outside a form, live session state, starting sessions, calling other
+services, limits) run \`bb thread-page guide\`.`;
+
+// src/config/past-defaults.ts
+import { createHash } from "node:crypto";
+var PAST_DEFAULTS = {
+  // The standing instruction of 1.0.3–1.2.0.
+  agentInstructionText: /* @__PURE__ */ new Set(["88d9816fb6d27169b151db457df450f076de421cbf68f9b7b140a8483c0f7aef"]),
+  // The seed of 1.0.3, and of 1.1.0–1.2.0.
+  pageSeedHtml: /* @__PURE__ */ new Set([
+    "11a943b27db00d4e7ea9ab5014cfff2cb2570a737028a8d283f98f6d25af55f0",
+    "b1da21f912d912ee3400d40fabc7a1a677679ae55d076b20b5cf0ee299c89593"
+  ])
+};
+function sha256Hex(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+function isPastDefault(key, value, known = PAST_DEFAULTS) {
+  return known[key].has(sha256Hex(value));
+}
 
 // src/config/settings.ts
 var DEFAULT_WORKING_LABEL = "Working \u2014 this is the last saved version";
@@ -2196,10 +1294,10 @@ async function defineSettings(bb) {
     },
     pageSeedHtml: {
       type: "string",
-      label: "New-page seed",
-      description: "The complete HTML a new page starts from. {{TITLE}} is replaced, escaped. Existing pages are never rewritten.",
+      label: "New-page starting file",
+      description: "Optional. HTML a new page starts from; {{TITLE}} and {{DATE}} are replaced, escaped. Empty (the default): `bb thread-page init` creates no file and the agent writes the whole page. Existing pages are never rewritten.",
       experimental_multiline: true,
-      default: DEFAULT_PAGE_SEED
+      default: ""
     },
     workingLabel: {
       type: "string",
@@ -2214,23 +1312,23 @@ async function defineSettings(bb) {
       default: ""
     }
   });
-  let current = normalize(await handle.get());
+  let current = readSettings(await handle.get());
   handle.onChange((next) => {
-    current = normalize(next);
+    current = readSettings(next);
   });
   return {
     current: () => current,
     async set(values) {
-      current = normalize(await handle.experimental_set(values));
+      current = readSettings(await handle.experimental_set(values));
       return current;
     }
   };
 }
-function normalize(values) {
+function readSettings(values) {
   return {
     agentInstructions: values.agentInstructions === true,
-    agentInstructionText: values.agentInstructionText,
-    pageSeedHtml: values.pageSeedHtml,
+    agentInstructionText: isPastDefault("agentInstructionText", values.agentInstructionText) ? DEFAULT_AGENT_INSTRUCTION : values.agentInstructionText,
+    pageSeedHtml: isPastDefault("pageSeedHtml", values.pageSeedHtml) ? "" : values.pageSeedHtml,
     workingLabel: values.workingLabel.trim(),
     homeSessionId: values.homeSessionId.trim()
   };
@@ -11487,14 +10585,14 @@ function normalise(path) {
 }
 
 // src/domain/revision.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 function revisionOf(content) {
-  const hash = createHash("sha256");
+  const hash = createHash2("sha256");
   if (typeof content === "string") hash.update(content, "utf8");
   else hash.update(content);
   return hash.digest("hex");
 }
-function sha256Hex(content) {
+function sha256Hex2(content) {
   return revisionOf(content);
 }
 function etagFor(revision) {
@@ -11658,14 +10756,14 @@ function createSelectionStore() {
 }
 
 // src/domain/json/canonical.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 function canonicalJson(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
 }
 function fingerprint(value) {
-  return createHash2("sha256").update(canonicalJson(value), "utf8").digest("hex");
+  return createHash3("sha256").update(canonicalJson(value), "utf8").digest("hex");
 }
 
 // src/domain/tokens/mac.ts
@@ -12490,7 +11588,29 @@ ${source}
 }
 
 // src/generated/kernel-runtime.ts
-var KERNEL_RUNTIME = '"use strict";(()=>{var ee=Object.defineProperty;var te=(e,t,n)=>t in e?ee(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var F=(e,t,n)=>te(e,typeof t!="symbol"?t+"":t,n);var v=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var A=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],he=new Set(A);var ye=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${v.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var I=1,B=1,ne=new Set(A);function w(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function _(e,t){return Object.keys(e).length===t.length&&t.every(o=>Object.prototype.hasOwnProperty.call(e,o))}function q(e,t){if(!w(e)||e.v!==B||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return _(e,["v","id","ok","result"]);if(!_(e,["v","id","ok","error"])||!w(e.error))return!1;let n=e.error;return _(n,["code","message"])&&typeof n.code=="string"&&ne.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function U(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function re(e,t,n){let o=e.getAttribute("href");if(o===null)return{kind:"default"};if(o.startsWith("#"))return{kind:"default"};let s;try{s=new URL(o,n??t)}catch{return{kind:"block"}}return s.protocol!=="http:"&&s.protocol!=="https:"?{kind:"block"}:n&&s.href.startsWith(n)?{kind:"default"}:e.hasAttribute("download")?{kind:"default"}:{kind:"external",url:s.href,label:(e.textContent||"").replace(/\\s+/g," ").trim().slice(0,160)}}function N(e,t){e.addEventListener("click",n=>{if(n.defaultPrevented||n.button!==0)return;let s=n.target?.closest?.("a[href]");if(!s)return;let u=e.querySelector("base")?.getAttribute("href")??null,l=u?new URL(u,e.baseURI).href:null,a=re(s,e.baseURI,l);a.kind!=="default"&&(n.preventDefault(),a.kind==="external"&&t(a.url,a.label))},!0)}function K(e,t){let n=Object.freeze({version:1,invoke:t.invoke,watch:t.watch,setDirty:t.setDirty});Object.defineProperty(e,"threadPage",{value:n,writable:!1,configurable:!1,enumerable:!0})}var T=class extends Error{constructor(n,o){super(o);F(this,"code");this.name="ThreadPageError",this.code=n,Object.defineProperty(this,"code",{value:n,enumerable:!0,writable:!1})}};function j(e,t){let n=new Map,o=[],s=null,u=0;function l(){return u+=1,`tp-${typeof crypto<"u"&&typeof crypto.randomUUID=="function"?crypto.randomUUID():`${Date.now()}-${u}`}`}function a(m){let p=n.get(m);if(!(!p||!s))try{s(p.request)}catch(h){n.delete(m),p.reject(new T("invalid_request",h instanceof Error?h.message:"The request could not be sent"))}}function f(m,p){return new Promise((h,y)=>{if(typeof m!="string"){y(new T("invalid_request","A method name is required"));return}let b=l(),r={v:B,id:b,method:m,params:p===void 0?null:p,pageRevision:e};n.set(b,{request:r,resolve:h,reject:y}),s?a(b):o.push(b)})}function g(m,p,h,y){if(typeof h!="function")throw new TypeError("Thread Page watch needs a listener");let b=y?.intervalMs,r=typeof b=="number"&&Number.isFinite(b)?Math.max(v.watchMinMs,Math.min(v.watchMaxMs,Math.round(b))):v.watchDefaultMs,i=!1,c=!1,d=null;function E(x){i||(d!==null&&clearTimeout(d),d=setTimeout(k,x))}async function k(){if(d=null,!(i||c||t.visibilityState==="hidden")){c=!0;try{let x=await f(m,p);i||h(x,null)}catch(x){i||h(void 0,x)}finally{c=!1,i||E(r)}}}function R(){i||(t.visibilityState==="hidden"?(d!==null&&clearTimeout(d),d=null):E(0))}return t.addEventListener("visibilitychange",R),E(0),()=>{i||(i=!0,d!==null&&clearTimeout(d),d=null,t.removeEventListener("visibilitychange",R))}}return{invoke:f,watch:g,attach(m){for(s=m;o.length>0;){let p=o.shift();p&&a(p)}},receive(m){if(typeof m!="object"||m===null)return!1;let p=m.id;if(typeof p!="string")return!1;let h=n.get(p);if(!h)return!1;if(n.delete(p),!q(m,p))return h.reject(new T("invalid_response","The Thread Page bridge returned an invalid response")),!0;let y=m;return y.ok?h.resolve(y.result):h.reject(new T(y.error.code,y.error.message)),!0}}}function z(e){let t=new Map,n=0,o=!1,s=!1;function u(){let l=o||t.size>0;l!==s&&(s=l,e(l))}return{isDirty:()=>s,markForm(l){return n+=1,t.set(l,n),u(),n},versionOf:l=>t.get(l),clearForm(l,a){a!==void 0&&t.get(l)===a&&(t.delete(l),u())},setCustom(l){o=l===!0,u()}}}var oe="input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]";function H(e){if(!e)return"";let t=e.cloneNode(!0);for(let n of Array.from(t.querySelectorAll(oe)))n.remove();return(t.textContent||"").replace(/\\s+/g," ").trim()}function ie(e,t){let n=t.getAttribute("data-label");if(n&&n.trim())return n.trim();let o=t.closest("fieldset");if(o){let l=H(o.querySelector("legend"));if(l)return l}let s=t.getAttribute("aria-label");if(s&&s.trim())return s.trim();let u=t.closest("label");if(u){let l=H(u);if(l)return l}if(t.id){let l=e.ownerDocument,a=Array.from(l.querySelectorAll("label[for]")).find(g=>g.htmlFor===t.id),f=H(a??null);if(f)return f}return t.name}var se=new Set(["button","submit","reset","image","file"]);function ae(e){return Array.from(e.elements).filter(t=>{let n=t;return typeof n.name=="string"&&n.name.length>0&&!n.disabled&&"type"in n})}function $(e,t){let n=ae(e),o=[],s=new Set;if(t&&(C(t)==="button"||C(t)==="input")){let u=t,l=u.value||(u.textContent||"").trim();o.push({name:u.name||"action",label:"Action",value:l}),u.name&&s.add(u.name)}for(let u of n){let l=u.name,a=String(u.type||"").toLowerCase();if(s.has(l)||se.has(a))continue;s.add(l);let f=n.filter(g=>g.name===l);o.push({name:l,label:ie(e,u),value:le(u,f,a)})}return o}function C(e){return e.tagName.toLowerCase()}function le(e,t,n){if(n==="checkbox"){let o=t.filter(s=>C(s)==="input");return o.length===1?o[0]?.checked===!0:o.filter(s=>s.checked).map(s=>s.value)}if(n==="radio"){let o=t.find(s=>C(s)==="input"&&s.checked);return o?o.value:""}return C(e)==="select"&&e.multiple?Array.from(e.selectedOptions).map(o=>o.value):t.length>1?t.map(o=>String(o.value??"")):String(e.value??"")}var ue="data-thread-page-manual",V="data-thread-page-status",de="data-thread-page-range";function L(e){return e.hasAttribute(ue)}function S(e){let t=[];return"tagName"in e&&e.tagName.toLowerCase()==="form"&&t.push(e),"querySelectorAll"in e&&t.push(...Array.from(e.querySelectorAll("form"))),t.filter(n=>!L(n))}function M(e){let t=e.querySelector(`[${V}]`);return t||(t=e.ownerDocument.createElement("p"),t.setAttribute(V,""),t.setAttribute("role","status"),e.appendChild(t)),t}var G=new WeakSet;function W(e){e.noValidate=!0;for(let t of Array.from(e.querySelectorAll(\'input[type="range"]\'))){if(G.has(t))continue;G.add(t);let n=e.ownerDocument.createElement("output");n.setAttribute(de,"");let o=()=>{n.textContent=String(t.value)};t.addEventListener("input",o),o(),t.insertAdjacentElement("afterend",n)}}function P(e){return Array.from(e.querySelectorAll("input,textarea,select,button,fieldset"))}function ce(e){let t=[];for(let n of Array.from(e.querySelectorAll(\'input[type="file"]\')))if(!n.disabled)for(let o of Array.from(n.files??[])){if(t.length>=v.uploadsPerForm)return t;t.push({field:n.name||"file",file:o})}return t}function Z(e){let t=[];for(let n of P(e))n.disabled||(n.disabled=!0,t.push(n));return t}function D(e){for(let t of e)t.disabled=!1}function me(e){let t=e.getAttribute("data-title");return t&&t.trim()?t.trim().slice(0,300):(e.ownerDocument.querySelector("h1")?.textContent||"").trim().slice(0,300)||"Thread Page"}function J(e,t,n){return{submissionId:n,form:e,title:me(e),answers:$(e,t),files:ce(e)}}var X="data-thread-page-offline",O="Offline copy \\u2014 responses are disabled until the source host reconnects.";function Y(e,t){let n=new Set,o=t;function s(){if(!e.body)return;let a=e.querySelector(`[${X}="host"]`);o&&!a?(a=e.createElement("aside"),a.setAttribute(X,"host"),a.setAttribute("role","status"),a.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText"),a.textContent=O,e.body.insertBefore(a,e.body.firstChild)):!o&&a&&a.remove()}function u(a){for(let f of S(a)){for(let g of P(f))g.disabled||(g.disabled=!0,n.add(g));M(f).textContent=O}}function l(){for(let a of n)a.disabled=!1;n.clear();for(let a of S(e)){let f=M(a);f.textContent===O&&(f.textContent="")}}return{isReadOnly:()=>o,apply(a){o=a,a?u(e):l(),s()},prepare(a){o&&u(a),s()}}}function Q(e,t){let n=e.document,o=null,s=new Map,u=new WeakSet;function l(r){if(!o)return!1;try{return o.postMessage(r),!0}catch{return!1}}let a=z(r=>{l({kind:r?"thread-page:dirty":"thread-page:clean"})}),f=j(t.pageRevision,n),g=Y(n,t.stale);K(e,{version:1,invoke:(r,i)=>f.invoke(r,i),watch:(r,i,c,d)=>f.watch(r,i,c,d),setDirty:r=>a.setCustom(r!==!1)});function m(r){for(let i of S(r))W(i);g.prepare(r)}m(n),n.readyState==="loading"&&n.addEventListener("DOMContentLoaded",()=>m(n),{once:!0}),typeof e.MutationObserver=="function"&&n.documentElement&&new e.MutationObserver(i=>{for(let c of i)for(let d of Array.from(c.addedNodes))d.nodeType===1&&m(d)}).observe(n.documentElement,{childList:!0,subtree:!0});function p(r){let c=r.target?.closest?.("form");!c||L(c)||a.markForm(c)}n.addEventListener("input",p,!0),n.addEventListener("change",p,!0),n.addEventListener("submit",r=>{let i=r.target;if(!i||i.tagName?.toLowerCase()!=="form"||L(i)||(r.preventDefault(),g.isReadOnly()||u.has(i)))return;let c=`sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,d=i,E=J(d,r.submitter??null,c),k={form:d,disabled:[],dirtyVersion:a.versionOf(d)};s.set(c,k),u.add(d),M(d).textContent=E.files.length>0?"Uploading\\u2026":"Sending\\u2026",k.disabled=Z(d),l({kind:"thread-page:submit",submissionId:c,title:E.title,answers:E.answers,files:E.files})||(s.delete(c),u.delete(d),D(k.disabled),M(d).textContent="Page connection is not ready; try again in a moment.")},!0),N(n,(r,i)=>{f.invoke("navigation.openExternal",i?{url:r,label:i}:{url:r}).catch(()=>{})});function h(r){if(w(r)){if(r.kind==="thread-page:source-state"){g.apply(r.stale===!0);return}if(r.kind==="thread-page:submit-progress"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;i&&(M(i.form).textContent=String(r.message??"Working\\u2026").slice(0,160));return}if(r.kind==="thread-page:submit-result"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;if(!i)return;s.delete(r.submissionId),u.delete(i.form);let c=r.ok===!0;M(i.form).textContent=c?String(r.message??"Sent").slice(0,160):String(r.error??"Could not send").slice(0,160),D(i.disabled),g.isReadOnly()&&g.apply(!0),c&&a.clearForm(i.form,i.dirtyVersion);return}f.receive(r)}}function y(r){o=r,r.onmessage=i=>h(i.data),r.start?.(),f.attach(i=>{r.postMessage(i)}),a.isDirty()&&l({kind:"thread-page:dirty"})}function b(r){if(o||r.source!==e.parent)return;let i=r.data;if(!w(i)||i.kind!=="thread-page:connect"||i.version!==I||!r.ports||r.ports.length!==1)return;r.stopImmediatePropagation();let c=r.ports[0];c&&y(c)}return e.addEventListener("message",b,!0),t.stale&&g.apply(!0),e.parent.postMessage({kind:"thread-page:ready",version:I},"*"),{deliver:r=>h(r),connect:r=>y(r)}}Q(window,U(document.currentScript));})();';
+var KERNEL_RUNTIME = '"use strict";(()=>{var ne=Object.defineProperty;var re=(e,t,n)=>t in e?ne(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var A=(e,t,n)=>re(e,typeof t!="symbol"?t+"":t,n);var v=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var _=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],Ee=new Set(_);var ve=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${v.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var B=1,H=1;var oe=new Set(_);function x(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function I(e,t){return Object.keys(e).length===t.length&&t.every(o=>Object.prototype.hasOwnProperty.call(e,o))}function U(e,t){if(!x(e)||e.v!==H||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return I(e,["v","id","ok","result"]);if(!I(e,["v","id","ok","error"])||!x(e.error))return!1;let n=e.error;return I(n,["code","message"])&&typeof n.code=="string"&&oe.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function j(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function ie(e,t,n){let o=e.getAttribute("href");if(o===null)return{kind:"default"};if(o.startsWith("#"))return{kind:"default"};let i;try{i=new URL(o,n??t)}catch{return{kind:"block"}}return i.protocol!=="http:"&&i.protocol!=="https:"?{kind:"block"}:n&&i.href.startsWith(n)?{kind:"default"}:e.hasAttribute("download")?{kind:"default"}:{kind:"external",url:i.href,label:(e.textContent||"").replace(/\\s+/g," ").trim().slice(0,160)}}function K(e,t){e.addEventListener("click",n=>{if(n.defaultPrevented||n.button!==0)return;let i=n.target?.closest?.("a[href]");if(!i)return;let u=e.querySelector("base")?.getAttribute("href")??null,l=u?new URL(u,e.baseURI).href:null,a=ie(i,e.baseURI,l);a.kind!=="default"&&(n.preventDefault(),a.kind==="external"&&t(a.url,a.label))},!0)}function z(e,t){let n=Object.freeze({version:1,invoke:t.invoke,watch:t.watch,setDirty:t.setDirty});Object.defineProperty(e,"threadPage",{value:n,writable:!1,configurable:!1,enumerable:!0})}var T=class extends Error{constructor(n,o){super(o);A(this,"code");this.name="ThreadPageError",this.code=n,Object.defineProperty(this,"code",{value:n,enumerable:!0,writable:!1})}};function $(e,t){let n=new Map,o=[],i=null,u=0;function l(){return u+=1,`tp-${typeof crypto<"u"&&typeof crypto.randomUUID=="function"?crypto.randomUUID():`${Date.now()}-${u}`}`}function a(c){let f=n.get(c);if(!(!f||!i))try{i(f.request)}catch(h){n.delete(c),f.reject(new T("invalid_request",h instanceof Error?h.message:"The request could not be sent"))}}function m(c,f){return new Promise((h,y)=>{if(typeof c!="string"){y(new T("invalid_request","A method name is required"));return}let b=l(),r={v:H,id:b,method:c,params:f===void 0?null:f,pageRevision:e};n.set(b,{request:r,resolve:h,reject:y}),i?a(b):o.push(b)})}function g(c,f,h,y){if(typeof h!="function")throw new TypeError("Thread Page watch needs a listener");let b=y?.intervalMs,r=typeof b=="number"&&Number.isFinite(b)?Math.max(v.watchMinMs,Math.min(v.watchMaxMs,Math.round(b))):v.watchDefaultMs,s=!1,p=!1,d=null;function E(k){s||(d!==null&&clearTimeout(d),d=setTimeout(w,k))}async function w(){if(d=null,!(s||p||t.visibilityState==="hidden")){p=!0;try{let k=await m(c,f);s||h(k,null)}catch(k){s||h(void 0,k)}finally{p=!1,s||E(r)}}}function F(){s||(t.visibilityState==="hidden"?(d!==null&&clearTimeout(d),d=null):E(0))}return t.addEventListener("visibilitychange",F),E(0),()=>{s||(s=!0,d!==null&&clearTimeout(d),d=null,t.removeEventListener("visibilitychange",F))}}return{invoke:m,watch:g,attach(c){for(i=c;o.length>0;){let f=o.shift();f&&a(f)}},receive(c){if(typeof c!="object"||c===null)return!1;let f=c.id;if(typeof f!="string")return!1;let h=n.get(f);if(!h)return!1;if(n.delete(f),!U(c,f))return h.reject(new T("invalid_response","The Thread Page bridge returned an invalid response")),!0;let y=c;return y.ok?h.resolve(y.result):h.reject(new T(y.error.code,y.error.message)),!0}}}function V(e){let t=new Map,n=0,o=!1,i=!1;function u(){let l=o||t.size>0;l!==i&&(i=l,e(l))}return{isDirty:()=>i,markForm(l){return n+=1,t.set(l,n),u(),n},versionOf:l=>t.get(l),clearForm(l,a){a!==void 0&&t.get(l)===a&&(t.delete(l),u())},setCustom(l){o=l===!0,u()}}}var se="input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]";function P(e){if(!e)return"";let t=e.cloneNode(!0);for(let n of Array.from(t.querySelectorAll(se)))n.remove();return(t.textContent||"").replace(/\\s+/g," ").trim()}function ae(e,t){let n=t.getAttribute("data-label");if(n&&n.trim())return n.trim();let o=t.closest("fieldset");if(o){let l=P(o.querySelector("legend"));if(l)return l}let i=t.getAttribute("aria-label");if(i&&i.trim())return i.trim();let u=t.closest("label");if(u){let l=P(u);if(l)return l}if(t.id){let l=e.ownerDocument,a=Array.from(l.querySelectorAll("label[for]")).find(g=>g.htmlFor===t.id),m=P(a??null);if(m)return m}return t.name}var le=new Set(["button","submit","reset","image","file"]);function ue(e){return Array.from(e.elements).filter(t=>{let n=t;return typeof n.name=="string"&&n.name.length>0&&!n.disabled&&"type"in n})}function G(e,t){let n=ue(e),o=[],i=new Set;if(t&&(C(t)==="button"||C(t)==="input")){let u=t,l=u.value||(u.textContent||"").trim();o.push({name:u.name||"action",label:"Action",value:l}),u.name&&i.add(u.name)}for(let u of n){let l=u.name,a=String(u.type||"").toLowerCase();if(i.has(l)||le.has(a))continue;i.add(l);let m=n.filter(g=>g.name===l);o.push({name:l,label:ae(e,u),value:de(u,m,a)})}return o}function C(e){return e.tagName.toLowerCase()}function de(e,t,n){if(n==="checkbox"){let o=t.filter(i=>C(i)==="input");return o.length===1?o[0]?.checked===!0:o.filter(i=>i.checked).map(i=>i.value)}if(n==="radio"){let o=t.find(i=>C(i)==="input"&&i.checked);return o?o.value:""}return C(e)==="select"&&e.multiple?Array.from(e.selectedOptions).map(o=>o.value):t.length>1?t.map(o=>String(o.value??"")):String(e.value??"")}var ce="data-thread-page-manual",W="data-thread-page-status",me="data-thread-page-range",fe=new Set(["input","textarea","select","button","fieldset"]);function L(e){return e.hasAttribute(ce)}function D(e){let t=[];return"tagName"in e&&e.tagName.toLowerCase()==="form"&&t.push(e),"querySelectorAll"in e&&t.push(...Array.from(e.querySelectorAll("form"))),t.filter(n=>!L(n))}function O(e){if(!e)return null;let t=e.form;return t&&typeof t=="object"&&t.tagName?.toLowerCase()==="form"?t:e.closest?.("form")??null}function R(e){let t=new Set(D(e)),n=[];"hasAttribute"in e&&e.hasAttribute("form")&&n.push(e),"querySelectorAll"in e&&n.push(...Array.from(e.querySelectorAll("[form]")));for(let o of n){let i=O(o);i&&!L(i)&&t.add(i)}return[...t]}function M(e){let t=e.querySelector(`[${W}]`);return t||(t=e.ownerDocument.createElement("p"),t.setAttribute(W,""),t.setAttribute("role","status"),e.appendChild(t)),t}var Z=new WeakSet;function J(e){e.noValidate=!0;for(let t of S(e)){if(t.tagName.toLowerCase()!=="input"||t.type!=="range")continue;let n=t;if(Z.has(n))continue;Z.add(n);let o=e.ownerDocument.createElement("output");o.setAttribute(me,"");let i=()=>{o.textContent=String(n.value)};n.addEventListener("input",i),i(),n.insertAdjacentElement("afterend",o)}}function S(e){return Array.from(e.elements).filter(t=>fe.has(t.tagName.toLowerCase()))}function pe(e){let t=[];for(let n of S(e)){if(n.tagName.toLowerCase()!=="input"||n.type!=="file")continue;let o=n;if(!o.disabled)for(let i of Array.from(o.files??[])){if(t.length>=v.uploadsPerForm)return t;t.push({field:o.name||"file",file:i})}}return t}function Y(e){let t=[];for(let n of S(e))n.disabled||(n.disabled=!0,t.push(n));return t}function q(e){for(let t of e)t.disabled=!1}function ge(e){let t=e.getAttribute("data-title");return t&&t.trim()?t.trim().slice(0,300):(e.ownerDocument.querySelector("h1")?.textContent||"").trim().slice(0,300)||"Thread Page"}function X(e,t,n){return{submissionId:n,form:e,title:ge(e),answers:G(e,t),files:pe(e)}}var Q="data-thread-page-offline",N="Offline copy \\u2014 responses are disabled until the source host reconnects.";function ee(e,t){let n=new Set,o=t;function i(){if(!e.body)return;let a=e.querySelector(`[${Q}="host"]`);o&&!a?(a=e.createElement("aside"),a.setAttribute(Q,"host"),a.setAttribute("role","status"),a.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText"),a.textContent=N,e.body.insertBefore(a,e.body.firstChild)):!o&&a&&a.remove()}function u(a){for(let m of R(a)){for(let g of S(m))g.disabled||(g.disabled=!0,n.add(g));M(m).textContent=N}}function l(){for(let a of n)a.disabled=!1;n.clear();for(let a of D(e)){let m=M(a);m.textContent===N&&(m.textContent="")}}return{isReadOnly:()=>o,apply(a){o=a,a?u(e):l(),i()},prepare(a){o&&u(a),i()}}}function te(e,t){let n=e.document,o=null,i=new Map,u=new WeakSet;function l(r){if(!o)return!1;try{return o.postMessage(r),!0}catch{return!1}}let a=V(r=>{l({kind:r?"thread-page:dirty":"thread-page:clean"})}),m=$(t.pageRevision,n),g=ee(n,t.stale);z(e,{version:1,invoke:(r,s)=>m.invoke(r,s),watch:(r,s,p,d)=>m.watch(r,s,p,d),setDirty:r=>a.setCustom(r!==!1)});function c(r){for(let s of R(r))J(s);g.prepare(r)}c(n),n.readyState==="loading"&&n.addEventListener("DOMContentLoaded",()=>c(n),{once:!0}),typeof e.MutationObserver=="function"&&n.documentElement&&new e.MutationObserver(s=>{for(let p of s)for(let d of Array.from(p.addedNodes))d.nodeType===1&&c(d)}).observe(n.documentElement,{childList:!0,subtree:!0});function f(r){let s=O(r.target);!s||L(s)||a.markForm(s)}n.addEventListener("input",f,!0),n.addEventListener("change",f,!0),n.addEventListener("submit",r=>{let s=r.target;if(!s||s.tagName?.toLowerCase()!=="form"||L(s)||(r.preventDefault(),g.isReadOnly()||u.has(s)))return;let p=`sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,d=s,E=X(d,r.submitter??null,p),w={form:d,disabled:[],dirtyVersion:a.versionOf(d)};i.set(p,w),u.add(d),M(d).textContent=E.files.length>0?"Uploading\\u2026":"Sending\\u2026",w.disabled=Y(d),l({kind:"thread-page:submit",submissionId:p,title:E.title,answers:E.answers,files:E.files})||(i.delete(p),u.delete(d),q(w.disabled),M(d).textContent="Page connection is not ready; try again in a moment.")},!0),K(n,(r,s)=>{m.invoke("navigation.openExternal",s?{url:r,label:s}:{url:r}).catch(()=>{})});function h(r){if(x(r)){if(r.kind==="thread-page:source-state"){g.apply(r.stale===!0);return}if(r.kind==="thread-page:submit-progress"){let s=typeof r.submissionId=="string"?i.get(r.submissionId):void 0;s&&(M(s.form).textContent=String(r.message??"Working\\u2026").slice(0,160));return}if(r.kind==="thread-page:submit-result"){let s=typeof r.submissionId=="string"?i.get(r.submissionId):void 0;if(!s)return;i.delete(r.submissionId),u.delete(s.form);let p=r.ok===!0;M(s.form).textContent=p?String(r.message??"Sent").slice(0,160):String(r.error??"Could not send").slice(0,160),q(s.disabled),g.isReadOnly()&&g.apply(!0),p&&a.clearForm(s.form,s.dirtyVersion);return}m.receive(r)}}function y(r){o=r,r.onmessage=s=>h(s.data),r.start?.(),m.attach(s=>{r.postMessage(s)}),a.isDirty()&&l({kind:"thread-page:dirty"})}function b(r){if(o||r.source!==e.parent)return;let s=r.data;if(!x(s)||s.kind!=="thread-page:connect"||s.version!==B||!r.ports||r.ports.length!==1)return;r.stopImmediatePropagation();let p=r.ports[0];p&&y(p)}return e.addEventListener("message",b,!0),t.stale&&g.apply(!0),e.parent.postMessage({kind:"thread-page:ready",version:B},"*"),{deliver:r=>h(r),connect:r=>y(r)}}te(window,j(document.currentScript));})();';
+
+// src/serving/empty-page.ts
+var EMPTY_REVISION = revisionOf("");
+async function loadUnlessUnwritten(serving, session) {
+  try {
+    return await serving.pages.load(session);
+  } catch (error) {
+    if (PageError.is(error) && error.code === "no_page") return null;
+    throw error;
+  }
+}
+var EMPTY_DOCUMENT = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Not written yet</title>
+<style>html,body{height:100%;margin:0}body{display:grid;place-items:center;font:15px/1.5 system-ui,sans-serif;color:GrayText;background:Canvas}p{margin:0;padding:1rem;max-width:32rem;text-align:center}</style>
+</head>
+<body><p>This session has not written its page yet. It appears here as soon as the agent saves it.</p></body>
+</html>`;
 
 // src/serving/document-route.ts
 function documentRoute(serving) {
@@ -12498,12 +11618,21 @@ function documentRoute(serving) {
     try {
       const id = sessionIdFrom(context);
       const session = await eligibleSession(serving, id);
-      const page = await serving.pages.load(id);
+      const page = await loadUnlessUnwritten(serving, id);
       const headers = baseHeaders("text/html; charset=utf-8");
       headers.set("content-security-policy", documentCsp());
+      headers.set("x-thread-page-activity", session.state);
+      if (!page) {
+        headers.set("etag", etagFor(EMPTY_REVISION));
+        headers.set("x-thread-page-stale", "false");
+        headers.set("x-thread-page-empty", "true");
+        if (ifNoneMatchMatches(context.req.header("if-none-match"), etagFor(EMPTY_REVISION))) {
+          return new Response(null, { status: 304, headers });
+        }
+        return new Response(EMPTY_DOCUMENT, { status: 200, headers });
+      }
       headers.set("etag", etagFor(page.revision));
       headers.set("x-thread-page-stale", String(page.stale));
-      headers.set("x-thread-page-activity", session.state);
       headers.set("x-thread-page-updated-at", String(page.updatedAtMs));
       if (ifNoneMatchMatches(context.req.header("if-none-match"), etagFor(page.revision))) {
         return new Response(null, { status: 304, headers });
@@ -12539,7 +11668,11 @@ function homeRoute(serving) {
 import { randomBytes as randomBytes2 } from "node:crypto";
 
 // src/generated/shell-runtime.ts
-var SHELL_RUNTIME = '"use strict";(()=>{var B=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var C=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],de=new Set(C);var ce=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${B.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var _=1,P=1,ee=new Set(C),te=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,ne=/^[a-z][a-zA-Z0-9]*(?:\\.[a-z][a-zA-Z0-9]*)+$/;function R(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function M(e,t){return Object.keys(e).length===t.length&&t.every(d=>Object.prototype.hasOwnProperty.call(e,d))}function L(e){return typeof e=="string"&&te.test(e)}function A(e,t){return R(e)&&M(e,["v","id","method","params","pageRevision"])&&e.v===P&&L(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&ne.test(e.method)&&e.pageRevision===t}function D(e,t){if(!R(e)||e.v!==P||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return M(e,["v","id","ok","result"]);if(!M(e,["v","id","ok","error"])||!R(e.error))return!1;let n=e.error;return M(n,["code","message"])&&typeof n.code=="string"&&ee.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function x(e,t,n){return{v:1,id:L(e)?e:"invalid",ok:!1,error:{code:t,message:n.slice(0,512)||"Request failed"}}}function H(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function O(e,t,n){let{acts:d,pin:a,read:l,archive:g,title:f}=t,S=n.fetchImpl??fetch;if(e.stale){for(let u of[a,l,g])u.disabled=!0;return}let p=a.dataset.on==="true",y=l.dataset.on==="true",E=!1;function o(){a.textContent=p?"\\u2605":"\\u2606",a.dataset.on=String(p),a.setAttribute("aria-pressed",String(p)),a.title=p?"Pinned in bb":"Pin in bb"}function r(){l.textContent=y?"Read":"Unread",l.dataset.on=String(y),l.title=y?"Mark read":"Mark unread"}let s;function i(u){n.view.setStatus(u,!0),s!==void 0&&clearTimeout(s),s=setTimeout(()=>n.view.setStatus("",!1),6e3)}async function m(u){try{let b=await S(e.chromeActionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:e.actionToken,action:u})}),k=await b.json().catch(()=>null),T=k&&k.state;return!b.ok||!k||k.ok!==!0||!T?(i(k&&typeof k.message=="string"&&k.message||`Request failed (${b.status})`),null):{pinned:T.pinned===!0,unread:T.unread===!0,archived:T.archived===!0}}catch(b){return i(b instanceof Error?b.message:"Request failed"),null}}async function c(u){if(E)return null;E=!0,d.dataset.busy="true";try{return await m(u)}finally{E=!1,delete d.dataset.busy}}function v(u){p=u.pinned,y=u.unread,o(),r()}a.addEventListener("click",()=>{c(p?"unpin":"pin").then(u=>{u&&v(u)})}),l.addEventListener("click",()=>{c(y?"read":"unread").then(u=>{u&&v(u)})}),g.addEventListener("click",async()=>{if(E)return;let u=f.textContent?.trim()||"this session";if(!await n.confirmer.confirm(`Archive \\u201C${u}\\u201D? Its page stops being served.`))return;let k=await c("archive");k&&(k.archived?n.view.navigateAway():v(k))}),o(),r()}function q(e){let t=e.querySelector("p"),n=e.querySelector(\'button[value="cancel"]\'),d=e.querySelector(\'button[value="confirm"]\'),a=null,l;function g(f){let S=a;if(a=null,f&&l)try{l()}catch{}l=void 0,e.open&&e.close(),S?.(f)}return n?.addEventListener("click",f=>{f.preventDefault(),g(!1)}),d?.addEventListener("click",f=>{f.preventDefault(),g(!0)}),e.addEventListener("cancel",f=>{f.preventDefault(),g(!1)}),e.addEventListener("close",()=>{a&&g(!1)}),{confirm(f,S){return new Promise(p=>{if(a&&g(!1),t&&(t.textContent=f),a=p,l=S,typeof e.showModal=="function")try{e.showModal()}catch{g(!1)}else g(!1)})}}}function I(e){let t=null;return{inPlace(n){e.location.assign(n)},reserveWindow(){try{if(t=e.open("","_blank"),t)try{t.opener=null}catch{}}catch{t=null}},external(n){let d=t;if(t=null,d&&!d.closed)try{d.location.href=n;return}catch{try{d.close()}catch{}}e.location.assign(n)},release(){let n=t;t=null;try{n?.close()}catch{}}}}function N(e,t,n,d=e.fetch.bind(e)){let a=`"${t.pageRevision}"`,l=!1,g=!1,f=!1,S=t.stale,p=null,y=null;function E(i){p!==null&&clearTimeout(p),p=null,!(g||e.document.visibilityState!=="visible")&&(p=setTimeout(()=>{p=null,s()},i))}function o(){p!==null&&clearTimeout(p),p=null,y?.abort(),y=null}function r(){l?(n.setStatus("Page changed \\u2014 reload when ready",!0),n.showReload(!0)):n.reloadView()}async function s(){if(!(g||f||e.document.visibilityState!=="visible")){if(Date.now()>=t.expiresAt-3e4){g=!0,l?(n.setStatus("Session expiring \\u2014 reload when ready",!0),n.showReload(!0)):n.reloadView();return}f=!0,y=new AbortController;try{let i=await d(t.documentUrl,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":a},signal:y.signal});if(i.status===401||i.status===403){g=!0,n.setStatus("Session expired \\u2014 reload this page",!0),n.showReload(!0);return}if(!i.ok&&i.status!==304){n.setStatus("Page unavailable",!0);return}let m=i.headers.get("x-thread-page-stale")==="true";n.setWorking(i.headers.get("x-thread-page-activity")==="working"),m!==S&&(S=m,n.onStaleChanged(m)),n.setStatus(m?"Offline copy \\u2014 read-only":"",m);let c=i.headers.get("etag");c&&c!==a&&(a=c,r())}catch(i){i instanceof DOMException&&i.name==="AbortError"||n.setStatus("Cannot check for updates",!0)}finally{y=null,f=!1,E(t.pollMs)}}}return e.document.addEventListener("visibilitychange",()=>{e.document.visibilityState==="visible"?E(0):o()}),{start:()=>E(t.pollMs),setDirty:i=>{l=i},pollNow:()=>s(),isStopped:()=>g}}function U(e){let{config:t,confirmer:n,navigator:d}=e,a=e.fetchImpl??fetch;function l(o,r){o.postMessage(r)}async function g(o){return(await a(t.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify(o)})).json().catch(()=>null)}function f(o){return!R(o)||o.kind!=="page"&&o.kind!=="host"&&o.kind!=="external"||typeof o.url!="string"||o.kind==="external"&&!/^https?:\\/\\//i.test(o.url)||o.kind!=="external"&&!o.url.startsWith("/")?null:{kind:o.kind,url:o.url}}function S(o,r,s){if(!R(s)||!D(s.response,r.id)){l(o,x(r.id,"invalid_response","The Thread Page bridge returned an invalid response"));return}let i=s.navigate===void 0?null:f(s.navigate);if(s.response.ok&&i){l(o,s.response),i.kind==="external"?d.external(i.url):d.inPlace(i.url);return}d.release(),l(o,s.response)}async function p(o,r){try{let s=await g({actionToken:t.actionToken,request:r});if(R(s)&&R(s.confirm)){let i=s.confirm;if(typeof i.challenge!="string"||typeof i.summary!="string"||i.requestId!==r.id){l(o,x(r.id,"invalid_response","The Thread Page bridge returned an invalid confirmation"));return}let m=r.method==="navigation.openExternal";if(!await n.confirm(i.summary,m?()=>d.reserveWindow():void 0)){l(o,x(r.id,"cancelled","You declined this action"));return}let v=await g({actionToken:t.actionToken,request:r,confirmation:i.challenge});S(o,r,v);return}S(o,r,s)}catch(s){d.release(),l(o,x(r.id,"unavailable",s instanceof Error?s.message:"The Thread Page bridge is unavailable"))}}async function y(o){let r=o.file;if(!r||typeof r.size!="number")throw new Error("Attachment is not a file");let s=r.name||"file";if(r.size<=0)throw new Error(`Attachment ${s} is empty`);if(r.size>t.maxUploadBytes)throw new Error(`Attachment ${s} is larger than ${Math.round(t.maxUploadBytes/(1024*1024))} MiB`);let i=await re(r),m=await a(t.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,pageRevision:t.pageRevision,name:s,content:i})}),c=await m.json().catch(()=>null);if(!m.ok||!c||c.ok!==!0||typeof c.name!="string"||typeof c.path!="string"||typeof c.sizeBytes!="number")throw new Error(c&&typeof c.message=="string"&&c.message||`Upload failed (${m.status})`);return{field:String(o.field||"file").slice(0,128),name:c.name,path:c.path,sizeBytes:c.sizeBytes}}async function E(o,r){let s=typeof r.submissionId=="string"?r.submissionId:"";try{let i=(Array.isArray(r.files)?r.files:[]).slice(0,t.maxUploads),m=[];for(let b=0;b<i.length;b+=1)l(o,{kind:"thread-page:submit-progress",submissionId:s,message:`Uploading ${b+1} of ${i.length}\\u2026`}),m.push(await y(i[b]));m.length>0&&l(o,{kind:"thread-page:submit-progress",submissionId:s,message:"Sending\\u2026"});let c=await a(t.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,submissionId:s,pageRevision:t.pageRevision,title:r.title,answers:r.answers,files:m})}),v=await c.json().catch(()=>({ok:!1,message:"Invalid server response"})),u=c.ok&&v.ok===!0;l(o,{kind:"thread-page:submit-result",submissionId:s,ok:u,message:typeof v.delivery=="string"?`Sent (${v.delivery})`:"Sent",error:typeof v.message=="string"?v.message:`Request failed (${c.status})`})}catch(i){l(o,{kind:"thread-page:submit-result",submissionId:s,ok:!1,error:i instanceof Error?i.message:"Request failed"})}}return{handle(o,r){if(R(r)){if(r.kind==="thread-page:dirty"){e.onDirty(!0);return}if(r.kind==="thread-page:clean"){e.onDirty(!1);return}if(r.kind==="thread-page:submit"){E(o,r);return}if(!A(r,t.pageRevision)){l(o,x(r.id,"invalid_request","Invalid Thread Page bridge request"));return}p(o,r)}}}}async function re(e){let t=new Uint8Array(await e.arrayBuffer()),n="",d=32768;for(let a=0;a<t.length;a+=d)n+=String.fromCharCode.apply(null,Array.from(t.subarray(a,a+d)));return btoa(n)}function $(e,t,n,d){let{frame:a,status:l,work:g,reload:f,dialog:S,acts:p,pin:y,read:E,archive:o,title:r}=n,s=null,i=!0,m=t.stale,c={setStatus(h,w){l.textContent=h,l.dataset.tone=w?"warn":""},setWorking(h){g.dataset.visible=h&&t.workingLabel?"true":"false"},showReload(h){f.dataset.visible=h?"true":"false"},onStaleChanged(h){m=h,s?.postMessage({kind:"thread-page:source-state",stale:h})},reloadView(){e.location.reload()}},v=N(e,t,c,d),u=I(e),b=q(S),k=U({config:t,confirmer:b,navigator:u,onDirty:h=>v.setDirty(h),...d?{fetchImpl:d}:{}}),T=e.document.querySelector("a.home");O(t,{acts:p,pin:y,read:E,archive:o,title:r},{confirmer:b,view:{setStatus:(h,w)=>c.setStatus(h,w),navigateAway:()=>{T?.href?e.location.assign(T.href):e.location.reload()}},...d?{fetchImpl:d}:{}});function Q(){let h=new e.MessageChannel,w=h.port1;s=w,w.onmessage=X=>k.handle(w,X.data),w.start?.(),a.contentWindow?.postMessage({kind:"thread-page:connect",version:_},"*",[h.port2]),w.postMessage({kind:"thread-page:source-state",stale:m})}return e.addEventListener("message",h=>{if(!i||h.origin!=="null"||h.source!==a.contentWindow)return;let w=h.data;!R(w)||w.kind!=="thread-page:ready"||w.version!==_||(i=!1,Q())}),f.addEventListener("click",()=>e.location.reload()),a.src=t.documentUrl,v.start(),{poller:v}}var oe=H(document.currentScript),j=document.querySelector("iframe"),z=document.querySelector("[data-shell-status]"),V=document.querySelector("[data-shell-working]"),F=document.querySelector("[data-shell-reload]"),W=document.querySelector("dialog"),G=document.querySelector("[data-shell-acts]"),J=document.querySelector(\'[data-act="pin"]\'),K=document.querySelector(\'[data-act="read"]\'),Z=document.querySelector(\'[data-act="archive"]\'),Y=document.querySelector(".title");if(!j||!z||!V||!F||!W||!G||!J||!K||!Z||!Y)throw new Error("Thread Page shell: chrome is incomplete");$(window,oe,{frame:j,status:z,work:V,reload:F,dialog:W,acts:G,pin:J,read:K,archive:Z,title:Y});})();';
+var SHELL_RUNTIME = '"use strict";(()=>{var B=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var C=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],ce=new Set(C);var ue=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${B.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var _=1,P=1,A="Not written yet \\u2014 the page appears here as soon as the agent saves it",te=new Set(C),ne=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,re=/^[a-z][a-zA-Z0-9]*(?:\\.[a-z][a-zA-Z0-9]*)+$/;function T(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function R(e,t){return Object.keys(e).length===t.length&&t.every(d=>Object.prototype.hasOwnProperty.call(e,d))}function L(e){return typeof e=="string"&&ne.test(e)}function D(e,t){return T(e)&&R(e,["v","id","method","params","pageRevision"])&&e.v===P&&L(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&re.test(e.method)&&e.pageRevision===t}function H(e,t){if(!T(e)||e.v!==P||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return R(e,["v","id","ok","result"]);if(!R(e,["v","id","ok","error"])||!T(e.error))return!1;let n=e.error;return R(n,["code","message"])&&typeof n.code=="string"&&te.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function M(e,t,n){return{v:1,id:L(e)?e:"invalid",ok:!1,error:{code:t,message:n.slice(0,512)||"Request failed"}}}function O(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function q(e,t,n){let{acts:d,pin:a,read:l,archive:g,title:f}=t,S=n.fetchImpl??fetch;if(e.stale){for(let u of[a,l,g])u.disabled=!0;return}let p=a.dataset.on==="true",v=l.dataset.on==="true",E=!1;function o(){a.textContent=p?"\\u2605":"\\u2606",a.dataset.on=String(p),a.setAttribute("aria-pressed",String(p)),a.title=p?"Pinned in bb":"Pin in bb"}function r(){l.textContent=v?"Read":"Unread",l.dataset.on=String(v),l.title=v?"Mark read":"Mark unread"}let s;function i(u){n.view.setStatus(u,!0),s!==void 0&&clearTimeout(s),s=setTimeout(()=>n.view.setStatus("",!1),6e3)}async function m(u){try{let b=await S(e.chromeActionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:e.actionToken,action:u})}),k=await b.json().catch(()=>null),x=k&&k.state;return!b.ok||!k||k.ok!==!0||!x?(i(k&&typeof k.message=="string"&&k.message||`Request failed (${b.status})`),null):{pinned:x.pinned===!0,unread:x.unread===!0,archived:x.archived===!0}}catch(b){return i(b instanceof Error?b.message:"Request failed"),null}}async function c(u){if(E)return null;E=!0,d.dataset.busy="true";try{return await m(u)}finally{E=!1,delete d.dataset.busy}}function h(u){p=u.pinned,v=u.unread,o(),r()}a.addEventListener("click",()=>{c(p?"unpin":"pin").then(u=>{u&&h(u)})}),l.addEventListener("click",()=>{c(v?"read":"unread").then(u=>{u&&h(u)})}),g.addEventListener("click",async()=>{if(E)return;let u=f.textContent?.trim()||"this session";if(!await n.confirmer.confirm(`Archive \\u201C${u}\\u201D? Its page stops being served.`))return;let k=await c("archive");k&&(k.archived?n.view.navigateAway():h(k))}),o(),r()}function I(e){let t=e.querySelector("p"),n=e.querySelector(\'button[value="cancel"]\'),d=e.querySelector(\'button[value="confirm"]\'),a=null,l;function g(f){let S=a;if(a=null,f&&l)try{l()}catch{}l=void 0,e.open&&e.close(),S?.(f)}return n?.addEventListener("click",f=>{f.preventDefault(),g(!1)}),d?.addEventListener("click",f=>{f.preventDefault(),g(!0)}),e.addEventListener("cancel",f=>{f.preventDefault(),g(!1)}),e.addEventListener("close",()=>{a&&g(!1)}),{confirm(f,S){return new Promise(p=>{if(a&&g(!1),t&&(t.textContent=f),a=p,l=S,typeof e.showModal=="function")try{e.showModal()}catch{g(!1)}else g(!1)})}}}function U(e){let t=null;return{inPlace(n){e.location.assign(n)},reserveWindow(){try{if(t=e.open("","_blank"),t)try{t.opener=null}catch{}}catch{t=null}},external(n){let d=t;if(t=null,d&&!d.closed)try{d.location.href=n;return}catch{try{d.close()}catch{}}e.location.assign(n)},release(){let n=t;t=null;try{n?.close()}catch{}}}}function N(e,t,n,d=e.fetch.bind(e)){let a=`"${t.pageRevision}"`,l=!1,g=!1,f=!1,S=t.stale,p=null,v=null;function E(i){p!==null&&clearTimeout(p),p=null,!(g||e.document.visibilityState!=="visible")&&(p=setTimeout(()=>{p=null,s()},i))}function o(){p!==null&&clearTimeout(p),p=null,v?.abort(),v=null}function r(){l?(n.setStatus("Page changed \\u2014 reload when ready",!0),n.showReload(!0)):n.reloadView()}async function s(){if(!(g||f||e.document.visibilityState!=="visible")){if(Date.now()>=t.expiresAt-3e4){g=!0,l?(n.setStatus("Session expiring \\u2014 reload when ready",!0),n.showReload(!0)):n.reloadView();return}f=!0,v=new AbortController;try{let i=await d(t.documentUrl,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":a},signal:v.signal});if(i.status===401||i.status===403){g=!0,n.setStatus("Session expired \\u2014 reload this page",!0),n.showReload(!0);return}if(!i.ok&&i.status!==304){n.setStatus("Page unavailable",!0);return}let m=i.headers.get("x-thread-page-stale")==="true";n.setWorking(i.headers.get("x-thread-page-activity")==="working"),m!==S&&(S=m,n.onStaleChanged(m));let c=i.headers.get("x-thread-page-empty")==="true";n.setStatus(m?"Offline copy \\u2014 read-only":c?A:"",m);let h=i.headers.get("etag");h&&h!==a&&(a=h,r())}catch(i){i instanceof DOMException&&i.name==="AbortError"||n.setStatus("Cannot check for updates",!0)}finally{v=null,f=!1,E(t.pollMs)}}}return e.document.addEventListener("visibilitychange",()=>{e.document.visibilityState==="visible"?E(0):o()}),{start:()=>E(t.pollMs),setDirty:i=>{l=i},pollNow:()=>s(),isStopped:()=>g}}function $(e){let{config:t,confirmer:n,navigator:d}=e,a=e.fetchImpl??fetch;function l(o,r){o.postMessage(r)}async function g(o){return(await a(t.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify(o)})).json().catch(()=>null)}function f(o){return!T(o)||o.kind!=="page"&&o.kind!=="host"&&o.kind!=="external"||typeof o.url!="string"||o.kind==="external"&&!/^https?:\\/\\//i.test(o.url)||o.kind!=="external"&&!o.url.startsWith("/")?null:{kind:o.kind,url:o.url}}function S(o,r,s){if(!T(s)||!H(s.response,r.id)){l(o,M(r.id,"invalid_response","The Thread Page bridge returned an invalid response"));return}let i=s.navigate===void 0?null:f(s.navigate);if(s.response.ok&&i){l(o,s.response),i.kind==="external"?d.external(i.url):d.inPlace(i.url);return}d.release(),l(o,s.response)}async function p(o,r){try{let s=await g({actionToken:t.actionToken,request:r});if(T(s)&&T(s.confirm)){let i=s.confirm;if(typeof i.challenge!="string"||typeof i.summary!="string"||i.requestId!==r.id){l(o,M(r.id,"invalid_response","The Thread Page bridge returned an invalid confirmation"));return}let m=r.method==="navigation.openExternal";if(!await n.confirm(i.summary,m?()=>d.reserveWindow():void 0)){l(o,M(r.id,"cancelled","You declined this action"));return}let h=await g({actionToken:t.actionToken,request:r,confirmation:i.challenge});S(o,r,h);return}S(o,r,s)}catch(s){d.release(),l(o,M(r.id,"unavailable",s instanceof Error?s.message:"The Thread Page bridge is unavailable"))}}async function v(o){let r=o.file;if(!r||typeof r.size!="number")throw new Error("Attachment is not a file");let s=r.name||"file";if(r.size<=0)throw new Error(`Attachment ${s} is empty`);if(r.size>t.maxUploadBytes)throw new Error(`Attachment ${s} is larger than ${Math.round(t.maxUploadBytes/(1024*1024))} MiB`);let i=await oe(r),m=await a(t.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,pageRevision:t.pageRevision,name:s,content:i})}),c=await m.json().catch(()=>null);if(!m.ok||!c||c.ok!==!0||typeof c.name!="string"||typeof c.path!="string"||typeof c.sizeBytes!="number")throw new Error(c&&typeof c.message=="string"&&c.message||`Upload failed (${m.status})`);return{field:String(o.field||"file").slice(0,128),name:c.name,path:c.path,sizeBytes:c.sizeBytes}}async function E(o,r){let s=typeof r.submissionId=="string"?r.submissionId:"";try{let i=(Array.isArray(r.files)?r.files:[]).slice(0,t.maxUploads),m=[];for(let b=0;b<i.length;b+=1)l(o,{kind:"thread-page:submit-progress",submissionId:s,message:`Uploading ${b+1} of ${i.length}\\u2026`}),m.push(await v(i[b]));m.length>0&&l(o,{kind:"thread-page:submit-progress",submissionId:s,message:"Sending\\u2026"});let c=await a(t.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,submissionId:s,pageRevision:t.pageRevision,title:r.title,answers:r.answers,files:m})}),h=await c.json().catch(()=>({ok:!1,message:"Invalid server response"})),u=c.ok&&h.ok===!0;l(o,{kind:"thread-page:submit-result",submissionId:s,ok:u,message:typeof h.delivery=="string"?`Sent (${h.delivery})`:"Sent",error:typeof h.message=="string"?h.message:`Request failed (${c.status})`})}catch(i){l(o,{kind:"thread-page:submit-result",submissionId:s,ok:!1,error:i instanceof Error?i.message:"Request failed"})}}return{handle(o,r){if(T(r)){if(r.kind==="thread-page:dirty"){e.onDirty(!0);return}if(r.kind==="thread-page:clean"){e.onDirty(!1);return}if(r.kind==="thread-page:submit"){E(o,r);return}if(!D(r,t.pageRevision)){l(o,M(r.id,"invalid_request","Invalid Thread Page bridge request"));return}p(o,r)}}}}async function oe(e){let t=new Uint8Array(await e.arrayBuffer()),n="",d=32768;for(let a=0;a<t.length;a+=d)n+=String.fromCharCode.apply(null,Array.from(t.subarray(a,a+d)));return btoa(n)}function j(e,t,n,d){let{frame:a,status:l,work:g,reload:f,dialog:S,acts:p,pin:v,read:E,archive:o,title:r}=n,s=null,i=!0,m=t.stale,c={setStatus(y,w){l.textContent=y,l.dataset.tone=w?"warn":""},setWorking(y){g.dataset.visible=y&&t.workingLabel?"true":"false"},showReload(y){f.dataset.visible=y?"true":"false"},onStaleChanged(y){m=y,s?.postMessage({kind:"thread-page:source-state",stale:y})},reloadView(){e.location.reload()}},h=N(e,t,c,d),u=U(e),b=I(S),k=$({config:t,confirmer:b,navigator:u,onDirty:y=>h.setDirty(y),...d?{fetchImpl:d}:{}}),x=e.document.querySelector("a.home");q(t,{acts:p,pin:v,read:E,archive:o,title:r},{confirmer:b,view:{setStatus:(y,w)=>c.setStatus(y,w),navigateAway:()=>{x?.href?e.location.assign(x.href):e.location.reload()}},...d?{fetchImpl:d}:{}});function X(){let y=new e.MessageChannel,w=y.port1;s=w,w.onmessage=ee=>k.handle(w,ee.data),w.start?.(),a.contentWindow?.postMessage({kind:"thread-page:connect",version:_},"*",[y.port2]),w.postMessage({kind:"thread-page:source-state",stale:m})}return e.addEventListener("message",y=>{if(!i||y.origin!=="null"||y.source!==a.contentWindow)return;let w=y.data;!T(w)||w.kind!=="thread-page:ready"||w.version!==_||(i=!1,X())}),f.addEventListener("click",()=>e.location.reload()),a.src=t.documentUrl,h.start(),{poller:h}}var ie=O(document.currentScript),z=document.querySelector("iframe"),V=document.querySelector("[data-shell-status]"),F=document.querySelector("[data-shell-working]"),W=document.querySelector("[data-shell-reload]"),G=document.querySelector("dialog"),J=document.querySelector("[data-shell-acts]"),K=document.querySelector(\'[data-act="pin"]\'),Y=document.querySelector(\'[data-act="read"]\'),Z=document.querySelector(\'[data-act="archive"]\'),Q=document.querySelector(".title");if(!z||!V||!F||!W||!G||!J||!K||!Y||!Z||!Q)throw new Error("Thread Page shell: chrome is incomplete");j(window,ie,{frame:z,status:V,work:F,reload:W,dialog:G,acts:J,pin:K,read:Y,archive:Z,title:Q});})();';
+
+// src/runtime/shared/protocol.ts
+var EMPTY_PAGE_STATUS = "Not written yet \u2014 the page appears here as soon as the agent saves it";
+var ERROR_CODES = new Set(BRIDGE_ERROR_CODES);
 
 // src/serving/shell-html.ts
 var SHELL_CSS = `
@@ -12590,7 +11723,7 @@ function renderShell(view) {
     ${view.homeUrl ? `<a class="home" href="${escapeHtml(view.homeUrl)}" title="All sessions">\u2190 Sessions</a>` : ""}
     <span class="title">${title2}</span>
     <span class="work" role="status" data-shell-working data-visible="${working}"><span class="dot" aria-hidden="true"></span><span class="word">${escapeHtml(view.config.workingLabel)}</span></span>
-    <span class="status" role="status" data-shell-status${view.config.stale ? ' data-tone="warn"' : ""}>${view.config.stale ? "Offline copy \u2014 read-only" : ""}</span>
+    <span class="status" role="status" data-shell-status${view.config.stale ? ' data-tone="warn"' : ""}>${view.config.stale ? "Offline copy \u2014 read-only" : view.config.empty ? escapeHtml(EMPTY_PAGE_STATUS) : ""}</span>
     <span class="acts" data-shell-acts data-enabled="${view.config.stale ? "false" : "true"}">
       <button type="button" class="act" data-act="pin" data-on="${view.chrome.pinned}" aria-pressed="${view.chrome.pinned}" title="${view.chrome.pinned ? "Pinned in bb" : "Pin in bb"}">${view.chrome.pinned ? "\u2605" : "\u2606"}</button>
       <a class="act" href="${escapeHtml(view.chrome.hostUrl)}" title="Open this session in bb">bb</a>
@@ -12622,9 +11755,11 @@ function shellRoute(serving) {
     try {
       const id = sessionIdFrom(context);
       const session = await eligibleSession(serving, id);
-      const page = await serving.pages.load(id);
+      const page = await loadUnlessUnwritten(serving, id);
+      const revision = page?.revision ?? EMPTY_REVISION;
+      const stale = page?.stale ?? false;
       const now = serving.now();
-      const { token, payload } = mintActionToken({ session: id, revision: page.revision, now }, serving.signingKey);
+      const { token, payload } = mintActionToken({ session: id, revision, now }, serving.signingKey);
       const nonce = randomBytes2(18).toString("base64url");
       const settings = serving.settings.current();
       const home3 = isSessionId(settings.homeSessionId) && settings.homeSessionId !== id ? homeUrl(serving.routeBase) : null;
@@ -12636,7 +11771,7 @@ function shellRoute(serving) {
         chrome: { hostUrl: serving.hostSessionUrl(id), pinned: session.pinned, unread: session.unread },
         config: {
           actionToken: token,
-          pageRevision: page.revision,
+          pageRevision: revision,
           expiresAt: payload.exp,
           documentUrl: serving.site.documentUrl(id),
           submitUrl: `${serving.routeBase}/submit`,
@@ -12644,7 +11779,8 @@ function shellRoute(serving) {
           bridgeUrl: `${serving.routeBase}/bridge`,
           chromeActionUrl: `${serving.routeBase}/chrome-action`,
           workingLabel: settings.workingLabel,
-          stale: page.stale,
+          stale,
+          empty: page === null,
           pollMs: LIMITS.shellPollMs,
           maxUploadBytes: LIMITS.uploadFileBytes,
           maxUploads: LIMITS.uploadsPerForm
@@ -12721,7 +11857,7 @@ function submitRoute(serving) {
       if (submission.pageRevision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
       release = acquireRate(serving, token.session);
       const now = serving.now();
-      const fingerprint2 = sha256Hex(JSON.stringify({ revision: submission.pageRevision, title: submission.title, answers: submission.answers, files: submission.files }));
+      const fingerprint2 = sha256Hex2(JSON.stringify({ revision: submission.pageRevision, title: submission.title, answers: submission.answers, files: submission.files }));
       const remembered = serving.submissions.remember(
         `${token.session}:${submission.submissionId}`,
         fingerprint2,

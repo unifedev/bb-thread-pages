@@ -3,7 +3,7 @@ import { installAnchorInterception } from "./anchors.ts";
 import { installApi } from "./api.ts";
 import { createBridgeClient } from "./bridge-client.ts";
 import { createDirtyTracker } from "./dirty.ts";
-import { buildIntent, capturedForms, isManualForm, lockForm, prepareForm, statusLine, unlockForm, type PendingForm } from "./forms.ts";
+import { buildIntent, formsReachedFrom, isManualForm, lockForm, ownerForm, prepareForm, statusLine, unlockForm, type PendingForm } from "./forms.ts";
 import { createReadOnlyController } from "./readonly.ts";
 
 /**
@@ -47,7 +47,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   });
 
   function prepare(root: ParentNode): void {
-    for (const form of capturedForms(root)) prepareForm(form);
+    for (const form of formsReachedFrom(root)) prepareForm(form);
     readOnly.prepare(root);
   }
 
@@ -65,8 +65,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   }
 
   function markDirty(event: Event): void {
-    const target = event.target as Element | null;
-    const form = target?.closest?.("form");
+    const form = ownerForm(event.target as Element | null);
     if (!form || isManualForm(form)) return;
     dirty.markForm(form);
   }

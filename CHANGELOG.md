@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.3.0 — unreleased
+
+Implements spec 1.1 (`unife-bb-plugin`, DECISIONS D11–D16). In progress: the
+built-in home page and links between a page's own documents come next.
+
+### Nothing to fill in
+
+- `bb thread-page init` creates no file. The agent writes the whole document;
+  until it does, the page's link shows "Not written yet" in the shell's own bar
+  and a line of host text in the frame, and the page appears on the first save.
+- The five-world stylesheet, the seed's reply form and comment, the guide's
+  "What plain HTML already gives you" and the starter hub are gone. The
+  `pageSeedHtml` setting stays for an operator's own starting file, empty by
+  default.
+- An install that stored the 1.0.3–1.2.0 default seed or instruction as its own
+  value reads it as today's default; a value an operator edited is kept.
+- `bb thread-page home` sets the pointer and never creates page content.
+
+### The standing instruction
+
+- Rewritten: run `init` when the session starts, not every turn; nothing is
+  provided to fill in and the page is built for this task; the reader answers
+  where they read, with one empty text field for anything else; chat carries
+  only the link. No control recipes, no styling, no home-page section.
+
+### Controls anywhere on the page
+
+- A control joined to a form with `form="<id>"` is captured with that form
+  wherever it sits: delivered, named, marked dirty, locked while sending and in
+  read-only mode. It used to be silently dropped.
+
+### The guide
+
+- New section *Network, other services and servers*: the page's `null` origin,
+  no browser storage, tokens in headers kept with `storage.set`, why sign-in
+  flows and origin-checked SDKs do not work, and which servers a page reaches.
+- No example pages, page shapes or component snippets.
+
 ## 1.2.0 — 2026-09-11
 
 ### The bar acts on the session you're reading

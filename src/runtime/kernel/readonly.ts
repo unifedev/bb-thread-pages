@@ -1,4 +1,4 @@
-import { capturedForms, controlsOf, statusLine, type FormControl } from "./forms.ts";
+import { capturedForms, controlsOf, formsReachedFrom, statusLine, type FormControl } from "./forms.ts";
 
 /**
  * Read-only mode for an offline copy: disable the captured-form controls the
@@ -39,7 +39,7 @@ export function createReadOnlyController(doc: Document, initial: boolean): ReadO
   }
 
   function lock(root: ParentNode): void {
-    for (const form of capturedForms(root)) {
+    for (const form of formsReachedFrom(root)) {
       for (const control of controlsOf(form)) {
         if (!control.disabled) {
           control.disabled = true;

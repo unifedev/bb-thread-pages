@@ -8,11 +8,15 @@ import { collectAnswers } from "./labels.ts";
  * Every `<form>` without `data-thread-page-manual` is captured: native
  * validation is suppressed (blank is an answer), a status line is kept per
  * form, ranges get a live readout, and while a submission is in flight the
- * form's controls are disabled and restored afterwards.
+ * form's controls are disabled and restored afterwards. A form's controls are
+ * its descendants and every control joined to it from elsewhere in the
+ * document with `form="<id>"`, so a question can sit beside the content it
+ * concerns and still arrive as one answer. spec R4.5a, DECISIONS D12
  */
 export const MANUAL_ATTRIBUTE = "data-thread-page-manual";
 export const STATUS_ATTRIBUTE = "data-thread-page-status";
 const RANGE_ATTRIBUTE = "data-thread-page-range";
+const CONTROL_TAGS = new Set(["input", "textarea", "select", "button", "fieldset"]);
 
 export interface SubmitIntent {
   submissionId: string;
@@ -33,6 +37,31 @@ export function capturedForms(root: ParentNode | Element): HTMLFormElement[] {
   return forms.filter((form) => !isManualForm(form));
 }
 
+/** The form a node answers into: a control's form owner, which honours `form="…"`, else the enclosing form. */
+export function ownerForm(node: Element | null): HTMLFormElement | null {
+  if (!node) return null;
+  const owner = (node as { form?: unknown }).form as Element | null | undefined;
+  if (owner && typeof owner === "object" && owner.tagName?.toLowerCase() === "form") return owner as HTMLFormElement;
+  return node.closest?.("form") ?? null;
+}
+
+/**
+ * Captured forms reachable from `root`: the forms inside it, and the forms
+ * that controls inside it are joined to from elsewhere. Used when content is
+ * added, so a control joined to a form it does not sit in is still prepared.
+ */
+export function formsReachedFrom(root: ParentNode | Element): HTMLFormElement[] {
+  const found = new Set(capturedForms(root));
+  const joined: Element[] = [];
+  if ("hasAttribute" in root && (root as Element).hasAttribute("form")) joined.push(root as Element);
+  if ("querySelectorAll" in root) joined.push(...Array.from(root.querySelectorAll("[form]")));
+  for (const element of joined) {
+    const owner = ownerForm(element);
+    if (owner && !isManualForm(owner)) found.add(owner);
+  }
+  return [...found];
+}
+
 export function statusLine(form: HTMLFormElement): HTMLElement {
   let node = form.querySelector<HTMLElement>(`[${STATUS_ATTRIBUTE}]`);
   if (!node) {
@@ -48,7 +77,9 @@ const preparedRanges = new WeakSet<HTMLInputElement>();
 
 export function prepareForm(form: HTMLFormElement): void {
   form.noValidate = true;
-  for (const input of Array.from(form.querySelectorAll<HTMLInputElement>('input[type="range"]'))) {
+  for (const control of controlsOf(form)) {
+    if (control.tagName.toLowerCase() !== "input" || (control as HTMLInputElement).type !== "range") continue;
+    const input = control as HTMLInputElement;
     if (preparedRanges.has(input)) continue;
     preparedRanges.add(input);
     const output = form.ownerDocument.createElement("output");
@@ -64,13 +95,16 @@ export function prepareForm(form: HTMLFormElement): void {
 
 export type FormControl = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement | HTMLFieldSetElement;
 
+/** Every control that belongs to the form, wherever it sits. spec R4.5a */
 export function controlsOf(form: HTMLFormElement): FormControl[] {
-  return Array.from(form.querySelectorAll<FormControl>("input,textarea,select,button,fieldset"));
+  return Array.from(form.elements).filter((element): element is FormControl => CONTROL_TAGS.has(element.tagName.toLowerCase()));
 }
 
 export function filesOf(form: HTMLFormElement): SubmitFile[] {
   const out: SubmitFile[] = [];
-  for (const input of Array.from(form.querySelectorAll<HTMLInputElement>('input[type="file"]'))) {
+  for (const control of controlsOf(form)) {
+    if (control.tagName.toLowerCase() !== "input" || (control as HTMLInputElement).type !== "file") continue;
+    const input = control as HTMLInputElement;
     if (input.disabled) continue;
     for (const file of Array.from(input.files ?? [])) {
       if (out.length >= LIMITS.uploadsPerForm) return out;
