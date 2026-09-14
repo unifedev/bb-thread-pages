@@ -433,8 +433,8 @@ Then check \`bb plugin logs thread-pages\` once, and read the page over the
 reader's real origin rather than loopback.
 
 Full notes, including what still is not possible:
-\`docs/FOR-PAGE-AUTHORS-1.1.md\` in the plugin, and \`docs/UPGRADING.md\` for
-the 0.3.x method names.`;
+\`docs/FOR-PAGE-AUTHORS-1.1.md\`, and \`docs/UPGRADING.md\` for the 0.3.x method
+names, in the specification at https://syns.dev/bartsoj/bb-thread-pages.`;
 
 const limits = () => `## Limits
 

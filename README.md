@@ -19,9 +19,10 @@ built-in one.
 
 ## This repository is the implementation only
 
-The product is specified in a separate repository, **`unife-bb-plugin`**
-(Syns): `spec/` is the buildable specification, `docs/DECISIONS.md` the
-reasoning, `rewrite/` the architecture of this implementation and the
+The product is specified in a public Syns repository,
+[`bartsoj/bb-thread-pages`](https://syns.dev/bartsoj/bb-thread-pages):
+`spec/` is the buildable specification, `docs/` the decisions, roadmap and
+upgrade notes, `rewrite/` the architecture of this implementation and the
 decisions taken while building it, `verify/` the fixtures and scenarios that
 verify it. Nothing here decides what the product should be.
 
@@ -77,6 +78,20 @@ change under `src/runtime/`; a test fails when they are stale.
 
 Confirmed capabilities render a dialog in the shell; its buttons, not the
 dialog's `close` event, settle the result, so they can be driven headlessly.
+
+## Contributing
+
+The specification comes before the code. The spec, the decisions behind it and
+the tests that verify an implementation are in a public Syns repository,
+[`bartsoj/bb-thread-pages`](https://syns.dev/bartsoj/bb-thread-pages). Read it
+before you change anything here.
+
+1. Fork the spec: `syns fork bartsoj/bb-thread-pages`.
+2. Change the spec in your fork first: the requirement, and a decision when
+   behaviour changes.
+3. Fork this repository and implement against your spec.
+4. Make your Syns fork public and link it from a pull request here. Code and
+   spec are reviewed together and merged together.
 
 ## Serving on bb 0.42.1
 

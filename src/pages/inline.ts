@@ -25,7 +25,7 @@ import { isSafeRelativePath } from "./layout.ts";
  *
  * THIS IS A WORKAROUND AND IT SHOULD BE DELETED. It exists only because the
  * host cannot authorise a sandboxed document's own subresource requests. Once
- * it can — see docs/B1-OWN-FILES.md — a page's files should be served as
+ * it can — see docs/B1-OWN-FILES.md in the spec repository — a page's files should be served as
  * files again, and this module and its wiring should go.
  */
 

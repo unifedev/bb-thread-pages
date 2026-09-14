@@ -93,6 +93,7 @@ describe("the authoring guide", () => {
     expect(upgrading).toContain("Delete the seed's old authoring comment");
     expect(upgrading).toContain("Move inlined data back out");
     expect(upgrading).toContain("docs/FOR-PAGE-AUTHORS-1.1.md");
+    expect(upgrading).toContain("https://syns.dev/bartsoj/bb-thread-pages");
   });
 
   // The one sentence that caused the worst field bug said subresources "load

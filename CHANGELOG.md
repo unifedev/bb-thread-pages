@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.2 — 2026-09-14
+
+- The documents under `docs/` moved to the public specification repository,
+  <https://syns.dev/bartsoj/bb-thread-pages>. The guide's upgrade note links
+  there.
+- The README says how to contribute: change the spec first, in a Syns fork, and
+  link that fork from the pull request.
+
 ## 1.3.1 — 2026-09-14
 
 - **Agent instructions are on by default.** A session started right after
