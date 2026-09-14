@@ -65,7 +65,17 @@ Implements spec 1.1 (`unife-bb-plugin`, DECISIONS D11–D16).
 - New section *Network, other services and servers*: the page's `null` origin,
   no browser storage, tokens in headers kept with `storage.set`, why sign-in
   flows and origin-checked SDKs do not work, and which servers a page reaches.
+- *Several documents in one page* tells agents to keep the page's look in one
+  stylesheet in the page root, linked from every document, so a document opened
+  in place never arrives unstyled.
+- `sessions.snapshot` documents its `status` values.
 - No example pages, page shapes or component snippets.
+
+### Confirmations
+
+- The dialog for `sessions.start` leads with the session's `title` when the
+  page passes one ("Start “Build” in …"), so buttons whose prompts open alike
+  no longer show identical dialogs.
 
 ## 1.2.0 — 2026-09-11
 
