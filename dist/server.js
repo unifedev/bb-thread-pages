@@ -1769,7 +1769,7 @@ var sessionsSnapshot = spec({
   ),
   doc: {
     params: `\`{ projectId?, includeArchived?, includeChildren?, limit?, cursor? }\` \u2014 \`limit\` 1 to ${LIMITS.snapshotMax}, default ${LIMITS.snapshotDefault}; pass the previous result's \`nextCursor\` to continue. By default only root sessions are listed, the way the host's own sidebar shows them; \`includeChildren: true\` adds sub-agent sessions (with \`parentSessionId\` set).`,
-    result: "`{ sessions: [{ id, title, projectId, parentSessionId, status, archived, unread, attentionAtMs, updatedAtMs, page: { available, revision } }], nextCursor, generatedAtMs }`. `unread` means the session asked for the reader's attention (a turn ended, a question) after they last looked at it \u2014 the same mark the host's sidebar shows; `attentionAtMs` is when. `page.revision` is known for pages this host has served recently and `null` otherwise.",
+    result: "`{ sessions: [{ id, title, projectId, parentSessionId, status, archived, unread, attentionAtMs, updatedAtMs, page: { available, revision } }], nextCursor, generatedAtMs }` where `status` is one of `working`, `idle`, `waiting`, `failed`, `stopped`. `unread` means the session asked for the reader's attention (a turn ended, a question) after they last looked at it \u2014 the same mark the host's sidebar shows; `attentionAtMs` is when. `page.revision` is known for pages this host has served recently and `null` otherwise.",
     notes: "No message bodies or agent output are included."
   }
 });
@@ -12275,7 +12275,8 @@ var sessionsStart2 = handler({
   async summarize(params2, context) {
     const { projectName, environmentLabel } = await resolveStart(params2, context);
     const runtime = [params2.providerId, params2.model, params2.reasoningLevel].filter(Boolean).join(" \xB7 ") || "the project's default provider and model";
-    return `Start a session in ${projectName}: \u201C${excerpt(params2.prompt)}\u201D \u2014 using ${runtime}, in ${environmentLabel}`;
+    const what = params2.title ? `Start \u201C${excerpt(params2.title, 60)}\u201D in ${projectName}` : `Start a session in ${projectName}`;
+    return `${what}: \u201C${excerpt(params2.prompt)}\u201D \u2014 using ${runtime}, in ${environmentLabel}`;
   },
   async execute(params2, context) {
     const { args } = await resolveStart(params2, context);

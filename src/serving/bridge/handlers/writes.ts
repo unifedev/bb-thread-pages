@@ -84,7 +84,9 @@ export const sessionsStart = handler<SessionsStartParams, unknown>({
   async summarize(params, context) {
     const { projectName, environmentLabel } = await resolveStart(params, context);
     const runtime = [params.providerId, params.model, params.reasoningLevel].filter(Boolean).join(" · ") || "the project's default provider and model";
-    return `Start a session in ${projectName}: “${excerpt(params.prompt)}” — using ${runtime}, in ${environmentLabel}`;
+    // Several buttons often share a prompt's opening, so a title leads when there is one.
+    const what = params.title ? `Start “${excerpt(params.title, 60)}” in ${projectName}` : `Start a session in ${projectName}`;
+    return `${what}: “${excerpt(params.prompt)}” — using ${runtime}, in ${environmentLabel}`;
   },
   async execute(params, context) {
     const { args } = await resolveStart(params, context);

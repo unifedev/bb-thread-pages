@@ -144,7 +144,7 @@ export const sessionsSnapshot = spec({
   ),
   doc: {
     params: `\`{ projectId?, includeArchived?, includeChildren?, limit?, cursor? }\` — \`limit\` 1 to ${LIMITS.snapshotMax}, default ${LIMITS.snapshotDefault}; pass the previous result's \`nextCursor\` to continue. By default only root sessions are listed, the way the host's own sidebar shows them; \`includeChildren: true\` adds sub-agent sessions (with \`parentSessionId\` set).`,
-    result: "`{ sessions: [{ id, title, projectId, parentSessionId, status, archived, unread, attentionAtMs, updatedAtMs, page: { available, revision } }], nextCursor, generatedAtMs }`. `unread` means the session asked for the reader's attention (a turn ended, a question) after they last looked at it — the same mark the host's sidebar shows; `attentionAtMs` is when. `page.revision` is known for pages this host has served recently and `null` otherwise.",
+    result: "`{ sessions: [{ id, title, projectId, parentSessionId, status, archived, unread, attentionAtMs, updatedAtMs, page: { available, revision } }], nextCursor, generatedAtMs }` where `status` is one of `working`, `idle`, `waiting`, `failed`, `stopped`. `unread` means the session asked for the reader's attention (a turn ended, a question) after they last looked at it — the same mark the host's sidebar shows; `attentionAtMs` is when. `page.revision` is known for pages this host has served recently and `null` otherwise.",
     notes: "No message bodies or agent output are included.",
   },
 });

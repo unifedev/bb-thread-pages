@@ -167,6 +167,8 @@ describe("confirmed effects", () => {
     expect(second.body.response?.result).toEqual({ sessionId: "thr_new" });
     const start = fixture.state.calls.find((entry) => entry.method === "sessions.start")!.args[0];
     expect(start).toEqual({ projectId: "proj_a", prompt: "Run the tests and report.", environment: { kind: "project-default" } });
+    const titled = await confirmed("sessions.start", { projectId: "proj_a", title: "Build", prompt: "You were started from the console to run one routine job: the build." });
+    expect(titled.first.body.confirm?.summary).toMatch(/^Start “Build” in Alpha: “You were started from the console/);
     const unknownProject = await call("sessions.start", { projectId: "proj_zzz", prompt: "x" });
     expect(unknownProject.body.response?.error?.code).toBe("not_found");
     const reuse = await confirmed("sessions.start", { projectId: "proj_a", prompt: "x", environment: { sameAs: "thr_b" }, providerId: "codex", model: "gpt" });
