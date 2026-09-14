@@ -98,9 +98,18 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     true,
   );
 
-  installAnchorInterception(doc, (url, label) => {
-    void bridge.invoke("navigation.openExternal", label ? { url, label } : { url }).catch(() => undefined);
-  });
+  installAnchorInterception(
+    doc,
+    {
+      external: (url, label) => {
+        void bridge.invoke("navigation.openExternal", label ? { url, label } : { url }).catch(() => undefined);
+      },
+      document: (path) => {
+        post({ kind: "thread-page:open-document", path });
+      },
+    },
+    config.siteRoot ?? null,
+  );
 
   function onShellMessage(data: unknown): void {
     if (!isRecord(data)) return;

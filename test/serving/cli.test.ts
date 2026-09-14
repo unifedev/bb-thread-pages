@@ -26,7 +26,7 @@ describe("bb thread-page init", () => {
     expect(first.stdout).toContain(`link: [Open the Thread Page](${ROUTE_BASE}/page?session=thr_a)`);
     expect(first.stdout).toContain("state: NEW — no page yet. Write the whole document");
     expect(first.stdout).toContain("reply in chat with only the link");
-    expect(first.stdout).toContain("home: none set. If the reader wants one place to see and steer their sessions, run `bb thread-page home`");
+    expect(first.stdout).toContain(`home: ${ROUTE_BASE}/home  — the built-in home page, since no page is designated.`);
     expect(fixture.state.files.has(fileKey("thr_a", "index.html"))).toBe(false);
     expect((await fixture.cli(["init"], "thr_a")).stdout).toContain("state: NEW");
     expect(writes()).toHaveLength(0);

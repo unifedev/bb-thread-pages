@@ -24,7 +24,7 @@ export function registerCli(bb: BbPluginApi, deps: CliDeps): void {
     summary: "The page this session writes for its reader: print its path and link, the authoring guide, make it home",
     commands: [
       { name: "init", summary: "Print this session's page path and link, and whether the page exists yet", usage: "bb thread-page init" },
-      { name: "guide", summary: "Print the authoring guide (forms, files, other services, capabilities, limits)", usage: "bb thread-page guide" },
+      { name: "guide", summary: "Print the authoring guide (forms, files, documents, other services, capabilities, limits)", usage: "bb thread-page guide" },
       { name: "home", summary: "Make this session's page the home page every page links back to", usage: "bb thread-page home [--clear]" },
       { name: "status", summary: "Show settings, the instruction new sessions get, and this session's page", usage: "bb thread-page status" },
     ],
@@ -120,15 +120,13 @@ async function ensurePage(deps: CliDeps, id: string, title: string): Promise<Pag
   return { ...report, state: "created" };
 }
 
-/** Tells the agent whether the reader has a home page, and how one comes to exist. */
+/** Tells the agent where home is and how a reader gets one of their own. */
 async function homeLine(deps: CliDeps, current: string): Promise<string> {
   const home = deps.serving.settings.current().homeSessionId;
-  if (isSessionId(home)) {
-    return home === current
-      ? "home: this page is the home page; every other page links back to it."
-      : `home: ${await link(deps, homeUrl(deps.serving.routeBase))}  (every page links back to it; you never write that link)`;
-  }
-  return "home: none set. If the reader wants one place to see and steer their sessions, run `bb thread-page home` in a session dedicated to it and build that page there.";
+  if (isSessionId(home) && home === current) return "home: this page is the home page; every other page links back to it.";
+  const url = await link(deps, homeUrl(deps.serving.routeBase));
+  if (isSessionId(home)) return `home: ${url}  (every page links back to it; you never write that link)`;
+  return `home: ${url}  — the built-in home page, since no page is designated. If the reader wants a home of their own, build it in a session dedicated to it and run \`bb thread-page home\` there.`;
 }
 
 const STATE_LINES: Record<PageState, string> = {
@@ -146,8 +144,8 @@ async function init(deps: CliDeps, context: PluginCliContext): Promise<PluginCli
     `page: ${absolutePath}`,
     `link: [Open the Thread Page](${url})`,
     STATE_LINES[state],
-    `site: files beside ${ENTRY_FILE} are served relatively (nested paths included); ${UPLOAD_DIR}/ holds what the reader attaches.`,
-    "guide: bb thread-page guide  (controls anywhere on the page, your own files, other services and servers, live session state, starting sessions, limits)",
+    `site: files beside ${ENTRY_FILE} are served relatively (nested paths included), other .html files are documents of the page; ${UPLOAD_DIR}/ holds what the reader attaches.`,
+    "guide: bb thread-page guide  (controls anywhere on the page, your own files and documents, other services and servers, live session state, starting sessions, limits)",
     await homeLine(deps, current.id),
   ];
   if (problem) lines.push(`warning: the existing page cannot be served — ${problem}`);
@@ -171,7 +169,7 @@ async function home(deps: CliDeps, context: PluginCliContext): Promise<PluginCli
   lines.push(
     `home: ${current.id}`,
     `link: [Sessions](${url})`,
-    "Every other page now shows a “← Sessions” link back to this one.",
+    "Every other page now shows a “← Sessions” link back to this one, instead of to the built-in home page.",
     state === "existing"
       ? "state: EXISTING — this session's page was left untouched."
       : "state: NO PAGE YET — write this session's page; every other page links back to it. See bb thread-page guide §The home page.",
@@ -181,7 +179,7 @@ async function home(deps: CliDeps, context: PluginCliContext): Promise<PluginCli
 
 async function clearHome(deps: CliDeps): Promise<PluginCliResult> {
   await deps.serving.settings.set({ homeSessionId: null });
-  return { exitCode: 0, stdout: "home: cleared — pages no longer show a Sessions link.\n" };
+  return { exitCode: 0, stdout: "home: cleared — pages link to the built-in home page again.\n" };
 }
 
 async function status(deps: CliDeps, context: PluginCliContext): Promise<PluginCliResult> {
@@ -194,7 +192,7 @@ async function status(deps: CliDeps, context: PluginCliContext): Promise<PluginC
     `agentInstructions: ${settings.agentInstructions ? "on" : "off"}`,
     `pageSeedHtml: ${hasSeed(settings.pageSeedHtml) ? `set (${settings.pageSeedHtml.length} characters) — init starts new pages from it` : "(empty — init creates no file; the agent writes the whole page)"}`,
     `workingLabel: ${settings.workingLabel ? JSON.stringify(settings.workingLabel) : "(blank — indicator hidden)"}`,
-    `homeSessionId: ${settings.homeSessionId || "(none — pages show no Sessions link)"}`,
+    `homeSessionId: ${settings.homeSessionId || "(none — pages link to the built-in home page)"}`,
     `site strategy: ${serving.site.name}`,
     `limits: entry ${LIMITS.entryDocumentBytes / (1024 * 1024)} MiB, upload ${LIMITS.uploadFileBytes / (1024 * 1024)} MiB × ${LIMITS.uploadsPerForm}, rate ${LIMITS.ratePerMinute}/min`,
     "",

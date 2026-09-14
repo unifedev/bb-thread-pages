@@ -12,8 +12,8 @@ export interface ShellView {
   title: string;
   homeUrl: string | null;
   working: boolean;
-  /** The bar's own actions on the shown session: pin in the host, open its conversation, read mark, archive. */
-  chrome: { hostUrl: string; pinned: boolean; unread: boolean };
+  /** The bar's own actions on the shown session: pin in the host, open its conversation, read mark, archive. Null for the built-in home. */
+  chrome: { hostUrl: string; pinned: boolean; unread: boolean } | null;
   config: ShellConfig;
 }
 
@@ -46,11 +46,26 @@ dialog .row{display:flex;gap:.5rem;justify-content:flex-end}dialog button{paddin
 dialog button[value=confirm]{color:#fff;background:var(--accent);border-color:var(--accent)}
 `;
 
+function initialStatus(config: ShellConfig): string {
+  if (config.stale) return "Offline copy — read-only";
+  if (config.empty) return EMPTY_PAGE_STATUS;
+  return config.notice ?? "";
+}
+
 export function renderShell(view: ShellView): string {
   const title = escapeHtml(view.title);
   const nonce = escapeHtml(view.nonce);
   const config = escapeHtml(JSON.stringify(view.config));
   const working = view.working && view.config.workingLabel ? "true" : "false";
+  const warn = view.config.stale || (!view.config.empty && view.config.notice !== null);
+  const acts = view.chrome
+    ? `<span class="acts" data-shell-acts data-enabled="${view.config.stale ? "false" : "true"}">
+      <button type="button" class="act" data-act="pin" data-on="${view.chrome.pinned}" aria-pressed="${view.chrome.pinned}" title="${view.chrome.pinned ? "Pinned in bb" : "Pin in bb"}">${view.chrome.pinned ? "★" : "☆"}</button>
+      <a class="act" href="${escapeHtml(view.chrome.hostUrl)}" title="Open this session in bb">bb</a>
+      <button type="button" class="act" data-act="read" data-on="${view.chrome.unread}" title="${view.chrome.unread ? "Mark read" : "Mark unread"}">${view.chrome.unread ? "Read" : "Unread"}</button>
+      <button type="button" class="act act-warn" data-act="archive" title="Archive this session">Archive</button>
+    </span>`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -66,13 +81,8 @@ export function renderShell(view: ShellView): string {
     ${view.homeUrl ? `<a class="home" href="${escapeHtml(view.homeUrl)}" title="All sessions">← Sessions</a>` : ""}
     <span class="title">${title}</span>
     <span class="work" role="status" data-shell-working data-visible="${working}"><span class="dot" aria-hidden="true"></span><span class="word">${escapeHtml(view.config.workingLabel)}</span></span>
-    <span class="status" role="status" data-shell-status${view.config.stale ? ' data-tone="warn"' : ""}>${view.config.stale ? "Offline copy — read-only" : view.config.empty ? escapeHtml(EMPTY_PAGE_STATUS) : ""}</span>
-    <span class="acts" data-shell-acts data-enabled="${view.config.stale ? "false" : "true"}">
-      <button type="button" class="act" data-act="pin" data-on="${view.chrome.pinned}" aria-pressed="${view.chrome.pinned}" title="${view.chrome.pinned ? "Pinned in bb" : "Pin in bb"}">${view.chrome.pinned ? "★" : "☆"}</button>
-      <a class="act" href="${escapeHtml(view.chrome.hostUrl)}" title="Open this session in bb">bb</a>
-      <button type="button" class="act" data-act="read" data-on="${view.chrome.unread}" title="${view.chrome.unread ? "Mark read" : "Mark unread"}">${view.chrome.unread ? "Read" : "Unread"}</button>
-      <button type="button" class="act act-warn" data-act="archive" title="Archive this session">Archive</button>
-    </span>
+    <span class="status" role="status" data-shell-status${warn ? ' data-tone="warn"' : ""}>${escapeHtml(initialStatus(view.config))}</span>
+    ${acts}
     <button type="button" class="reload" data-shell-reload aria-label="Reload updated page">Reload</button>
   </header>
   <iframe title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>

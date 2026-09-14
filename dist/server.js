@@ -262,8 +262,9 @@ function isSafeRelativePath(path) {
 }
 
 // src/serving/context.ts
-function pageUrl(routeBase, session) {
-  return `${routeBase}/page?session=${encodeURIComponent(session)}`;
+function pageUrl(routeBase, session, path) {
+  const base = `${routeBase}/page?session=${encodeURIComponent(session)}`;
+  return path ? `${base}&path=${encodeURIComponent(path)}` : base;
 }
 function homeUrl(routeBase) {
   return `${routeBase}/home`;
@@ -290,7 +291,7 @@ function registerCli(bb, deps) {
     summary: "The page this session writes for its reader: print its path and link, the authoring guide, make it home",
     commands: [
       { name: "init", summary: "Print this session's page path and link, and whether the page exists yet", usage: "bb thread-page init" },
-      { name: "guide", summary: "Print the authoring guide (forms, files, other services, capabilities, limits)", usage: "bb thread-page guide" },
+      { name: "guide", summary: "Print the authoring guide (forms, files, documents, other services, capabilities, limits)", usage: "bb thread-page guide" },
       { name: "home", summary: "Make this session's page the home page every page links back to", usage: "bb thread-page home [--clear]" },
       { name: "status", summary: "Show settings, the instruction new sessions get, and this session's page", usage: "bb thread-page status" }
     ],
@@ -371,10 +372,10 @@ async function ensurePage(deps, id, title2) {
 }
 async function homeLine(deps, current) {
   const home3 = deps.serving.settings.current().homeSessionId;
-  if (isSessionId(home3)) {
-    return home3 === current ? "home: this page is the home page; every other page links back to it." : `home: ${await link(deps, homeUrl(deps.serving.routeBase))}  (every page links back to it; you never write that link)`;
-  }
-  return "home: none set. If the reader wants one place to see and steer their sessions, run `bb thread-page home` in a session dedicated to it and build that page there.";
+  if (isSessionId(home3) && home3 === current) return "home: this page is the home page; every other page links back to it.";
+  const url = await link(deps, homeUrl(deps.serving.routeBase));
+  if (isSessionId(home3)) return `home: ${url}  (every page links back to it; you never write that link)`;
+  return `home: ${url}  \u2014 the built-in home page, since no page is designated. If the reader wants a home of their own, build it in a session dedicated to it and run \`bb thread-page home\` there.`;
 }
 var STATE_LINES = {
   absent: "state: NEW \u2014 no page yet. Write the whole document at the path above; nothing is provided to fill in. Then reply in chat with only the link.",
@@ -390,8 +391,8 @@ async function init(deps, context) {
     `page: ${absolutePath}`,
     `link: [Open the Thread Page](${url})`,
     STATE_LINES[state],
-    `site: files beside ${ENTRY_FILE} are served relatively (nested paths included); ${UPLOAD_DIR}/ holds what the reader attaches.`,
-    "guide: bb thread-page guide  (controls anywhere on the page, your own files, other services and servers, live session state, starting sessions, limits)",
+    `site: files beside ${ENTRY_FILE} are served relatively (nested paths included), other .html files are documents of the page; ${UPLOAD_DIR}/ holds what the reader attaches.`,
+    "guide: bb thread-page guide  (controls anywhere on the page, your own files and documents, other services and servers, live session state, starting sessions, limits)",
     await homeLine(deps, current.id)
   ];
   if (problem) lines.push(`warning: the existing page cannot be served \u2014 ${problem}`);
@@ -416,7 +417,7 @@ async function home(deps, context) {
   lines.push(
     `home: ${current.id}`,
     `link: [Sessions](${url})`,
-    "Every other page now shows a \u201C\u2190 Sessions\u201D link back to this one.",
+    "Every other page now shows a \u201C\u2190 Sessions\u201D link back to this one, instead of to the built-in home page.",
     state === "existing" ? "state: EXISTING \u2014 this session's page was left untouched." : "state: NO PAGE YET \u2014 write this session's page; every other page links back to it. See bb thread-page guide \xA7The home page."
   );
   return { exitCode: 0, stdout: `${lines.join("\n")}
@@ -424,7 +425,7 @@ async function home(deps, context) {
 }
 async function clearHome(deps) {
   await deps.serving.settings.set({ homeSessionId: null });
-  return { exitCode: 0, stdout: "home: cleared \u2014 pages no longer show a Sessions link.\n" };
+  return { exitCode: 0, stdout: "home: cleared \u2014 pages link to the built-in home page again.\n" };
 }
 async function status(deps, context) {
   const { serving } = deps;
@@ -436,7 +437,7 @@ async function status(deps, context) {
     `agentInstructions: ${settings.agentInstructions ? "on" : "off"}`,
     `pageSeedHtml: ${hasSeed(settings.pageSeedHtml) ? `set (${settings.pageSeedHtml.length} characters) \u2014 init starts new pages from it` : "(empty \u2014 init creates no file; the agent writes the whole page)"}`,
     `workingLabel: ${settings.workingLabel ? JSON.stringify(settings.workingLabel) : "(blank \u2014 indicator hidden)"}`,
-    `homeSessionId: ${settings.homeSessionId || "(none \u2014 pages show no Sessions link)"}`,
+    `homeSessionId: ${settings.homeSessionId || "(none \u2014 pages link to the built-in home page)"}`,
     `site strategy: ${serving.site.name}`,
     `limits: entry ${LIMITS.entryDocumentBytes / (1024 * 1024)} MiB, upload ${LIMITS.uploadFileBytes / (1024 * 1024)} MiB \xD7 ${LIMITS.uploadsPerForm}, rate ${LIMITS.ratePerMinute}/min`,
     "",
@@ -469,6 +470,7 @@ function buildGuide(registry, site) {
     forms(),
     uploads(),
     ownFiles(site),
+    documents(),
     keepingCurrent(),
     runtimeApi(),
     capabilities(registry),
@@ -795,19 +797,40 @@ legitimate. The rule that does not bend: every page still has one owning
 session, and that session's agent builds the page the first time, whether or
 not a script takes over afterwards. A page with no agent behind it is a page
 nobody can be asked to change.`;
+var documents = () => `## Several documents in one page
+
+Your page may hold more than one HTML document. Any \`.html\` file in your page
+root other than ${ENTRY_FILE} \u2014 nested directories included, ${UPLOAD_DIR}/ excluded
+\u2014 is a document of the page. Link to it relatively, as a static site would:
+
+    <a href="details.html">Details</a>
+
+A click on such a link opens that document **inside the page**: the top bar
+stays, the address changes so reload, back and forward return to it, and it
+runs with the same runtime \u2014 its forms answer your session and its
+capabilities act for it. Each document has its own revision, so saving one
+reloads only a reader who is looking at it. Its own relative references
+resolve from its own directory.
+
+What does not carry over: script state. Each document starts fresh, like a
+page load. When state has to survive switching \u2014 a half-typed answer on one
+view while the reader looks at another \u2014 keep the views in one document and
+switch them with script instead.`;
 var home2 = () => `## The home page
 
 One page is home; every other page shows a "\u2190 Sessions" link back to it in
-chrome you never write. \`bb thread-page home\` sets the pointer for the
-current session (\`--clear\` removes it) and never creates or touches page
-content. Home is an ordinary page. If the reader asks for one place to see and
-steer their sessions, build it in a session dedicated to it \u2014 start one for
-the purpose if you are mid-task \u2014 so nothing else ever rewrites it: its
-buttons open other pages and start fresh sessions, and nothing messages its
-own session. The reader can ask that session to change it at any time.
+chrome you never write. Until a page is designated, home is the **built-in
+home page**: a hub of the reader's sessions the plugin ships, running in the
+same sandbox as any page. \`bb thread-page home\` makes the current session's
+page home instead (\`--clear\` returns to the built-in one); it never creates
+or touches page content.
 
-Refresh a page like this on a slow watch, not a tight timer: it shares a rate
-budget of ${LIMITS.ratePerMinute} requests a minute with its own forms.`;
+If the reader asks for a home of their own, build it in a session dedicated
+to it \u2014 start one for the purpose if you are mid-task \u2014 so nothing else ever
+rewrites it: its buttons open other pages and start fresh sessions, and
+nothing messages its own session. The reader can ask that session to change
+it at any time. Refresh a page like this on a slow watch, not a tight timer:
+it shares a rate budget of ${LIMITS.ratePerMinute} requests a minute with its own forms.`;
 var accessibility = () => `## Before you save
 
 - Read it once at 320px wide, once in dark mode, once with reduced motion.
@@ -1204,6 +1227,13 @@ function isConflict(error) {
 }
 function hostUnavailable(error) {
   return PageError.is(error) ? error : new PageError("unavailable", PUBLIC_MESSAGES.unavailable, { cause: error });
+}
+
+// src/bb/host-urls.ts
+var BB_PERSONAL_PROJECT_ID = "proj_personal";
+function bbSessionUrl(session) {
+  const id = encodeURIComponent(session.id);
+  return session.projectId && session.projectId !== BB_PERSONAL_PROJECT_ID ? `/projects/${encodeURIComponent(session.projectId)}/threads/${id}` : `/threads/${id}`;
 }
 
 // src/agent/instruction.ts
@@ -2105,6 +2135,24 @@ function completeInvocation(invocation, result2) {
 
 // src/domain/capabilities/index.ts
 var capabilityRegistry = createRegistry(ALL_CAPABILITIES);
+
+// src/domain/document-path.ts
+var ENTRY_DOCUMENT = "index.html";
+var UPLOADS = "uploads/";
+function isDocumentPath(path) {
+  if (typeof path !== "string" || path.length === 0 || path.length > 1024) return false;
+  if (path.includes("\0") || path.includes("\\") || path.startsWith("/") || path.startsWith(UPLOADS)) return false;
+  if (!path.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..")) return false;
+  return /\.html?$/i.test(path);
+}
+function directoryOf(path) {
+  if (!path) return "";
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? "" : path.slice(0, slash + 1);
+}
+function documentKey(path) {
+  return !path || path === ENTRY_DOCUMENT ? null : path;
+}
 
 // src/domain/rate-limit.ts
 function createRateLimiter(budget = { perMinute: LIMITS.ratePerMinute, concurrent: LIMITS.rateConcurrent }) {
@@ -10466,7 +10514,7 @@ function dataUrl(bytes, mimeType) {
   return `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`;
 }
 var CSS_URL = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
-async function resolveOwnFiles(html, read) {
+async function resolveOwnFiles(html, read, base = "") {
   const document = parse(html);
   const resolved = [];
   const skipped = [];
@@ -10504,14 +10552,14 @@ async function resolveOwnFiles(html, read) {
     return dataUrl(bytes, mimeType);
   }
   async function resolveCss(css, from, depth) {
-    const base = from.includes("/") ? from.slice(0, from.lastIndexOf("/") + 1) : "";
+    const cssBase = from.includes("/") ? from.slice(0, from.lastIndexOf("/") + 1) : "";
     const replacements = /* @__PURE__ */ new Map();
     for (const match of css.matchAll(CSS_URL)) {
       const reference = match[2] ?? "";
       if (!isOwnFileReference(reference) || replacements.has(reference)) continue;
       const path = pathOf(reference);
       if (!path) continue;
-      const url = await urlFor(normalise(base + path), depth + 1);
+      const url = await urlFor(normalise(cssBase + path), depth + 1);
       if (url) replacements.set(reference, url);
     }
     if (replacements.size === 0) return css;
@@ -10535,7 +10583,7 @@ async function resolveOwnFiles(html, read) {
       if (reference === null || !isOwnFileReference(reference)) continue;
       const path = pathOf(reference);
       if (!path) continue;
-      const url = await urlFor(normalise(path), 0);
+      const url = await urlFor(normalise(base + path), 0);
       if (!url) continue;
       setAttribute(element, carrier.attr, url);
       changed = true;
@@ -10543,7 +10591,7 @@ async function resolveOwnFiles(html, read) {
     if (element.tagName === "img" || element.tagName === "source") {
       const srcset = attributeOf(element, "srcset");
       if (srcset !== null) {
-        const rewritten = await resolveSrcset(srcset, urlFor);
+        const rewritten = await resolveSrcset(srcset, urlFor, base);
         if (rewritten !== null) {
           setAttribute(element, "srcset", rewritten);
           changed = true;
@@ -10553,7 +10601,7 @@ async function resolveOwnFiles(html, read) {
   }
   return { html: changed ? serialize(document) : html, resolved, skipped };
 }
-async function resolveSrcset(srcset, urlFor) {
+async function resolveSrcset(srcset, urlFor, base) {
   const candidates = srcset.split(",").map((entry) => entry.trim()).filter(Boolean);
   const rewritten = [];
   let changed = false;
@@ -10564,7 +10612,7 @@ async function resolveSrcset(srcset, urlFor) {
       continue;
     }
     const path = pathOf(reference);
-    const url = path ? await urlFor(normalise(path), 0) : null;
+    const url = path ? await urlFor(normalise(base + path), 0) : null;
     if (!url) {
       rewritten.push(candidate);
       continue;
@@ -10605,19 +10653,22 @@ function ifNoneMatchMatches(header, etag) {
 
 // src/pages/page-store.ts
 var KV_PREFIX = "cache:";
+function cacheKey(session, path) {
+  return path ? `${session}#${path}` : session;
+}
 function createPageStore(host, resolve) {
   const memory = /* @__PURE__ */ new Map();
   let memoryBytes = 0;
   function cost(page) {
     return Buffer.byteLength(page.html, "utf8") + 128;
   }
-  function retain(session, page) {
-    const previous = memory.get(session);
+  function retain(key, page) {
+    const previous = memory.get(key);
     if (previous) {
       memoryBytes -= cost(previous);
-      memory.delete(session);
+      memory.delete(key);
     }
-    memory.set(session, page);
+    memory.set(key, page);
     memoryBytes += cost(page);
     while (memory.size > LIMITS.offlineCacheEntries || memoryBytes > LIMITS.offlineCacheBytes) {
       const oldest = memory.keys().next().value;
@@ -10627,31 +10678,31 @@ function createPageStore(host, resolve) {
       if (evicted) memoryBytes -= cost(evicted);
     }
   }
-  async function persist(session, page, previousRevision) {
+  async function persist(key, page, previousRevision) {
     if (previousRevision === page.revision) return;
-    const key = KV_PREFIX + session;
+    const kvKey = KV_PREFIX + key;
     const bytes = Buffer.byteLength(page.html, "utf8");
     if (bytes > LIMITS.offlineCopyBytes) {
       host.log.warn(
-        `offline copy: ${session} is ${Math.round(bytes / 1024)} KiB, over the ${LIMITS.offlineCopyBytes / 1024} KiB limit \u2014 the page will not open while its host is unreachable`
+        `offline copy: ${key} is ${Math.round(bytes / 1024)} KiB, over the ${LIMITS.offlineCopyBytes / 1024} KiB limit \u2014 the page will not open while its host is unreachable`
       );
-      await host.kv.delete(key).catch((error) => host.log.warn(`offline copy: could not clear ${session}: ${errorText(error)}`));
+      await host.kv.delete(kvKey).catch((error) => host.log.warn(`offline copy: could not clear ${key}: ${errorText(error)}`));
       return;
     }
-    await host.kv.set(key, { html: page.html, revision: page.revision, updatedAtMs: page.updatedAtMs }).catch((error) => {
-      host.log.warn(`offline copy: could not store ${session}: ${errorText(error)}`);
+    await host.kv.set(kvKey, { html: page.html, revision: page.revision, updatedAtMs: page.updatedAtMs }).catch((error) => {
+      host.log.warn(`offline copy: could not store ${key}: ${errorText(error)}`);
     });
   }
-  async function cached(session) {
-    const resident = memory.get(session);
+  async function cached(key) {
+    const resident = memory.get(key);
     if (resident) return resident;
     try {
-      const stored = await host.kv.get(KV_PREFIX + session);
+      const stored = await host.kv.get(KV_PREFIX + key);
       if (!isCachedPage(stored)) return null;
-      retain(session, stored);
+      retain(key, stored);
       return stored;
     } catch (error) {
-      host.log.warn(`offline copy: could not read ${session}: ${errorText(error)}`);
+      host.log.warn(`offline copy: could not read ${key}: ${errorText(error)}`);
       return null;
     }
   }
@@ -10663,17 +10714,19 @@ function createPageStore(host, resolve) {
     return page;
   }
   return {
-    async load(session) {
+    async load(session, requested) {
+      const path = documentKey(requested);
+      const key = cacheKey(session, path);
       let content;
       try {
         const location = await host.sessions.storage(session);
-        content = await host.files.read(location, ENTRY_FILE);
+        content = await host.files.read(location, path ?? ENTRY_FILE);
       } catch (error) {
-        const fallback = await cached(session);
+        const fallback = await cached(key);
         if (fallback) return { ...fallback, stale: true, site: { resolved: 0, skipped: [] } };
         throw PageError.is(error) ? error : new PageError("unavailable", PUBLIC_MESSAGES.unavailable, { cause: error });
       }
-      if (!content) throw new PageError("no_page", PUBLIC_MESSAGES.noPage);
+      if (!content) throw path ? new PageError("not_found", "That document of the page does not exist.") : new PageError("no_page", PUBLIC_MESSAGES.noPage);
       if (content.bytes.byteLength > LIMITS.entryDocumentBytes) {
         throw new PageError("page_too_large", PUBLIC_MESSAGES.pageTooLarge);
       }
@@ -10682,20 +10735,20 @@ function createPageStore(host, resolve) {
       let site = { resolved: 0, skipped: [] };
       if (resolve) {
         try {
-          const outcome = await resolve(session, authored);
+          const outcome = await resolve(session, authored, path);
           html = outcome.html;
           site = { resolved: outcome.resolved.length, skipped: outcome.skipped };
           for (const file of outcome.skipped) {
-            host.log.warn(`page ${session}: ${file.path} is referenced but was not carried into the document (${file.reason})`);
+            host.log.warn(`page ${key}: ${file.path} is referenced but was not carried into the document (${file.reason})`);
           }
         } catch (error) {
-          host.log.warn(`page ${session}: could not resolve its own files: ${errorText(error)}`);
+          host.log.warn(`page ${key}: could not resolve its own files: ${errorText(error)}`);
         }
       }
       const page = { html, revision: revisionOf(html), updatedAtMs: content.modifiedAtMs ?? Date.now() };
-      const previous = memory.get(session)?.revision;
-      retain(session, page);
-      await persist(session, page, previous);
+      const previous = memory.get(key)?.revision;
+      retain(key, page);
+      await persist(key, page, previous);
       return { ...page, stale: false, site };
     },
     remember,
@@ -10711,11 +10764,15 @@ function isCachedPage(value) {
 }
 
 // src/pages/site.ts
+function encodePath(path) {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
 function createCoreStorageSite(routeBase, storageFilesBase) {
   return {
     name: "core-storage",
-    documentUrl: (session) => `${routeBase}/document?session=${encodeURIComponent(session)}`,
-    baseHref: (session) => storageFilesBase(session)
+    documentUrl: (session, path) => `${routeBase}/document?session=${encodeURIComponent(session)}${path ? `&path=${encodeURIComponent(path)}` : ""}`,
+    baseHref: (session, path) => `${storageFilesBase(session)}${encodePath(directoryOf(path))}`,
+    siteRoot: (session) => storageFilesBase(session)
   };
 }
 
@@ -10844,15 +10901,10 @@ function challengeMatches(challenge, binding) {
 
 // src/domain/tokens/action-token.ts
 function mintActionToken(args, key) {
-  const payload = {
-    v: 3,
-    scope: "action",
-    session: args.session,
-    revision: args.revision,
-    iat: args.now,
-    exp: args.now + LIMITS.actionTokenMs
-  };
-  return { token: signPayload(payload, key), payload };
+  const path = documentKey(args.path);
+  const base = { v: 3, scope: "action", session: args.session, revision: args.revision, iat: args.now, exp: args.now + LIMITS.actionTokenMs };
+  const signed = path ? { ...base, path } : base;
+  return { token: signPayload(signed, key), payload: { ...base, path } };
 }
 function verifyActionToken(token, key, now) {
   if (typeof token !== "string" || token.length === 0 || token.length > LIMITS.tokenChars) return null;
@@ -10861,11 +10913,17 @@ function verifyActionToken(token, key, now) {
   if (payload.v !== 3 || payload.scope !== "action" || !isSessionId(payload.session) || !isRevision(payload.revision) || !lifetimeValid({ iat: payload.iat, exp: payload.exp }, now, LIMITS.actionTokenMs)) {
     return null;
   }
+  let path = null;
+  if (payload.path !== void 0) {
+    if (!isDocumentPath(payload.path) || documentKey(payload.path) === null) return null;
+    path = payload.path;
+  }
   return {
     v: 3,
     scope: "action",
     session: payload.session,
     revision: payload.revision,
+    path,
     iat: payload.iat,
     exp: payload.exp
   };
@@ -10893,6 +10951,920 @@ function acquireRate(serving, session) {
   if (!release) throw new PageError("rate_limited", PUBLIC_MESSAGES.rateLimited);
   return release;
 }
+
+// src/generated/builtin-home.ts
+var BUILTIN_HOME_HTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Sessions</title>
+  <style>
+  /* ================================================================
+     NIGHT OPS \u2014 a command deck for many agents
+     The built-in home page of Thread Pages. Dark-first control-room look:
+     a deep field with a faint aurora, phosphor signal colours on a mono
+     data layer, and one display face for headings. Light mode keeps the
+     same character on warm paper. Every colour is a token at :root.
+     ================================================================ */
+
+  :root {
+    --bg0: #05070d;
+    --bg1: #0a0e18;
+    --panel: rgba(148, 163, 255, 0.045);
+    --panel-2: rgba(148, 163, 255, 0.09);
+    --line: rgba(160, 175, 255, 0.14);
+    --line-soft: rgba(160, 175, 255, 0.07);
+    --ink: #e9edf7;
+    --ink-2: #a6b0c8;
+    --ink-3: #67718c;
+    --accent: #8b9dff;
+    --accent-ink: #070a14;
+    --accent-soft: rgba(139, 157, 255, 0.14);
+    --amber: #f0b25a;
+    --rose: #fb6f92;
+    --green: #4fd68a;
+    --cyan: #6cd5f5;
+    --glow-accent: rgba(139, 157, 255, 0.45);
+    --glow-amber: rgba(240, 178, 90, 0.5);
+    --glow-rose: rgba(251, 111, 146, 0.5);
+    --glow-green: rgba(79, 214, 138, 0.45);
+    --radius: 12px;
+    --dur: 180ms;
+    --ease: cubic-bezier(.2,.7,.25,1);
+    --font-display: "Space Grotesk", ui-sans-serif, -apple-system, system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --font-body: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg0: #f2efe7;
+      --bg1: #faf8f2;
+      --panel: rgba(20, 24, 38, 0.04);
+      --panel-2: rgba(20, 24, 38, 0.08);
+      --line: rgba(20, 24, 38, 0.16);
+      --line-soft: rgba(20, 24, 38, 0.09);
+      --ink: #141823;
+      --ink-2: #454e63;
+      --ink-3: #7a8299;
+      --accent: #4353cf;
+      --accent-ink: #f6f6ff;
+      --accent-soft: rgba(67, 83, 207, 0.12);
+      --amber: #9a6a15;
+      --rose: #c4304f;
+      --green: #1c7a48;
+      --cyan: #0e7490;
+      --glow-accent: rgba(67, 83, 207, 0.3);
+      --glow-amber: rgba(154, 106, 21, 0.35);
+      --glow-rose: rgba(196, 48, 79, 0.3);
+      --glow-green: rgba(28, 122, 72, 0.3);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :root { --dur: 0ms; }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+
+  html { -webkit-text-size-adjust: 100%; background: var(--bg0); }
+  body {
+    margin: 0;
+    background: var(--bg0);
+    color: var(--ink);
+    font: 400 15px/1.55 var(--font-body);
+    font-feature-settings: "kern", "liga";
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent-soft); }
+
+  /* The field: a faint aurora. Bounded, low-alpha, and the page is complete without it. */
+  .atmosphere { position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background:
+      radial-gradient(58rem 36rem at 84% -14%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 62%),
+      radial-gradient(46rem 32rem at -10% 106%, color-mix(in srgb, var(--cyan) 8%, transparent), transparent 60%),
+      var(--bg0);
+  }
+
+  .wrap { max-width: 76rem; margin: 0 auto; padding: 3.2rem 3rem 7rem; }
+  @media (max-width: 640px) { .wrap { padding: 2.2rem 1.1rem 4.5rem; } }
+
+  /* ---- header ---- */
+  header.brief-head { margin-bottom: 1.9rem; padding-bottom: 1.6rem; border-bottom: 1px solid var(--line); }
+  .overline { margin: 0 0 .5rem; font: 500 .68rem/1.3 var(--font-mono); letter-spacing: .22em; text-transform: uppercase; color: var(--accent); }
+  header.brief-head h1 {
+    margin: 0;
+    font: 600 clamp(2.4rem, 5.5vw, 3.4rem)/1.02 var(--font-display);
+    letter-spacing: -0.03em;
+    text-wrap: balance;
+  }
+  .brief-meta { margin: .8rem 0 0; display: flex; flex-wrap: wrap; gap: .4rem 1.1rem; font: 400 .74rem/1.5 var(--font-mono); letter-spacing: .02em; color: var(--ink-3); }
+  .brief-meta code { font: inherit; color: var(--ink-2); background: var(--panel); border: 1px solid var(--line-soft); padding: .05em .4em; border-radius: 6px; }
+
+  h2 { margin: 0; }
+  p { margin: 0; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* ---- control deck (sticky) ---- */
+  .hubbar { position: sticky; top: 0; z-index: 5;
+    display: flex; flex-wrap: wrap; gap: .5rem .6rem; align-items: center;
+    margin: 0 -0.8rem; padding: .65rem .8rem;
+    background: var(--bg0);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  [data-search] { flex: 1 1 12rem; min-width: 8.5rem; margin: 0;
+    padding: .48rem .9rem; font: 400 .83rem/1.4 var(--font-mono);
+    color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 999px;
+  }
+  [data-search]::placeholder { color: var(--ink-3); }
+  [data-search]:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px;
+    background: var(--panel); border: 1px solid var(--line-soft); border-radius: 999px; }
+  .chips button { margin: 0; padding: .32rem .66rem;
+    font: 500 .68rem/1.4 var(--font-mono); letter-spacing: .07em; text-transform: uppercase;
+    color: var(--ink-2); background: transparent; border: 0; border-radius: 999px; cursor: pointer;
+    transition: color var(--dur) var(--ease), background-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  }
+  .chips button .n { font-variant-numeric: tabular-nums; font-weight: 400; opacity: .62; margin-left: .3em; }
+  .chips button:hover { color: var(--ink); }
+  .chips button[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); box-shadow: 0 0 14px var(--glow-accent); }
+  .chips button[aria-pressed="true"] .n { opacity: .75; }
+
+  .bar-end { margin-left: auto; display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; }
+  .bar-end > button { margin: 0; padding: .34rem .7rem;
+    font: 500 .68rem/1.4 var(--font-mono); letter-spacing: .07em; text-transform: uppercase;
+    color: var(--ink-2); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; cursor: pointer;
+    transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  }
+  .bar-end > button:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); box-shadow: 0 0 10px var(--accent-soft); }
+  .kids { display: inline-flex; gap: .35rem; align-items: center; font: 400 .68rem/1.4 var(--font-mono); letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); cursor: pointer; white-space: nowrap; }
+  .kids input { accent-color: var(--accent); margin: 0; }
+  .say { font: 500 .7rem/1.4 var(--font-mono); color: var(--green); }
+  .meta { font: 400 .68rem/1.4 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); white-space: nowrap; }
+
+  .needs-you { margin-top: 1rem; padding: .6rem .9rem;
+    font: 500 .76rem/1.5 var(--font-mono); color: var(--rose);
+    background: color-mix(in srgb, var(--rose) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--rose) 30%, transparent);
+    border-left-width: 3px; border-radius: 8px;
+  }
+
+  /* ---- lanes and groups ---- */
+  .lane, .group { margin-top: 1.35rem; scroll-margin-top: 5rem; }
+  .lane-head, .group-head { display: flex; align-items: baseline; gap: .6rem; padding: .4rem .2rem; border-bottom: 1px solid var(--line-soft); }
+  .lane-head h2 { display: flex; align-items: center; font: 600 .72rem/1.4 var(--font-mono); letter-spacing: .16em; text-transform: uppercase; }
+  .lane-head h2::before { content: ""; width: .5rem; height: .5rem; margin-right: .55rem; border-radius: 2px; background: currentColor; box-shadow: 0 0 8px currentColor; }
+  .lane[data-kind="waiting"] h2, .lane[data-kind="failednew"] h2 { color: var(--amber); }
+  .lane[data-kind="failednew"] h2 { color: var(--rose); }
+  .lane[data-kind="working"] h2 { color: var(--green); }
+  .lane[data-kind="unread"] h2 { color: var(--cyan); }
+  .lane-head .count, .group-head .counts { font: 400 .7rem/1.4 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); white-space: nowrap; }
+
+  .group-head h2 { font: 600 .98rem/1.3 var(--font-display); letter-spacing: -0.01em; cursor: pointer; transition: color var(--dur) var(--ease); }
+  .group-head h2:hover { color: var(--accent); }
+  .group-head .caret { color: var(--ink-3); font: 400 .78rem/1 var(--font-mono); }
+  .group-head .acts { margin-left: auto; }
+  .counts b { color: var(--green); font-weight: 500; }
+  .counts i { color: var(--cyan); font-style: normal; font-weight: 500; }
+  .counts s, .counts u { color: var(--amber); text-decoration: none; font-weight: 500; }
+  .counts u { color: var(--rose); }
+
+  /* ---- the session row ---- */
+  .row { display: grid; grid-template-columns: .9rem minmax(0,1fr) auto auto auto; gap: .55rem; align-items: center;
+    min-height: 2.25rem; margin: 0 -0.55rem; padding: .18rem .55rem .18rem calc(.55rem - 2px);
+    border-bottom: 1px solid var(--line-soft); border-left: 2px solid transparent; border-radius: 9px;
+    transition: background-color var(--dur) var(--ease), transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  }
+  .row:last-child { border-bottom-color: transparent; }
+  .row:hover { background: var(--panel); transform: translateX(3px); }
+  .row.sel { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+
+  .row .dot { width: .58rem; height: .58rem; border-radius: 50%; background: var(--panel-2); border: 1px solid var(--line); justify-self: center; }
+  .row[data-status="working"] .dot { background: var(--green); border-color: transparent; }
+  .row[data-status="waiting"] .dot { background: var(--amber); border-color: transparent; box-shadow: 0 0 9px var(--glow-amber); }
+  .row[data-status="failed"] .dot {
+    border: 0; border-radius: 0; background: var(--rose);
+    clip-path: polygon(50% 4%, 100% 100%, 0 100%);
+  }
+  .row[data-status="stopped"] .dot { background: transparent; border: 2px solid var(--line); }
+  .row[data-unread="true"] .dot { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  @media (prefers-reduced-motion: no-preference) {
+    .row[data-status="working"] .dot { animation: hubpulse 1.3s ease-in-out infinite; }
+  }
+  @keyframes hubpulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+  .row .title { margin: 0; padding: .22rem 0; font: 500 .9rem/1.4 var(--font-body); text-align: left;
+    color: var(--ink); background: transparent; border: 0; cursor: pointer;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    transition: color var(--dur) var(--ease);
+  }
+  .row[data-unread="true"] .title { font-weight: 700; }
+  .row[data-child="true"] .title { color: var(--ink-2); }
+  .row .title .sub { color: var(--accent); font-family: var(--font-mono); font-size: .8em; }
+  .row .title:hover, .row .title:focus-visible { color: var(--accent); }
+
+  .bits { display: inline-flex; gap: .35rem; align-items: center; min-width: 0; }
+  .pchip { font: 500 .62rem/1.5 var(--font-mono); letter-spacing: .08em; text-transform: uppercase;
+    color: var(--ink-3); background: var(--panel); border: 1px solid var(--line-soft); border-radius: 999px;
+    padding: .06rem .45rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 10rem;
+  }
+  .staron { color: var(--accent); font-size: .82rem; text-shadow: 0 0 8px var(--glow-accent); }
+  .when { font: 400 .7rem/1.4 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); white-space: nowrap; }
+  .when em { font-style: normal; color: var(--amber); }
+  .row[data-status="working"] .when em { color: var(--green); }
+  .row[data-status="failed"] .when em { color: var(--rose); }
+
+  .acts { display: inline-flex; flex-wrap: wrap; gap: .24rem; align-items: center; justify-content: flex-end;
+    opacity: 0; transition: opacity var(--dur) var(--ease); }
+  .row:hover .acts, .row:focus-within .acts, .row.sel .acts,
+  .prow:hover .acts, .prow:focus-within .acts,
+  .group-head:hover .acts, .group-head:focus-within .acts { opacity: 1; }
+  @media (pointer: coarse) { .acts { opacity: 1; } }
+  .acts button { margin: 0; padding: .14rem .5rem;
+    font: 500 .62rem/1.5 var(--font-mono); letter-spacing: .06em; text-transform: uppercase;
+    color: var(--ink-2); background: transparent; border: 1px solid var(--line); border-radius: 999px; cursor: pointer; white-space: nowrap;
+    transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  }
+  .acts button:hover:not(:disabled), .acts button:focus-visible { color: var(--accent); border-color: var(--accent); box-shadow: 0 0 8px var(--accent-soft); }
+  .acts button[data-danger]:hover:not(:disabled), .acts button[data-danger]:focus-visible { color: var(--rose); border-color: var(--rose); box-shadow: 0 0 8px var(--glow-rose); }
+  .acts button:disabled { opacity: .45; cursor: default; }
+
+  .more { margin: .35rem 0 0; padding: .22rem .3rem; font: 500 .7rem/1.4 var(--font-mono); letter-spacing: .05em;
+    color: var(--accent); background: transparent; border: 0; cursor: pointer; }
+  .more:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .empty { margin: .6rem 0; font: 400 .84rem/1.5 var(--font-body); color: var(--ink-3); }
+  .matches { margin: .8rem 0 .2rem; font: 400 .72rem/1.4 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+
+  .calm { margin-top: 1.4rem; padding: 1.7rem 1.6rem;
+    background: var(--panel); border: 1px solid var(--line-soft); border-radius: 16px; }
+  .calm p { margin: 0; font: 600 1.5rem/1.2 var(--font-display); letter-spacing: -0.02em; color: var(--ink); max-width: none; }
+  .calm .sub { margin-top: .45rem; font: 400 .74rem/1.5 var(--font-mono); color: var(--ink-3); }
+
+  .pindex { margin-top: 1.9rem; }
+  .prow { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: .55rem; align-items: center;
+    min-height: 2rem; margin: 0 -0.55rem; padding: .14rem .55rem;
+    border-bottom: 1px solid var(--line-soft); border-radius: 9px;
+    transition: background-color var(--dur) var(--ease), transform var(--dur) var(--ease);
+  }
+  .prow:hover { background: var(--panel); transform: translateX(3px); }
+  .prow .pname { margin: 0; padding: .2rem 0; font: 600 .88rem/1.4 var(--font-display); letter-spacing: -0.005em;
+    text-align: left; color: var(--ink); background: transparent; border: 0; cursor: pointer;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    transition: color var(--dur) var(--ease);
+  }
+  .prow .pname:hover, .prow .pname:focus-visible { color: var(--accent); }
+
+  /* ---- starting sessions ---- */
+  .starter { margin: .55rem 0 .9rem; display: grid; gap: .45rem; }
+  .starter textarea { width: 100%; min-height: 3.4rem; margin: 0; padding: .6rem .8rem;
+    font: 400 .84rem/1.55 var(--font-body); color: var(--ink);
+    background: var(--bg1); border: 1px solid var(--line); border-radius: 10px; resize: vertical;
+  }
+  .starter textarea::placeholder { color: var(--ink-3); }
+  .starter textarea:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .starter button { justify-self: start; margin: 0; padding: .42rem 1rem;
+    font: 600 .7rem/1.4 var(--font-mono); letter-spacing: .1em; text-transform: uppercase;
+    color: var(--accent-ink); background: var(--accent); border: 1px solid var(--accent); border-radius: 999px; cursor: pointer;
+    transition: box-shadow var(--dur) var(--ease), filter var(--dur) var(--ease);
+  }
+  .starter button:hover:not(:disabled) { box-shadow: 0 0 16px var(--glow-accent); }
+  .starter button:disabled { opacity: .55; cursor: default; }
+  .starter .say2 { font: 400 .7rem/1.4 var(--font-mono); color: var(--ink-3); }
+
+  .sweep { margin-top: .9rem; }
+  .sweep button { margin: 0; padding: .36rem .85rem;
+    font: 500 .68rem/1.4 var(--font-mono); letter-spacing: .08em; text-transform: uppercase;
+    color: var(--accent); background: transparent; border: 1px solid var(--line); border-radius: 999px; cursor: pointer;
+  }
+  .sweep button:hover:not(:disabled) { border-color: var(--accent); box-shadow: 0 0 10px var(--accent-soft); }
+
+  /* ---- help ---- */
+  .help { margin-top: 2rem; }
+  .help summary { cursor: pointer; font: 500 .7rem/1.4 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); transition: color var(--dur) var(--ease); }
+  .help summary:hover { color: var(--accent); }
+  .help table { margin-top: .8rem; border-collapse: collapse; width: 100%; font: 400 .76rem/1.5 var(--font-mono); }
+  .help td { padding: .4rem .8rem .4rem 0; border-bottom: 1px solid var(--line-soft); color: var(--ink-2); vertical-align: top; }
+  .help code { color: var(--accent); background: var(--panel); border: 1px solid var(--line-soft); padding: .05em .38em; border-radius: 5px; font-size: .86em; }
+  .help p { max-width: 44rem; font: 400 .8rem/1.6 var(--font-body); color: var(--ink-2); margin-top: .7rem; }
+
+  @media (max-width: 46rem) {
+    .row { grid-template-columns: .9rem minmax(0,1fr) auto; }
+    .row .bits, .row .when { display: none; }
+    .acts { opacity: 1; }
+    .meta { display: none; }
+    .calm p { font-size: 1.25rem; }
+  }
+  @media print {
+    .atmosphere, .hubbar, .help { display: none; }
+    body { background: #fff; color: #000; }
+    .wrap { padding: 0; max-width: none; }
+  }
+  </style>
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <div class="wrap">
+
+  <header class="brief-head">
+    <p class="overline">bb \xB7 thread pages \xB7 home</p>
+    <h1>Sessions</h1>
+    <p class="brief-meta"><span>Every session, every project \u2014 one place to triage, steer and start work. Press <code>?</code> for the keyboard.</span></p>
+  </header>
+
+  <main data-hub>
+    <div class="hubbar">
+      <input type="search" data-search placeholder="Find a session\u2026  ( / )" aria-label="Find a session" autocomplete="off">
+      <div class="chips" role="group" aria-label="Filter sessions">
+        <button type="button" data-view="focus" aria-pressed="true" title="What needs you (1)">Focus<span class="n">0</span></button>
+        <button type="button" data-view="waiting" aria-pressed="false" title="Waiting on you (2)">Waiting<span class="n">0</span></button>
+        <button type="button" data-view="working" aria-pressed="false" title="Running now (3)">Working<span class="n">0</span></button>
+        <button type="button" data-view="unread" aria-pressed="false" title="Marked unread (4)">Unread<span class="n">0</span></button>
+        <button type="button" data-view="failed" aria-pressed="false" title="Failed, seen or not (5)">Failed<span class="n">0</span></button>
+        <button type="button" data-view="starred" aria-pressed="false" title="Your starred sessions (6)">Starred<span class="n">0</span></button>
+        <button type="button" data-view="all" aria-pressed="false" title="Everything, by project (7)">All<span class="n">0</span></button>
+      </div>
+      <span class="bar-end">
+        <button type="button" data-markall hidden title="Mark every unread session read">Mark read</button>
+        <button type="button" data-refresh title="Refresh now">\u21BB</button>
+        <label class="kids" title="Show sub-agent sessions too"><input type="checkbox" data-children>sub-agents</label>
+        <span class="say" data-say aria-live="polite"></span>
+        <span class="meta" data-meta></span>
+      </span>
+    </div>
+    <p data-error class="needs-you" hidden></p>
+    <div data-groups aria-live="polite"></div>
+
+    <details class="help" data-help>
+      <summary>Keyboard, and about this page</summary>
+      <table>
+        <tr><td><code>/</code></td><td>search</td><td><code>j</code> <code>k</code> or arrows</td><td>move the selection</td></tr>
+        <tr><td><code>Enter</code></td><td>open the session's page</td><td><code>o</code></td><td>open it in bb instead</td></tr>
+        <tr><td><code>r</code></td><td>toggle read / unread</td><td><code>s</code></td><td>star / unstar</td></tr>
+        <tr><td><code>x</code></td><td>archive (asks first)</td><td><code>t</code></td><td>stop a running turn (asks first)</td></tr>
+        <tr><td><code>1</code>\u2013<code>7</code></td><td>switch filter</td><td><code>Esc</code></td><td>clear search or selection</td></tr>
+      </table>
+      <p>A green dot is a running session, orange needs you, a blue ring is unread. Projects that need you come first, then the most recent. Starred sessions keep their own list under <code>6</code>; nothing else in bb changes when you star one here. Views, collapsed projects, stars and the sub-agent toggle are remembered by this page. The list refreshes itself on a slow watch; \u21BB forces it.</p>
+      <p>This is the built-in home page of Thread Pages. Stop, Archive and Start ask in bb's own confirmation dialog; marking read never does. To have a home of your own \u2014 grouped, filtered or styled your way \u2014 ask any session to build one and run <code>bb thread-page home</code> in that session; this page then steps aside.</p>
+    </details>
+  </main>
+
+  </div>
+  <script>
+  (async () => {
+    const tp = window.threadPage;
+    const $ = (s) => document.querySelector(s);
+    const container = $("[data-groups]"), errorEl = $("[data-error]"), metaEl = $("[data-meta]"),
+          searchEl = $("[data-search]"), sayEl = $("[data-say]"), childrenEl = $("[data-children]"),
+          markAllEl = $("[data-markall]"), helpEl = $("[data-help]");
+    if (!tp) {
+      const p = document.createElement("p");
+      p.className = "needs-you";
+      p.textContent = "This page is a bb Thread Page \u2014 open it through bb, not as a file.";
+      container.replaceChildren(p);
+      return;
+    }
+
+    const PER_PROJECT = 5, MORE = 10, SEARCH_CAP = 25;
+    const LANE_CAP = { waiting: 12, failednew: 8, working: 12, unread: 10 };
+    const KIND_LABEL = { waiting: "Waiting on you", failednew: "Failed since you looked", working: "Working now", unread: "Unread" };
+
+    const el = (tag, text, cls) => { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n; };
+
+    let sayTimer = 0;
+    const say = (m) => { sayEl.textContent = m; clearTimeout(sayTimer); if (m) sayTimer = setTimeout(() => { sayEl.textContent = ""; }, 7000); };
+    const fail = (m) => { errorEl.hidden = !m; errorEl.textContent = m || ""; };
+    const handleErr = (err) => {
+      if (!err) return;
+      if (err.code === "cancelled") { say("Cancelled \u2014 nothing changed."); return; }
+      if (err.code === "stale_page") { say("This page changed \u2014 reload when you're ready."); return; }
+      fail((err.code ? err.code + ": " : "") + (err.message || String(err)));
+    };
+
+    const needsYou = (s) => s.status === "working" || s.status === "waiting" || s.unread;
+    const recency = (s) => Math.max(s.attentionAtMs || 0, s.updatedAtMs || 0);
+    const laneOf = (s) => s.status === "waiting" ? "waiting"
+      : (s.status === "failed" && s.unread) ? "failednew"
+      : s.status === "working" ? "working"
+      : (s.unread && s.status !== "failed") ? "unread" : null;
+    const ago = (ms) => {
+      if (!ms) return "";
+      const d = Date.now() - ms;
+      if (d < 45e3) return "now";
+      if (d < 3600e3) return Math.max(1, Math.round(d / 60e3)) + "m";
+      if (d < 86400e3) return Math.round(d / 3600e3) + "h";
+      if (d < 2592e6) return Math.round(d / 86400e3) + "d";
+      return Math.round(d / 2592e6) + "mo";
+    };
+
+    let projects = [], sessions = [], caps = null;
+    let prefs = { view: "focus", collapsed: {}, starred: [], includeChildren: false };
+    const expanded = {}, starterValues = {};
+    const starters = new Set();
+    let lastHash = "", projectsAt = 0, loading = false, wantReload = false, stopWatch = null, loadTimer = 0;
+    let backoffUntil = 0, lastLoadAt = 0;
+    let selId = null, searchCap = SEARCH_CAP;
+
+    const byId = (id) => sessions.find((s) => s.id === id);
+    const projectOf = (s) => projects.find((p) => p.id === s.projectId);
+    const isStarred = (id) => prefs.starred.indexOf(id) >= 0;
+
+    async function loadPrefs() {
+      try {
+        const r = await tp.invoke("storage.get", { key: "home.prefs" });
+        if (r.found && r.value && typeof r.value === "object") prefs = { view: "focus", collapsed: {}, starred: [], includeChildren: false, ...r.value };
+      } catch {}
+      if (!Array.isArray(prefs.starred)) prefs.starred = [];
+      if (!prefs.collapsed || typeof prefs.collapsed !== "object") prefs.collapsed = {};
+    }
+    const savePrefs = () => tp.invoke("storage.set", { key: "home.prefs", value: prefs }).catch(() => {});
+
+    async function fetchAll() {
+      const out = []; let cursor = null;
+      for (let page = 0; page < 6; page += 1) {
+        const params = { limit: 200, includeChildren: !!prefs.includeChildren };
+        if (cursor) params.cursor = cursor;
+        const r = await tp.invoke("sessions.snapshot", params);
+        out.push(...r.sessions); cursor = r.nextCursor; if (!cursor) break;
+      }
+      return out;
+    }
+
+    const hashOf = (list) => list.map((s) => [s.id, s.status, s.unread ? 1 : 0, s.attentionAtMs || 0, s.title || "", s.parentSessionId || ""].join(":")).sort().join("|");
+
+    function openSession(s) {
+      tp.invoke(s.page && s.page.available ? "pages.open" : "sessions.openHost", { sessionId: s.id }).catch(handleErr);
+    }
+
+    function act(label, run, opts) {
+      opts = opts || {};
+      const b = el("button", label); b.type = "button";
+      if (opts.danger) b.dataset.danger = "";
+      if (opts.tip) b.title = opts.tip;
+      if (opts.aria) b.setAttribute("aria-label", opts.aria);
+      b.addEventListener("click", async (e) => {
+        e.stopPropagation(); b.disabled = true;
+        try { await run(b); } catch (err) { handleErr(err); } finally { b.disabled = false; }
+      });
+      return b;
+    }
+
+    async function toggleRead(s) {
+      const r = await tp.invoke("sessions.markRead", { sessionId: s.id, read: !!s.unread });
+      s.unread = r.unread; render();
+    }
+    function toggleStar(s) {
+      const i = prefs.starred.indexOf(s.id);
+      if (i >= 0) prefs.starred.splice(i, 1); else prefs.starred.push(s.id);
+      savePrefs(); render();
+    }
+    async function archiveSession(s) {
+      await tp.invoke("sessions.archive", { sessionId: s.id });
+      sessions = sessions.filter((x) => x.id !== s.id);
+      say("Archived \u201C" + (s.title || s.id) + "\u201D.");
+      lastHash = hashOf(sessions); render();
+    }
+    async function stopSession(s) {
+      await tp.invoke("sessions.stop", { sessionId: s.id });
+      say("Stop sent."); await load();
+    }
+    async function markReadBulk(list) {
+      if (!list.length) return;
+      let n = 0;
+      for (const s of list) {
+        try { await tp.invoke("sessions.markRead", { sessionId: s.id, read: true }); s.unread = false; n += 1; }
+        catch (e) { handleErr(e); break; }
+      }
+      say("Marked " + n + " read."); render();
+    }
+
+    function fillWhen(w, ms, st) {
+      w.textContent = "";
+      if (st === "failed") w.append(el("em", "failed \xB7 "));
+      else if (st === "waiting") w.append(el("em", "waiting \xB7 "));
+      else if (st === "working") w.append(el("em", "working \xB7 "));
+      else if (st === "stopped") w.append(el("em", "stopped \xB7 "));
+      w.append(document.createTextNode(ago(ms)));
+      w.title = ms ? new Date(ms).toLocaleString() : "";
+    }
+
+    function row(s, opts) {
+      opts = opts || {};
+      const r = el("div", undefined, "row");
+      r.dataset.status = s.status; r.dataset.unread = String(!!s.unread); r.dataset.id = s.id;
+      if (s.parentSessionId) r.dataset.child = "true";
+      if (s.id === selId) r.classList.add("sel");
+
+      const dot = el("span", undefined, "dot");
+
+      const title = el("button", undefined, "title"); title.type = "button";
+      if (s.parentSessionId) {
+        const sub = el("span", "\u21B3", "sub"); sub.title = "Sub-agent session";
+        title.append(sub, document.createTextNode(" "));
+      }
+      title.append(document.createTextNode(s.title || "(untitled)"));
+      title.title = (s.page && s.page.available ? "Open its page" : "No page yet \u2014 opens the session in bb") + "  \xB7  Enter";
+      title.addEventListener("click", () => openSession(s));
+
+      const bits = el("span", undefined, "bits");
+      if (opts.showProject) { const p = projectOf(s); if (p) bits.append(el("span", p.name, "pchip")); }
+      if (isStarred(s.id)) bits.append(el("span", "\u2605", "staron"));
+
+      const when = el("span", undefined, "when");
+      when.dataset.ms = recency(s); when.dataset.status = s.status;
+      fillWhen(when, recency(s), s.status);
+
+      const acts = el("span", undefined, "acts");
+      acts.append(act(isStarred(s.id) ? "\u2605" : "\u2606", () => toggleStar(s), { tip: isStarred(s.id) ? "Unstar (s)" : "Star (s)", aria: isStarred(s.id) ? "Unstar session" : "Star session" }));
+      if (s.page && s.page.available) acts.append(act("bb", () => tp.invoke("sessions.openHost", { sessionId: s.id }), { tip: "Open in bb (o)" }));
+      if (s.status === "working") acts.append(act("Stop", () => stopSession(s), { danger: true, tip: "Stop the running turn (t)" }));
+      acts.append(act(s.unread ? "Read" : "Unread", () => toggleRead(s), { tip: "Toggle read (r)" }));
+      acts.append(act("Archive", () => archiveSession(s), { danger: true, tip: "Archive (x)" }));
+
+      r.append(dot, title, bits, when, acts);
+      return r;
+    }
+
+    function counts(list) {
+      return {
+        total: list.length,
+        working: list.filter((s) => s.status === "working").length,
+        waiting: list.filter((s) => s.status === "waiting").length,
+        unread: list.filter((s) => s.unread).length,
+        failed: list.filter((s) => s.status === "failed").length,
+      };
+    }
+    function countsEl(c) {
+      const n = el("span", undefined, "counts");
+      n.append(document.createTextNode(c.total + " "));
+      if (c.working) n.append(el("b", c.working + " working "));
+      if (c.waiting) n.append(el("s", c.waiting + " waiting "));
+      if (c.unread) n.append(el("i", c.unread + " unread "));
+      if (c.failed) n.append(el("u", c.failed + " failed "));
+      return n;
+    }
+
+    function byProject() {
+      const m = new Map(projects.map((p) => [p.id, []]));
+      const other = [];
+      for (const s of sessions) { if (m.has(s.projectId)) m.get(s.projectId).push(s); else other.push(s); }
+      if (other.length) m.set("__other", other);
+      return m;
+    }
+    function projectOrder(map) {
+      return projects.slice().sort((a, b) => {
+        const A = map.get(a.id) || [], B = map.get(b.id) || [];
+        const na = A.filter(needsYou).length, nb = B.filter(needsYou).length;
+        if ((na > 0) !== (nb > 0)) return na > 0 ? -1 : 1;
+        return Math.max(0, ...B.map(recency)) - Math.max(0, ...A.map(recency));
+      });
+    }
+
+    const canStart = () => caps === null || caps.has("sessions.start");
+
+    function starter(project) {
+      const box = el("div", undefined, "starter");
+      const text = el("textarea");
+      text.placeholder = "What should the new session in " + project.name + " do? Say what to report and what not to change.";
+      text.setAttribute("aria-label", text.placeholder);
+      text.value = starterValues[project.id] || "";
+      text.addEventListener("input", () => {
+        starterValues[project.id] = text.value;
+        tp.setDirty(Object.keys(starterValues).some((k) => starterValues[k] && starterValues[k].trim()));
+      });
+      const say2 = el("span", undefined, "say2");
+      const go = act("Start session", async () => {
+        const prompt = text.value.trim();
+        if (!prompt) { say2.textContent = "Say what it should do first."; return; }
+        say2.textContent = "Waiting for your confirmation\u2026";
+        try {
+          await tp.invoke("sessions.start", { projectId: project.id, prompt });
+          say2.textContent = "Started.";
+          starterValues[project.id] = ""; tp.setDirty(false);
+          starters.delete(project.id); await load();
+        } catch (e) {
+          say2.textContent = e && e.code === "cancelled" ? "Nothing started." : ((e && e.message) || "Failed.");
+        }
+      });
+      box.append(text, go, say2);
+      return box;
+    }
+    function toggleStarter(id) { if (starters.has(id)) starters.delete(id); else starters.add(id); render(); }
+
+    function gotoProject(id) {
+      prefs.view = "all"; prefs.collapsed[id] = false; savePrefs(); render();
+      const g = document.getElementById("proj-" + id);
+      if (g) g.scrollIntoView({ block: "start" });
+    }
+
+    function laneEl(kind, list) {
+      const cap = LANE_CAP[kind];
+      const sec = el("section", undefined, "lane"); sec.dataset.kind = kind;
+      const head = el("div", undefined, "lane-head");
+      head.append(el("h2", KIND_LABEL[kind]), el("span", String(list.length), "count"));
+      sec.append(head);
+      for (const s of list.slice(0, cap)) sec.append(row(s, { showProject: true }));
+      if (list.length > cap) {
+        const more = el("button", "+ " + (list.length - cap) + " more \u2014 see all", "more");
+        more.type = "button";
+        more.addEventListener("click", () => setView(kind === "failednew" ? "failed" : kind));
+        sec.append(more);
+      }
+      return sec;
+    }
+
+    function renderFocus() {
+      const lanes = { waiting: [], failednew: [], working: [], unread: [] };
+      for (const s of sessions) { const k = laneOf(s); if (k) lanes[k].push(s); }
+      for (const k of Object.keys(lanes)) lanes[k].sort((a, b) => recency(b) - recency(a));
+      const anyLane = Object.keys(lanes).some((k) => lanes[k].length);
+      if (!anyLane) {
+        const calm = el("div", undefined, "calm");
+        calm.append(el("p", "Nothing needs you right now."), el("p", sessions.length + " sessions across " + projects.length + " projects, all quiet.", "sub"));
+        container.append(calm);
+      } else {
+        for (const k of ["waiting", "failednew", "working", "unread"]) if (lanes[k].length) container.append(laneEl(k, lanes[k]));
+      }
+      const map = byProject();
+      const idx = el("section", undefined, "pindex");
+      const head = el("div", undefined, "lane-head");
+      head.append(el("h2", "Projects"), el("span", String(projects.length), "count"));
+      idx.append(head);
+      for (const p of projectOrder(map)) {
+        const list = map.get(p.id) || [];
+        const pr = el("div", undefined, "prow");
+        const name = el("button", p.name, "pname"); name.type = "button";
+        name.title = "Open this project in the All view";
+        name.addEventListener("click", () => gotoProject(p.id));
+        const acts = el("span", undefined, "acts");
+        if (canStart()) acts.append(act("+ New", () => toggleStarter(p.id), { tip: "Start a session in " + p.name }));
+        pr.append(name, countsEl(counts(list)), acts);
+        idx.append(pr);
+        if (starters.has(p.id)) idx.append(starter(p));
+      }
+      container.append(idx);
+    }
+
+    function groupEl(p, all) {
+      const g = el("section", undefined, "group"); g.id = "proj-" + p.id;
+      const collapsed = !!prefs.collapsed[p.id];
+      const c = counts(all);
+      const head = el("div", undefined, "group-head");
+      const h = el("h2", undefined); h.title = "Collapse or expand";
+      h.append(el("span", collapsed ? "\u25B8" : "\u25BE", "caret"), document.createTextNode(" " + p.name));
+      h.addEventListener("click", () => { prefs.collapsed[p.id] = !prefs.collapsed[p.id]; savePrefs(); render(); });
+      head.append(h, countsEl(c));
+      const hacts = el("span", undefined, "acts");
+      if (c.unread) hacts.append(act("Mark read", () => markReadBulk(all.filter((s) => s.unread)), { tip: "Mark every session in " + p.name + " read" }));
+      if (p.id !== "__other" && canStart()) hacts.append(act("+ New", () => toggleStarter(p.id)));
+      head.append(hacts);
+      g.append(head);
+      if (!collapsed) {
+        const limit = PER_PROJECT + (expanded[p.id] || 0);
+        const visible = all.filter((s, i) => i < limit || needsYou(s));
+        for (const s of visible) g.append(row(s, {}));
+        if (visible.length < all.length) {
+          const more = el("button", "Show " + Math.min(MORE, all.length - visible.length) + " more of " + all.length, "more");
+          more.type = "button";
+          more.addEventListener("click", () => { expanded[p.id] = (expanded[p.id] || 0) + MORE; render(); });
+          g.append(more);
+        }
+      }
+      if (starters.has(p.id)) g.append(starter(p));
+      return g;
+    }
+
+    function renderAll() {
+      const starred = sessions.filter((s) => isStarred(s.id)).sort((a, b) => recency(b) - recency(a));
+      if (starred.length) {
+        const g = el("section", undefined, "group");
+        const head = el("div", undefined, "group-head");
+        head.append(el("h2", "\u2605 Starred"), countsEl(counts(starred)));
+        g.append(head);
+        for (const s of starred) g.append(row(s, { showProject: true }));
+        container.append(g);
+      }
+      const map = byProject();
+      for (const p of projectOrder(map)) {
+        const list = (map.get(p.id) || []).sort((a, b) => recency(b) - recency(a));
+        if (!list.length) continue;
+        container.append(groupEl(p, list));
+      }
+      if (map.has("__other")) container.append(groupEl({ id: "__other", name: "Other" }, map.get("__other").sort((a, b) => recency(b) - recency(a))));
+      if (!container.children.length) container.append(el("p", "No sessions yet.", "empty"));
+    }
+
+    function renderKind(kind) {
+      const pred = {
+        waiting: (s) => s.status === "waiting",
+        working: (s) => s.status === "working",
+        unread: (s) => s.unread,
+        failed: (s) => s.status === "failed",
+        starred: (s) => isStarred(s.id),
+      }[kind];
+      const list = sessions.filter(pred).sort((a, b) => recency(b) - recency(a));
+      if (kind === "unread" && list.length) {
+        const bar = el("div", undefined, "sweep");
+        bar.append(act("Mark all " + list.length + " read", () => markReadBulk(list)));
+        container.append(bar);
+      }
+      if (!list.length) { container.append(el("p", "Nothing here.", "empty")); return; }
+      const map = new Map();
+      for (const s of list) { const k = s.projectId; if (!map.has(k)) map.set(k, []); map.get(k).push(s); }
+      for (const entry of Array.from(map.entries()).sort((a, b) => recency(b[1][0]) - recency(a[1][0]))) {
+        const pid = entry[0], ss = entry[1];
+        const p = projects.find((x) => x.id === pid) || { id: pid, name: "Other" };
+        const g = el("section", undefined, "group");
+        const head = el("div", undefined, "group-head");
+        head.append(el("h2", p.name), countsEl(counts(ss)));
+        g.append(head);
+        for (const s of ss) g.append(row(s, {}));
+        container.append(g);
+      }
+    }
+
+    function renderSearch(q) {
+      const matches = sessions.filter((s) =>
+        (s.title || "").toLowerCase().includes(q) ||
+        ((projectOf(s) || { name: "" }).name.toLowerCase().includes(q))
+      ).sort((a, b) => recency(b) - recency(a));
+      container.append(el("p", matches.length + (matches.length === 1 ? " match" : " matches"), "matches"));
+      if (!matches.length) return;
+      for (const s of matches.slice(0, searchCap)) container.append(row(s, { showProject: true }));
+      if (matches.length > searchCap) {
+        const more = el("button", "Show " + Math.min(25, matches.length - searchCap) + " more of " + matches.length, "more");
+        more.type = "button";
+        more.addEventListener("click", () => { searchCap += 25; render(); });
+        container.append(more);
+      }
+    }
+
+    function updateChrome(q) {
+      const c = counts(sessions);
+      const attn = sessions.filter(needsYou).length;
+      const chipN = { focus: attn, waiting: c.waiting, working: c.working, unread: c.unread, failed: c.failed, starred: sessions.filter((s) => isStarred(s.id)).length, all: c.total };
+      for (const b of document.querySelectorAll("[data-view]")) {
+        const num = b.querySelector(".n"); if (num) num.textContent = chipN[b.dataset.view];
+        b.setAttribute("aria-pressed", String(!q && b.dataset.view === prefs.view));
+      }
+      markAllEl.hidden = !c.unread;
+      markAllEl.textContent = "Mark " + c.unread + " read";
+      const shown = container.querySelectorAll(".row").length;
+      metaEl.textContent = shown + " shown \xB7 " + attn + " need you \xB7 " + c.total + " total";
+      const urgent = c.waiting + sessions.filter((s) => s.status === "failed" && s.unread).length;
+      document.title = (urgent ? "(" + urgent + ") " : "") + "Sessions";
+      if (childrenEl.checked !== !!prefs.includeChildren) childrenEl.checked = !!prefs.includeChildren;
+    }
+
+    function render() {
+      const q = searchEl.value.trim().toLowerCase();
+      container.textContent = "";
+      if (q) renderSearch(q);
+      else if (prefs.view === "focus") renderFocus();
+      else if (prefs.view === "all") renderAll();
+      else renderKind(prefs.view);
+      updateChrome(q);
+      if (selId && !container.querySelector('.row[data-id="' + selId + '"]')) selId = null;
+    }
+
+    function setView(v) {
+      prefs.view = v; searchEl.value = ""; searchCap = SEARCH_CAP;
+      savePrefs(); render();
+    }
+
+    function moveSel(d) {
+      const ids = Array.from(container.querySelectorAll(".row")).map((r) => r.dataset.id);
+      if (!ids.length) return;
+      let i = selId ? ids.indexOf(selId) : -1;
+      i = i < 0 ? (d > 0 ? 0 : ids.length - 1) : Math.min(ids.length - 1, Math.max(0, i + d));
+      selId = ids[i];
+      for (const r of container.querySelectorAll(".row")) r.classList.toggle("sel", r.dataset.id === selId);
+      const rEl = container.querySelector('.row[data-id="' + selId + '"]');
+      if (rEl) rEl.scrollIntoView({ block: "nearest" });
+    }
+
+    async function load() {
+      if (loading) { wantReload = true; return; }
+      const now = Date.now();
+      if (now < backoffUntil) return;
+      if (now - lastLoadAt < 4000) return;
+      loading = true; lastLoadAt = now;
+      try {
+        fail("");
+        if (!projects.length || now - projectsAt > 3e5) {
+          const p = await tp.invoke("projects.list"); projects = p.projects; projectsAt = now;
+        }
+        sessions = await fetchAll();
+        const h = hashOf(sessions);
+        if (h !== lastHash) { lastHash = h; render(); }
+      } catch (e) {
+        if (e && e.code === "rate_limited") backoffUntil = Date.now() + 30000;
+        handleErr(e);
+      } finally {
+        loading = false;
+        if (wantReload) { wantReload = false; load(); }
+      }
+    }
+    function scheduleLoad() { clearTimeout(loadTimer); loadTimer = setTimeout(load, 1200); }
+
+    function startWatch() {
+      if (stopWatch) stopWatch();
+      stopWatch = tp.watch("sessions.snapshot", { limit: 200, includeChildren: !!prefs.includeChildren }, () => scheduleLoad(), { intervalMs: 20000 });
+    }
+
+    for (const b of document.querySelectorAll("[data-view]")) b.addEventListener("click", () => setView(b.dataset.view));
+    searchEl.addEventListener("input", () => { searchCap = SEARCH_CAP; render(); });
+    $("[data-refresh]").addEventListener("click", () => { lastLoadAt = 0; load(); });
+    markAllEl.addEventListener("click", () => markReadBulk(sessions.filter((s) => s.unread)));
+    childrenEl.addEventListener("change", () => { prefs.includeChildren = childrenEl.checked; savePrefs(); lastHash = ""; startWatch(); load(); });
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") scheduleLoad(); });
+
+    document.addEventListener("keydown", (e) => {
+      const t = document.activeElement;
+      const tag = t && t.tagName;
+      const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+      if (e.key === "/" && !typing) { e.preventDefault(); searchEl.focus(); return; }
+      if (e.key === "Escape") {
+        if (t === searchEl) { searchEl.value = ""; searchCap = SEARCH_CAP; render(); searchEl.blur(); }
+        else if (selId) { selId = null; for (const r of container.querySelectorAll(".row.sel")) r.classList.remove("sel"); }
+        return;
+      }
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "Enter" && tag === "BUTTON") return;
+      const s = selId ? byId(selId) : null;
+      switch (e.key) {
+        case "j": case "ArrowDown": e.preventDefault(); moveSel(1); break;
+        case "k": case "ArrowUp": e.preventDefault(); moveSel(-1); break;
+        case "Enter": if (s) { e.preventDefault(); openSession(s); } break;
+        case "o": if (s) tp.invoke("sessions.openHost", { sessionId: s.id }).catch(handleErr); break;
+        case "r": if (s) toggleRead(s).catch(handleErr); break;
+        case "s": if (s) toggleStar(s); break;
+        case "x": if (s) archiveSession(s).catch(handleErr); break;
+        case "t": if (s && s.status === "working") stopSession(s).catch(handleErr); break;
+        case "?": helpEl.open = !helpEl.open; break;
+        case "1": setView("focus"); break;
+        case "2": setView("waiting"); break;
+        case "3": setView("working"); break;
+        case "4": setView("unread"); break;
+        case "5": setView("failed"); break;
+        case "6": setView("starred"); break;
+        case "7": setView("all"); break;
+      }
+    });
+
+    setInterval(() => {
+      if (document.hidden) return;
+      for (const w of container.querySelectorAll(".when[data-ms]")) fillWhen(w, Number(w.dataset.ms), w.dataset.status);
+    }, 60000);
+
+    await loadPrefs();
+    try {
+      const ctx = await tp.invoke("context.get");
+      caps = new Set(ctx.capabilities.map((c) => c.method));
+    } catch { caps = null; }
+    childrenEl.checked = !!prefs.includeChildren;
+    await load();
+    startWatch();
+  })();
+  </script>
+</body>
+</html>
+`;
+
+// src/serving/builtin-home.ts
+var BUILTIN_HOME_ID = "tp-builtin-home";
+var BUILTIN_HOME_TITLE = "Sessions";
+function isBuiltinHome(session) {
+  return session === BUILTIN_HOME_ID;
+}
+var BUILTIN_HOME_PAGE = Object.freeze({
+  html: BUILTIN_HOME_HTML,
+  revision: revisionOf(BUILTIN_HOME_HTML),
+  updatedAtMs: 0,
+  stale: false,
+  site: Object.freeze({ resolved: 0, skipped: Object.freeze([]) })
+});
+var BUILTIN_HOME_SESSION = Object.freeze({
+  id: BUILTIN_HOME_ID,
+  title: BUILTIN_HOME_TITLE,
+  projectId: null,
+  state: "idle",
+  visibility: "visible",
+  parentId: null,
+  forkOfId: null,
+  archived: false,
+  deleted: false,
+  updatedAtMs: 0,
+  attentionAtMs: 0,
+  unread: false,
+  pinned: false,
+  environmentId: null
+});
+var SESSIONLESS_CAPABILITIES = /* @__PURE__ */ new Set(["session.reply", "session.activity", "projects.browse", "projects.create"]);
+var BUILTIN_HOME_REFUSAL = "The built-in home page has no session of its own, so it cannot use this capability.";
 
 // src/serving/session-access.ts
 function sessionIdFrom(context) {
@@ -10942,10 +11914,12 @@ function createDispatcher(serving, handlers) {
       const invocation = resolveInvocation(request, serving.registry, token.revision);
       const entry = byMethod.get(invocation.spec.method);
       if (!entry) throw new PageError("unknown_method", `Unknown capability: ${invocation.spec.method}`);
-      const session = await eligibleSession(serving, token.session).catch((error) => {
+      const home3 = isBuiltinHome(token.session);
+      if (home3 && SESSIONLESS_CAPABILITIES.has(invocation.spec.method)) throw new PageError("unknown_method", BUILTIN_HOME_REFUSAL);
+      const session = home3 ? BUILTIN_HOME_SESSION : await eligibleSession(serving, token.session).catch((error) => {
         throw PageError.is(error) && error.code === "ineligible" ? new PageError("conflict", "This session no longer accepts page actions") : error;
       });
-      const page = await serving.pages.load(token.session);
+      const page = home3 ? BUILTIN_HOME_PAGE : await serving.pages.load(token.session, token.path);
       if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
       const context = { serving, session, page, requestId: request.id };
       await entry.refuse?.(invocation.params, context);
@@ -11015,7 +11989,9 @@ var sessionsOpenHost2 = handler({
     if (!target || target.deleted) throw new PageError("not_found", "That session is not available");
   },
   async execute(params2, { serving }) {
-    return { result: { opened: true }, navigate: { kind: "host", url: serving.hostSessionUrl(params2.sessionId) } };
+    const target = await serving.host.sessions.get(params2.sessionId);
+    if (!target || target.deleted) throw new PageError("not_found", "That session is not available");
+    return { result: { opened: true }, navigate: { kind: "host", url: serving.hostSessionUrl(target) } };
   }
 });
 var navigationOpenExternal2 = handler({
@@ -11033,12 +12009,14 @@ var navigationOpenExternal2 = handler({
 var contextGet2 = handler({
   method: "context.get",
   async execute(_params, { serving, session, page }) {
+    const descriptors = serving.registry.descriptors();
+    const capabilities2 = isBuiltinHome(session.id) ? descriptors.filter((entry) => !SESSIONLESS_CAPABILITIES.has(entry.method)) : descriptors;
     return {
       result: {
         protocolVersion: 1,
         session: { id: session.id, title: session.title.slice(0, LIMITS.titleChars), projectId: session.projectId },
         page: { revision: page.revision, readOnly: page.stale },
-        capabilities: serving.registry.descriptors()
+        capabilities: capabilities2
       }
     };
   }
@@ -11588,7 +12566,15 @@ ${source}
 }
 
 // src/generated/kernel-runtime.ts
-var KERNEL_RUNTIME = '"use strict";(()=>{var ne=Object.defineProperty;var re=(e,t,n)=>t in e?ne(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var A=(e,t,n)=>re(e,typeof t!="symbol"?t+"":t,n);var v=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var _=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],Ee=new Set(_);var ve=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${v.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var B=1,H=1;var oe=new Set(_);function x(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function I(e,t){return Object.keys(e).length===t.length&&t.every(o=>Object.prototype.hasOwnProperty.call(e,o))}function U(e,t){if(!x(e)||e.v!==H||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return I(e,["v","id","ok","result"]);if(!I(e,["v","id","ok","error"])||!x(e.error))return!1;let n=e.error;return I(n,["code","message"])&&typeof n.code=="string"&&oe.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function j(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function ie(e,t,n){let o=e.getAttribute("href");if(o===null)return{kind:"default"};if(o.startsWith("#"))return{kind:"default"};let i;try{i=new URL(o,n??t)}catch{return{kind:"block"}}return i.protocol!=="http:"&&i.protocol!=="https:"?{kind:"block"}:n&&i.href.startsWith(n)?{kind:"default"}:e.hasAttribute("download")?{kind:"default"}:{kind:"external",url:i.href,label:(e.textContent||"").replace(/\\s+/g," ").trim().slice(0,160)}}function K(e,t){e.addEventListener("click",n=>{if(n.defaultPrevented||n.button!==0)return;let i=n.target?.closest?.("a[href]");if(!i)return;let u=e.querySelector("base")?.getAttribute("href")??null,l=u?new URL(u,e.baseURI).href:null,a=ie(i,e.baseURI,l);a.kind!=="default"&&(n.preventDefault(),a.kind==="external"&&t(a.url,a.label))},!0)}function z(e,t){let n=Object.freeze({version:1,invoke:t.invoke,watch:t.watch,setDirty:t.setDirty});Object.defineProperty(e,"threadPage",{value:n,writable:!1,configurable:!1,enumerable:!0})}var T=class extends Error{constructor(n,o){super(o);A(this,"code");this.name="ThreadPageError",this.code=n,Object.defineProperty(this,"code",{value:n,enumerable:!0,writable:!1})}};function $(e,t){let n=new Map,o=[],i=null,u=0;function l(){return u+=1,`tp-${typeof crypto<"u"&&typeof crypto.randomUUID=="function"?crypto.randomUUID():`${Date.now()}-${u}`}`}function a(c){let f=n.get(c);if(!(!f||!i))try{i(f.request)}catch(h){n.delete(c),f.reject(new T("invalid_request",h instanceof Error?h.message:"The request could not be sent"))}}function m(c,f){return new Promise((h,y)=>{if(typeof c!="string"){y(new T("invalid_request","A method name is required"));return}let b=l(),r={v:H,id:b,method:c,params:f===void 0?null:f,pageRevision:e};n.set(b,{request:r,resolve:h,reject:y}),i?a(b):o.push(b)})}function g(c,f,h,y){if(typeof h!="function")throw new TypeError("Thread Page watch needs a listener");let b=y?.intervalMs,r=typeof b=="number"&&Number.isFinite(b)?Math.max(v.watchMinMs,Math.min(v.watchMaxMs,Math.round(b))):v.watchDefaultMs,s=!1,p=!1,d=null;function E(k){s||(d!==null&&clearTimeout(d),d=setTimeout(w,k))}async function w(){if(d=null,!(s||p||t.visibilityState==="hidden")){p=!0;try{let k=await m(c,f);s||h(k,null)}catch(k){s||h(void 0,k)}finally{p=!1,s||E(r)}}}function F(){s||(t.visibilityState==="hidden"?(d!==null&&clearTimeout(d),d=null):E(0))}return t.addEventListener("visibilitychange",F),E(0),()=>{s||(s=!0,d!==null&&clearTimeout(d),d=null,t.removeEventListener("visibilitychange",F))}}return{invoke:m,watch:g,attach(c){for(i=c;o.length>0;){let f=o.shift();f&&a(f)}},receive(c){if(typeof c!="object"||c===null)return!1;let f=c.id;if(typeof f!="string")return!1;let h=n.get(f);if(!h)return!1;if(n.delete(f),!U(c,f))return h.reject(new T("invalid_response","The Thread Page bridge returned an invalid response")),!0;let y=c;return y.ok?h.resolve(y.result):h.reject(new T(y.error.code,y.error.message)),!0}}}function V(e){let t=new Map,n=0,o=!1,i=!1;function u(){let l=o||t.size>0;l!==i&&(i=l,e(l))}return{isDirty:()=>i,markForm(l){return n+=1,t.set(l,n),u(),n},versionOf:l=>t.get(l),clearForm(l,a){a!==void 0&&t.get(l)===a&&(t.delete(l),u())},setCustom(l){o=l===!0,u()}}}var se="input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]";function P(e){if(!e)return"";let t=e.cloneNode(!0);for(let n of Array.from(t.querySelectorAll(se)))n.remove();return(t.textContent||"").replace(/\\s+/g," ").trim()}function ae(e,t){let n=t.getAttribute("data-label");if(n&&n.trim())return n.trim();let o=t.closest("fieldset");if(o){let l=P(o.querySelector("legend"));if(l)return l}let i=t.getAttribute("aria-label");if(i&&i.trim())return i.trim();let u=t.closest("label");if(u){let l=P(u);if(l)return l}if(t.id){let l=e.ownerDocument,a=Array.from(l.querySelectorAll("label[for]")).find(g=>g.htmlFor===t.id),m=P(a??null);if(m)return m}return t.name}var le=new Set(["button","submit","reset","image","file"]);function ue(e){return Array.from(e.elements).filter(t=>{let n=t;return typeof n.name=="string"&&n.name.length>0&&!n.disabled&&"type"in n})}function G(e,t){let n=ue(e),o=[],i=new Set;if(t&&(C(t)==="button"||C(t)==="input")){let u=t,l=u.value||(u.textContent||"").trim();o.push({name:u.name||"action",label:"Action",value:l}),u.name&&i.add(u.name)}for(let u of n){let l=u.name,a=String(u.type||"").toLowerCase();if(i.has(l)||le.has(a))continue;i.add(l);let m=n.filter(g=>g.name===l);o.push({name:l,label:ae(e,u),value:de(u,m,a)})}return o}function C(e){return e.tagName.toLowerCase()}function de(e,t,n){if(n==="checkbox"){let o=t.filter(i=>C(i)==="input");return o.length===1?o[0]?.checked===!0:o.filter(i=>i.checked).map(i=>i.value)}if(n==="radio"){let o=t.find(i=>C(i)==="input"&&i.checked);return o?o.value:""}return C(e)==="select"&&e.multiple?Array.from(e.selectedOptions).map(o=>o.value):t.length>1?t.map(o=>String(o.value??"")):String(e.value??"")}var ce="data-thread-page-manual",W="data-thread-page-status",me="data-thread-page-range",fe=new Set(["input","textarea","select","button","fieldset"]);function L(e){return e.hasAttribute(ce)}function D(e){let t=[];return"tagName"in e&&e.tagName.toLowerCase()==="form"&&t.push(e),"querySelectorAll"in e&&t.push(...Array.from(e.querySelectorAll("form"))),t.filter(n=>!L(n))}function O(e){if(!e)return null;let t=e.form;return t&&typeof t=="object"&&t.tagName?.toLowerCase()==="form"?t:e.closest?.("form")??null}function R(e){let t=new Set(D(e)),n=[];"hasAttribute"in e&&e.hasAttribute("form")&&n.push(e),"querySelectorAll"in e&&n.push(...Array.from(e.querySelectorAll("[form]")));for(let o of n){let i=O(o);i&&!L(i)&&t.add(i)}return[...t]}function M(e){let t=e.querySelector(`[${W}]`);return t||(t=e.ownerDocument.createElement("p"),t.setAttribute(W,""),t.setAttribute("role","status"),e.appendChild(t)),t}var Z=new WeakSet;function J(e){e.noValidate=!0;for(let t of S(e)){if(t.tagName.toLowerCase()!=="input"||t.type!=="range")continue;let n=t;if(Z.has(n))continue;Z.add(n);let o=e.ownerDocument.createElement("output");o.setAttribute(me,"");let i=()=>{o.textContent=String(n.value)};n.addEventListener("input",i),i(),n.insertAdjacentElement("afterend",o)}}function S(e){return Array.from(e.elements).filter(t=>fe.has(t.tagName.toLowerCase()))}function pe(e){let t=[];for(let n of S(e)){if(n.tagName.toLowerCase()!=="input"||n.type!=="file")continue;let o=n;if(!o.disabled)for(let i of Array.from(o.files??[])){if(t.length>=v.uploadsPerForm)return t;t.push({field:o.name||"file",file:i})}}return t}function Y(e){let t=[];for(let n of S(e))n.disabled||(n.disabled=!0,t.push(n));return t}function q(e){for(let t of e)t.disabled=!1}function ge(e){let t=e.getAttribute("data-title");return t&&t.trim()?t.trim().slice(0,300):(e.ownerDocument.querySelector("h1")?.textContent||"").trim().slice(0,300)||"Thread Page"}function X(e,t,n){return{submissionId:n,form:e,title:ge(e),answers:G(e,t),files:pe(e)}}var Q="data-thread-page-offline",N="Offline copy \\u2014 responses are disabled until the source host reconnects.";function ee(e,t){let n=new Set,o=t;function i(){if(!e.body)return;let a=e.querySelector(`[${Q}="host"]`);o&&!a?(a=e.createElement("aside"),a.setAttribute(Q,"host"),a.setAttribute("role","status"),a.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText"),a.textContent=N,e.body.insertBefore(a,e.body.firstChild)):!o&&a&&a.remove()}function u(a){for(let m of R(a)){for(let g of S(m))g.disabled||(g.disabled=!0,n.add(g));M(m).textContent=N}}function l(){for(let a of n)a.disabled=!1;n.clear();for(let a of D(e)){let m=M(a);m.textContent===N&&(m.textContent="")}}return{isReadOnly:()=>o,apply(a){o=a,a?u(e):l(),i()},prepare(a){o&&u(a),i()}}}function te(e,t){let n=e.document,o=null,i=new Map,u=new WeakSet;function l(r){if(!o)return!1;try{return o.postMessage(r),!0}catch{return!1}}let a=V(r=>{l({kind:r?"thread-page:dirty":"thread-page:clean"})}),m=$(t.pageRevision,n),g=ee(n,t.stale);z(e,{version:1,invoke:(r,s)=>m.invoke(r,s),watch:(r,s,p,d)=>m.watch(r,s,p,d),setDirty:r=>a.setCustom(r!==!1)});function c(r){for(let s of R(r))J(s);g.prepare(r)}c(n),n.readyState==="loading"&&n.addEventListener("DOMContentLoaded",()=>c(n),{once:!0}),typeof e.MutationObserver=="function"&&n.documentElement&&new e.MutationObserver(s=>{for(let p of s)for(let d of Array.from(p.addedNodes))d.nodeType===1&&c(d)}).observe(n.documentElement,{childList:!0,subtree:!0});function f(r){let s=O(r.target);!s||L(s)||a.markForm(s)}n.addEventListener("input",f,!0),n.addEventListener("change",f,!0),n.addEventListener("submit",r=>{let s=r.target;if(!s||s.tagName?.toLowerCase()!=="form"||L(s)||(r.preventDefault(),g.isReadOnly()||u.has(s)))return;let p=`sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,d=s,E=X(d,r.submitter??null,p),w={form:d,disabled:[],dirtyVersion:a.versionOf(d)};i.set(p,w),u.add(d),M(d).textContent=E.files.length>0?"Uploading\\u2026":"Sending\\u2026",w.disabled=Y(d),l({kind:"thread-page:submit",submissionId:p,title:E.title,answers:E.answers,files:E.files})||(i.delete(p),u.delete(d),q(w.disabled),M(d).textContent="Page connection is not ready; try again in a moment.")},!0),K(n,(r,s)=>{m.invoke("navigation.openExternal",s?{url:r,label:s}:{url:r}).catch(()=>{})});function h(r){if(x(r)){if(r.kind==="thread-page:source-state"){g.apply(r.stale===!0);return}if(r.kind==="thread-page:submit-progress"){let s=typeof r.submissionId=="string"?i.get(r.submissionId):void 0;s&&(M(s.form).textContent=String(r.message??"Working\\u2026").slice(0,160));return}if(r.kind==="thread-page:submit-result"){let s=typeof r.submissionId=="string"?i.get(r.submissionId):void 0;if(!s)return;i.delete(r.submissionId),u.delete(s.form);let p=r.ok===!0;M(s.form).textContent=p?String(r.message??"Sent").slice(0,160):String(r.error??"Could not send").slice(0,160),q(s.disabled),g.isReadOnly()&&g.apply(!0),p&&a.clearForm(s.form,s.dirtyVersion);return}m.receive(r)}}function y(r){o=r,r.onmessage=s=>h(s.data),r.start?.(),m.attach(s=>{r.postMessage(s)}),a.isDirty()&&l({kind:"thread-page:dirty"})}function b(r){if(o||r.source!==e.parent)return;let s=r.data;if(!x(s)||s.kind!=="thread-page:connect"||s.version!==B||!r.ports||r.ports.length!==1)return;r.stopImmediatePropagation();let p=r.ports[0];p&&y(p)}return e.addEventListener("message",b,!0),t.stale&&g.apply(!0),e.parent.postMessage({kind:"thread-page:ready",version:B},"*"),{deliver:r=>h(r),connect:r=>y(r)}}te(window,j(document.currentScript));})();';
+var KERNEL_RUNTIME = '"use strict";(()=>{var re=Object.defineProperty;var oe=(e,t,n)=>t in e?re(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var A=(e,t,n)=>oe(e,typeof t!="symbol"?t+"":t,n);var v=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var _=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],Te=new Set(_);var ke=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${v.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var H=1,P=1;var ie=new Set(_);function w(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function I(e,t){return Object.keys(e).length===t.length&&t.every(o=>Object.prototype.hasOwnProperty.call(e,o))}function N(e,t){if(!w(e)||e.v!==P||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return I(e,["v","id","ok","result"]);if(!I(e,["v","id","ok","error"])||!w(e.error))return!1;let n=e.error;return I(n,["code","message"])&&typeof n.code=="string"&&ie.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function K(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}var se="uploads/";function j(e){return typeof e!="string"||e.length===0||e.length>1024||e.includes("\\0")||e.includes("\\\\")||e.startsWith("/")||e.startsWith(se)||!e.split("/").every(t=>t.length>0&&t!=="."&&t!=="..")?!1:/\\.html?$/i.test(e)}function ae(e,t,n,o=n){let i=e.getAttribute("href");if(i===null)return{kind:"default"};if(i.startsWith("#"))return{kind:"default"};let u;try{u=new URL(i,n??t)}catch{return{kind:"block"}}if(u.protocol!=="http:"&&u.protocol!=="https:")return{kind:"block"};if(o&&u.href.startsWith(o)){if(e.hasAttribute("download"))return{kind:"default"};let a=le(u,o);return a!==null&&j(a)?{kind:"document",path:a}:{kind:"default"}}return e.hasAttribute("download")?{kind:"default"}:{kind:"external",url:u.href,label:(e.textContent||"").replace(/\\s+/g," ").trim().slice(0,160)}}function le(e,t){let n=new URL(t).pathname;if(!e.pathname.startsWith(n))return null;try{return decodeURIComponent(e.pathname.slice(n.length))}catch{return null}}function $(e,t,n=null){e.addEventListener("click",o=>{if(o.defaultPrevented||o.button!==0)return;let u=o.target?.closest?.("a[href]");if(!u)return;let a=e.querySelector("base")?.getAttribute("href")??null,l=a?new URL(a,e.baseURI).href:null,m=n?new URL(n,e.baseURI).href:l,c=ae(u,e.baseURI,l,m);c.kind!=="default"&&(o.preventDefault(),c.kind==="external"?t.external(c.url,c.label):c.kind==="document"&&t.document(c.path))},!0)}function z(e,t){let n=Object.freeze({version:1,invoke:t.invoke,watch:t.watch,setDirty:t.setDirty});Object.defineProperty(e,"threadPage",{value:n,writable:!1,configurable:!1,enumerable:!0})}var T=class extends Error{constructor(n,o){super(o);A(this,"code");this.name="ThreadPageError",this.code=n,Object.defineProperty(this,"code",{value:n,enumerable:!0,writable:!1})}};function V(e,t){let n=new Map,o=[],i=null,u=0;function a(){return u+=1,`tp-${typeof crypto<"u"&&typeof crypto.randomUUID=="function"?crypto.randomUUID():`${Date.now()}-${u}`}`}function l(f){let p=n.get(f);if(!(!p||!i))try{i(p.request)}catch(h){n.delete(f),p.reject(new T("invalid_request",h instanceof Error?h.message:"The request could not be sent"))}}function m(f,p){return new Promise((h,y)=>{if(typeof f!="string"){y(new T("invalid_request","A method name is required"));return}let b=a(),r={v:P,id:b,method:f,params:p===void 0?null:p,pageRevision:e};n.set(b,{request:r,resolve:h,reject:y}),i?l(b):o.push(b)})}function c(f,p,h,y){if(typeof h!="function")throw new TypeError("Thread Page watch needs a listener");let b=y?.intervalMs,r=typeof b=="number"&&Number.isFinite(b)?Math.max(v.watchMinMs,Math.min(v.watchMaxMs,Math.round(b))):v.watchDefaultMs,s=!1,g=!1,d=null;function E(x){s||(d!==null&&clearTimeout(d),d=setTimeout(k,x))}async function k(){if(d=null,!(s||g||t.visibilityState==="hidden")){g=!0;try{let x=await m(f,p);s||h(x,null)}catch(x){s||h(void 0,x)}finally{g=!1,s||E(r)}}}function F(){s||(t.visibilityState==="hidden"?(d!==null&&clearTimeout(d),d=null):E(0))}return t.addEventListener("visibilitychange",F),E(0),()=>{s||(s=!0,d!==null&&clearTimeout(d),d=null,t.removeEventListener("visibilitychange",F))}}return{invoke:m,watch:c,attach(f){for(i=f;o.length>0;){let p=o.shift();p&&l(p)}},receive(f){if(typeof f!="object"||f===null)return!1;let p=f.id;if(typeof p!="string")return!1;let h=n.get(p);if(!h)return!1;if(n.delete(p),!N(f,p))return h.reject(new T("invalid_response","The Thread Page bridge returned an invalid response")),!0;let y=f;return y.ok?h.resolve(y.result):h.reject(new T(y.error.code,y.error.message)),!0}}}function W(e){let t=new Map,n=0,o=!1,i=!1;function u(){let a=o||t.size>0;a!==i&&(i=a,e(a))}return{isDirty:()=>i,markForm(a){return n+=1,t.set(a,n),u(),n},versionOf:a=>t.get(a),clearForm(a,l){l!==void 0&&t.get(a)===l&&(t.delete(a),u())},setCustom(a){o=a===!0,u()}}}var ue="input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]";function B(e){if(!e)return"";let t=e.cloneNode(!0);for(let n of Array.from(t.querySelectorAll(ue)))n.remove();return(t.textContent||"").replace(/\\s+/g," ").trim()}function de(e,t){let n=t.getAttribute("data-label");if(n&&n.trim())return n.trim();let o=t.closest("fieldset");if(o){let a=B(o.querySelector("legend"));if(a)return a}let i=t.getAttribute("aria-label");if(i&&i.trim())return i.trim();let u=t.closest("label");if(u){let a=B(u);if(a)return a}if(t.id){let a=e.ownerDocument,l=Array.from(a.querySelectorAll("label[for]")).find(c=>c.htmlFor===t.id),m=B(l??null);if(m)return m}return t.name}var ce=new Set(["button","submit","reset","image","file"]);function me(e){return Array.from(e.elements).filter(t=>{let n=t;return typeof n.name=="string"&&n.name.length>0&&!n.disabled&&"type"in n})}function G(e,t){let n=me(e),o=[],i=new Set;if(t&&(C(t)==="button"||C(t)==="input")){let u=t,a=u.value||(u.textContent||"").trim();o.push({name:u.name||"action",label:"Action",value:a}),u.name&&i.add(u.name)}for(let u of n){let a=u.name,l=String(u.type||"").toLowerCase();if(i.has(a)||ce.has(l))continue;i.add(a);let m=n.filter(c=>c.name===a);o.push({name:a,label:de(e,u),value:fe(u,m,l)})}return o}function C(e){return e.tagName.toLowerCase()}function fe(e,t,n){if(n==="checkbox"){let o=t.filter(i=>C(i)==="input");return o.length===1?o[0]?.checked===!0:o.filter(i=>i.checked).map(i=>i.value)}if(n==="radio"){let o=t.find(i=>C(i)==="input"&&i.checked);return o?o.value:""}return C(e)==="select"&&e.multiple?Array.from(e.selectedOptions).map(o=>o.value):t.length>1?t.map(o=>String(o.value??"")):String(e.value??"")}var pe="data-thread-page-manual",Y="data-thread-page-status",ge="data-thread-page-range",he=new Set(["input","textarea","select","button","fieldset"]);function L(e){return e.hasAttribute(pe)}function D(e){let t=[];return"tagName"in e&&e.tagName.toLowerCase()==="form"&&t.push(e),"querySelectorAll"in e&&t.push(...Array.from(e.querySelectorAll("form"))),t.filter(n=>!L(n))}function O(e){if(!e)return null;let t=e.form;return t&&typeof t=="object"&&t.tagName?.toLowerCase()==="form"?t:e.closest?.("form")??null}function R(e){let t=new Set(D(e)),n=[];"hasAttribute"in e&&e.hasAttribute("form")&&n.push(e),"querySelectorAll"in e&&n.push(...Array.from(e.querySelectorAll("[form]")));for(let o of n){let i=O(o);i&&!L(i)&&t.add(i)}return[...t]}function M(e){let t=e.querySelector(`[${Y}]`);return t||(t=e.ownerDocument.createElement("p"),t.setAttribute(Y,""),t.setAttribute("role","status"),e.appendChild(t)),t}var Z=new WeakSet;function J(e){e.noValidate=!0;for(let t of S(e)){if(t.tagName.toLowerCase()!=="input"||t.type!=="range")continue;let n=t;if(Z.has(n))continue;Z.add(n);let o=e.ownerDocument.createElement("output");o.setAttribute(ge,"");let i=()=>{o.textContent=String(n.value)};n.addEventListener("input",i),i(),n.insertAdjacentElement("afterend",o)}}function S(e){return Array.from(e.elements).filter(t=>he.has(t.tagName.toLowerCase()))}function ye(e){let t=[];for(let n of S(e)){if(n.tagName.toLowerCase()!=="input"||n.type!=="file")continue;let o=n;if(!o.disabled)for(let i of Array.from(o.files??[])){if(t.length>=v.uploadsPerForm)return t;t.push({field:o.name||"file",file:i})}}return t}function X(e){let t=[];for(let n of S(e))n.disabled||(n.disabled=!0,t.push(n));return t}function q(e){for(let t of e)t.disabled=!1}function be(e){let t=e.getAttribute("data-title");return t&&t.trim()?t.trim().slice(0,300):(e.ownerDocument.querySelector("h1")?.textContent||"").trim().slice(0,300)||"Thread Page"}function Q(e,t,n){return{submissionId:n,form:e,title:be(e),answers:G(e,t),files:ye(e)}}var ee="data-thread-page-offline",U="Offline copy \\u2014 responses are disabled until the source host reconnects.";function te(e,t){let n=new Set,o=t;function i(){if(!e.body)return;let l=e.querySelector(`[${ee}="host"]`);o&&!l?(l=e.createElement("aside"),l.setAttribute(ee,"host"),l.setAttribute("role","status"),l.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText"),l.textContent=U,e.body.insertBefore(l,e.body.firstChild)):!o&&l&&l.remove()}function u(l){for(let m of R(l)){for(let c of S(m))c.disabled||(c.disabled=!0,n.add(c));M(m).textContent=U}}function a(){for(let l of n)l.disabled=!1;n.clear();for(let l of D(e)){let m=M(l);m.textContent===U&&(m.textContent="")}}return{isReadOnly:()=>o,apply(l){o=l,l?u(e):a(),i()},prepare(l){o&&u(l),i()}}}function ne(e,t){let n=e.document,o=null,i=new Map,u=new WeakSet;function a(r){if(!o)return!1;try{return o.postMessage(r),!0}catch{return!1}}let l=W(r=>{a({kind:r?"thread-page:dirty":"thread-page:clean"})}),m=V(t.pageRevision,n),c=te(n,t.stale);z(e,{version:1,invoke:(r,s)=>m.invoke(r,s),watch:(r,s,g,d)=>m.watch(r,s,g,d),setDirty:r=>l.setCustom(r!==!1)});function f(r){for(let s of R(r))J(s);c.prepare(r)}f(n),n.readyState==="loading"&&n.addEventListener("DOMContentLoaded",()=>f(n),{once:!0}),typeof e.MutationObserver=="function"&&n.documentElement&&new e.MutationObserver(s=>{for(let g of s)for(let d of Array.from(g.addedNodes))d.nodeType===1&&f(d)}).observe(n.documentElement,{childList:!0,subtree:!0});function p(r){let s=O(r.target);!s||L(s)||l.markForm(s)}n.addEventListener("input",p,!0),n.addEventListener("change",p,!0),n.addEventListener("submit",r=>{let s=r.target;if(!s||s.tagName?.toLowerCase()!=="form"||L(s)||(r.preventDefault(),c.isReadOnly()||u.has(s)))return;let g=`sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,d=s,E=Q(d,r.submitter??null,g),k={form:d,disabled:[],dirtyVersion:l.versionOf(d)};i.set(g,k),u.add(d),M(d).textContent=E.files.length>0?"Uploading\\u2026":"Sending\\u2026",k.disabled=X(d),a({kind:"thread-page:submit",submissionId:g,title:E.title,answers:E.answers,files:E.files})||(i.delete(g),u.delete(d),q(k.disabled),M(d).textContent="Page connection is not ready; try again in a moment.")},!0),$(n,{external:(r,s)=>{m.invoke("navigation.openExternal",s?{url:r,label:s}:{url:r}).catch(()=>{})},document:r=>{a({kind:"thread-page:open-document",path:r})}},t.siteRoot??null);function h(r){if(w(r)){if(r.kind==="thread-page:source-state"){c.apply(r.stale===!0);return}if(r.kind==="thread-page:submit-progress"){let s=typeof r.submissionId=="string"?i.get(r.submissionId):void 0;s&&(M(s.form).textContent=String(r.message??"Working\\u2026").slice(0,160));return}if(r.kind==="thread-page:submit-result"){let s=typeof r.submissionId=="string"?i.get(r.submissionId):void 0;if(!s)return;i.delete(r.submissionId),u.delete(s.form);let g=r.ok===!0;M(s.form).textContent=g?String(r.message??"Sent").slice(0,160):String(r.error??"Could not send").slice(0,160),q(s.disabled),c.isReadOnly()&&c.apply(!0),g&&l.clearForm(s.form,s.dirtyVersion);return}m.receive(r)}}function y(r){o=r,r.onmessage=s=>h(s.data),r.start?.(),m.attach(s=>{r.postMessage(s)}),l.isDirty()&&a({kind:"thread-page:dirty"})}function b(r){if(o||r.source!==e.parent)return;let s=r.data;if(!w(s)||s.kind!=="thread-page:connect"||s.version!==H||!r.ports||r.ports.length!==1)return;r.stopImmediatePropagation();let g=r.ports[0];g&&y(g)}return e.addEventListener("message",b,!0),t.stale&&c.apply(!0),e.parent.postMessage({kind:"thread-page:ready",version:H},"*"),{deliver:r=>h(r),connect:r=>y(r)}}ne(window,K(document.currentScript));})();';
+
+// src/serving/document-access.ts
+function documentPathFrom(context) {
+  const raw = new URL(context.req.url).searchParams.get("path");
+  if (raw === null || raw === "" || raw === ENTRY_DOCUMENT) return null;
+  if (!isDocumentPath(raw)) throw new PageError("invalid_request", "That is not a document of this page.");
+  return documentKey(raw);
+}
 
 // src/serving/empty-page.ts
 var EMPTY_REVISION = revisionOf("");
@@ -11617,8 +12603,9 @@ function documentRoute(serving) {
   return async (context) => {
     try {
       const id = sessionIdFrom(context);
+      const path = documentPathFrom(context);
       const session = await eligibleSession(serving, id);
-      const page = await loadUnlessUnwritten(serving, id);
+      const page = path ? await serving.pages.load(id, path) : await loadUnlessUnwritten(serving, id);
       const headers = baseHeaders("text/html; charset=utf-8");
       headers.set("content-security-policy", documentCsp());
       headers.set("x-thread-page-activity", session.state);
@@ -11637,8 +12624,8 @@ function documentRoute(serving) {
       if (ifNoneMatchMatches(context.req.header("if-none-match"), etagFor(page.revision))) {
         return new Response(null, { status: 304, headers });
       }
-      const config = { pageRevision: page.revision, stale: page.stale };
-      const html = injectKernel(page.html, { kernel: KERNEL_RUNTIME, config, baseHref: serving.site.baseHref(id) });
+      const config = { pageRevision: page.revision, stale: page.stale, siteRoot: serving.site.siteRoot(id) };
+      const html = injectKernel(page.html, { kernel: KERNEL_RUNTIME, config, baseHref: serving.site.baseHref(id, path) });
       return new Response(html, { status: 200, headers });
     } catch (error) {
       return failureResponse(error, serving.host.log, "GET /document", true);
@@ -11646,29 +12633,45 @@ function documentRoute(serving) {
   };
 }
 
-// src/serving/home-route.ts
-function homeRoute(serving) {
-  return async (_context) => {
-    const home3 = serving.settings.current().homeSessionId;
-    if (!isSessionId(home3)) {
-      return errorPage(
-        "No home page is set yet. A home page is an ordinary page some agent built and designated. To get one, ask any agent: \u201CSet up my Thread Pages home page\u201D \u2014 it runs `bb thread-page home` in a session dedicated to it and builds a hub of your sessions there. Or run `bb thread-page home` yourself in the session whose page should be home.",
-        404
-      );
+// src/serving/document-session-route.ts
+function documentSessionRoute(serving) {
+  return async (context) => {
+    let release = null;
+    try {
+      const body = await readJsonBody(context, 8192);
+      const record = typeof body === "object" && body !== null && !Array.isArray(body) ? body : {};
+      const token = requireActionToken(serving, record.actionToken);
+      if (isBuiltinHome(token.session)) throw new PageError("forbidden", "The built-in home page has no other documents.");
+      if (record.path !== ENTRY_DOCUMENT && !isDocumentPath(record.path)) throw new PageError("invalid_params", "That is not a document of this page.");
+      const path = documentKey(record.path);
+      release = acquireRate(serving, token.session);
+      await eligibleSession(serving, token.session);
+      const page = path ? await serving.pages.load(token.session, path) : await loadUnlessUnwritten(serving, token.session);
+      const revision = page?.revision ?? EMPTY_REVISION;
+      const minted = mintActionToken({ session: token.session, revision, path, now: serving.now() }, serving.signingKey);
+      return jsonResponse({
+        ok: true,
+        actionToken: minted.token,
+        pageRevision: revision,
+        expiresAt: minted.payload.exp,
+        documentUrl: serving.site.documentUrl(token.session, path),
+        path: path ?? ENTRY_DOCUMENT,
+        stale: page?.stale ?? false,
+        empty: page === null
+      });
+    } catch (error) {
+      return failureResponse(error, serving.host.log, "POST /document-session", false);
+    } finally {
+      release?.();
     }
-    const session = await serving.host.sessions.get(home3).catch(() => null);
-    if (!session || session.deleted || session.archived) {
-      return errorPage("The home page points at a session that no longer exists. Run `bb thread-page home` in another session, or `bb thread-page home --clear`.", 404);
-    }
-    return new Response(null, { status: 302, headers: { location: pageUrl(serving.routeBase, home3), "cache-control": "no-store, max-age=0" } });
   };
 }
 
-// src/serving/shell-route.ts
+// src/serving/home-route.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
 
 // src/generated/shell-runtime.ts
-var SHELL_RUNTIME = '"use strict";(()=>{var B=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var C=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],ce=new Set(C);var ue=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${B.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var _=1,P=1,A="Not written yet \\u2014 the page appears here as soon as the agent saves it",te=new Set(C),ne=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,re=/^[a-z][a-zA-Z0-9]*(?:\\.[a-z][a-zA-Z0-9]*)+$/;function T(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function R(e,t){return Object.keys(e).length===t.length&&t.every(d=>Object.prototype.hasOwnProperty.call(e,d))}function L(e){return typeof e=="string"&&ne.test(e)}function D(e,t){return T(e)&&R(e,["v","id","method","params","pageRevision"])&&e.v===P&&L(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&re.test(e.method)&&e.pageRevision===t}function H(e,t){if(!T(e)||e.v!==P||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return R(e,["v","id","ok","result"]);if(!R(e,["v","id","ok","error"])||!T(e.error))return!1;let n=e.error;return R(n,["code","message"])&&typeof n.code=="string"&&te.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function M(e,t,n){return{v:1,id:L(e)?e:"invalid",ok:!1,error:{code:t,message:n.slice(0,512)||"Request failed"}}}function O(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}function q(e,t,n){let{acts:d,pin:a,read:l,archive:g,title:f}=t,S=n.fetchImpl??fetch;if(e.stale){for(let u of[a,l,g])u.disabled=!0;return}let p=a.dataset.on==="true",v=l.dataset.on==="true",E=!1;function o(){a.textContent=p?"\\u2605":"\\u2606",a.dataset.on=String(p),a.setAttribute("aria-pressed",String(p)),a.title=p?"Pinned in bb":"Pin in bb"}function r(){l.textContent=v?"Read":"Unread",l.dataset.on=String(v),l.title=v?"Mark read":"Mark unread"}let s;function i(u){n.view.setStatus(u,!0),s!==void 0&&clearTimeout(s),s=setTimeout(()=>n.view.setStatus("",!1),6e3)}async function m(u){try{let b=await S(e.chromeActionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:e.actionToken,action:u})}),k=await b.json().catch(()=>null),x=k&&k.state;return!b.ok||!k||k.ok!==!0||!x?(i(k&&typeof k.message=="string"&&k.message||`Request failed (${b.status})`),null):{pinned:x.pinned===!0,unread:x.unread===!0,archived:x.archived===!0}}catch(b){return i(b instanceof Error?b.message:"Request failed"),null}}async function c(u){if(E)return null;E=!0,d.dataset.busy="true";try{return await m(u)}finally{E=!1,delete d.dataset.busy}}function h(u){p=u.pinned,v=u.unread,o(),r()}a.addEventListener("click",()=>{c(p?"unpin":"pin").then(u=>{u&&h(u)})}),l.addEventListener("click",()=>{c(v?"read":"unread").then(u=>{u&&h(u)})}),g.addEventListener("click",async()=>{if(E)return;let u=f.textContent?.trim()||"this session";if(!await n.confirmer.confirm(`Archive \\u201C${u}\\u201D? Its page stops being served.`))return;let k=await c("archive");k&&(k.archived?n.view.navigateAway():h(k))}),o(),r()}function I(e){let t=e.querySelector("p"),n=e.querySelector(\'button[value="cancel"]\'),d=e.querySelector(\'button[value="confirm"]\'),a=null,l;function g(f){let S=a;if(a=null,f&&l)try{l()}catch{}l=void 0,e.open&&e.close(),S?.(f)}return n?.addEventListener("click",f=>{f.preventDefault(),g(!1)}),d?.addEventListener("click",f=>{f.preventDefault(),g(!0)}),e.addEventListener("cancel",f=>{f.preventDefault(),g(!1)}),e.addEventListener("close",()=>{a&&g(!1)}),{confirm(f,S){return new Promise(p=>{if(a&&g(!1),t&&(t.textContent=f),a=p,l=S,typeof e.showModal=="function")try{e.showModal()}catch{g(!1)}else g(!1)})}}}function U(e){let t=null;return{inPlace(n){e.location.assign(n)},reserveWindow(){try{if(t=e.open("","_blank"),t)try{t.opener=null}catch{}}catch{t=null}},external(n){let d=t;if(t=null,d&&!d.closed)try{d.location.href=n;return}catch{try{d.close()}catch{}}e.location.assign(n)},release(){let n=t;t=null;try{n?.close()}catch{}}}}function N(e,t,n,d=e.fetch.bind(e)){let a=`"${t.pageRevision}"`,l=!1,g=!1,f=!1,S=t.stale,p=null,v=null;function E(i){p!==null&&clearTimeout(p),p=null,!(g||e.document.visibilityState!=="visible")&&(p=setTimeout(()=>{p=null,s()},i))}function o(){p!==null&&clearTimeout(p),p=null,v?.abort(),v=null}function r(){l?(n.setStatus("Page changed \\u2014 reload when ready",!0),n.showReload(!0)):n.reloadView()}async function s(){if(!(g||f||e.document.visibilityState!=="visible")){if(Date.now()>=t.expiresAt-3e4){g=!0,l?(n.setStatus("Session expiring \\u2014 reload when ready",!0),n.showReload(!0)):n.reloadView();return}f=!0,v=new AbortController;try{let i=await d(t.documentUrl,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":a},signal:v.signal});if(i.status===401||i.status===403){g=!0,n.setStatus("Session expired \\u2014 reload this page",!0),n.showReload(!0);return}if(!i.ok&&i.status!==304){n.setStatus("Page unavailable",!0);return}let m=i.headers.get("x-thread-page-stale")==="true";n.setWorking(i.headers.get("x-thread-page-activity")==="working"),m!==S&&(S=m,n.onStaleChanged(m));let c=i.headers.get("x-thread-page-empty")==="true";n.setStatus(m?"Offline copy \\u2014 read-only":c?A:"",m);let h=i.headers.get("etag");h&&h!==a&&(a=h,r())}catch(i){i instanceof DOMException&&i.name==="AbortError"||n.setStatus("Cannot check for updates",!0)}finally{v=null,f=!1,E(t.pollMs)}}}return e.document.addEventListener("visibilitychange",()=>{e.document.visibilityState==="visible"?E(0):o()}),{start:()=>E(t.pollMs),setDirty:i=>{l=i},pollNow:()=>s(),isStopped:()=>g}}function $(e){let{config:t,confirmer:n,navigator:d}=e,a=e.fetchImpl??fetch;function l(o,r){o.postMessage(r)}async function g(o){return(await a(t.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify(o)})).json().catch(()=>null)}function f(o){return!T(o)||o.kind!=="page"&&o.kind!=="host"&&o.kind!=="external"||typeof o.url!="string"||o.kind==="external"&&!/^https?:\\/\\//i.test(o.url)||o.kind!=="external"&&!o.url.startsWith("/")?null:{kind:o.kind,url:o.url}}function S(o,r,s){if(!T(s)||!H(s.response,r.id)){l(o,M(r.id,"invalid_response","The Thread Page bridge returned an invalid response"));return}let i=s.navigate===void 0?null:f(s.navigate);if(s.response.ok&&i){l(o,s.response),i.kind==="external"?d.external(i.url):d.inPlace(i.url);return}d.release(),l(o,s.response)}async function p(o,r){try{let s=await g({actionToken:t.actionToken,request:r});if(T(s)&&T(s.confirm)){let i=s.confirm;if(typeof i.challenge!="string"||typeof i.summary!="string"||i.requestId!==r.id){l(o,M(r.id,"invalid_response","The Thread Page bridge returned an invalid confirmation"));return}let m=r.method==="navigation.openExternal";if(!await n.confirm(i.summary,m?()=>d.reserveWindow():void 0)){l(o,M(r.id,"cancelled","You declined this action"));return}let h=await g({actionToken:t.actionToken,request:r,confirmation:i.challenge});S(o,r,h);return}S(o,r,s)}catch(s){d.release(),l(o,M(r.id,"unavailable",s instanceof Error?s.message:"The Thread Page bridge is unavailable"))}}async function v(o){let r=o.file;if(!r||typeof r.size!="number")throw new Error("Attachment is not a file");let s=r.name||"file";if(r.size<=0)throw new Error(`Attachment ${s} is empty`);if(r.size>t.maxUploadBytes)throw new Error(`Attachment ${s} is larger than ${Math.round(t.maxUploadBytes/(1024*1024))} MiB`);let i=await oe(r),m=await a(t.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,pageRevision:t.pageRevision,name:s,content:i})}),c=await m.json().catch(()=>null);if(!m.ok||!c||c.ok!==!0||typeof c.name!="string"||typeof c.path!="string"||typeof c.sizeBytes!="number")throw new Error(c&&typeof c.message=="string"&&c.message||`Upload failed (${m.status})`);return{field:String(o.field||"file").slice(0,128),name:c.name,path:c.path,sizeBytes:c.sizeBytes}}async function E(o,r){let s=typeof r.submissionId=="string"?r.submissionId:"";try{let i=(Array.isArray(r.files)?r.files:[]).slice(0,t.maxUploads),m=[];for(let b=0;b<i.length;b+=1)l(o,{kind:"thread-page:submit-progress",submissionId:s,message:`Uploading ${b+1} of ${i.length}\\u2026`}),m.push(await v(i[b]));m.length>0&&l(o,{kind:"thread-page:submit-progress",submissionId:s,message:"Sending\\u2026"});let c=await a(t.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,submissionId:s,pageRevision:t.pageRevision,title:r.title,answers:r.answers,files:m})}),h=await c.json().catch(()=>({ok:!1,message:"Invalid server response"})),u=c.ok&&h.ok===!0;l(o,{kind:"thread-page:submit-result",submissionId:s,ok:u,message:typeof h.delivery=="string"?`Sent (${h.delivery})`:"Sent",error:typeof h.message=="string"?h.message:`Request failed (${c.status})`})}catch(i){l(o,{kind:"thread-page:submit-result",submissionId:s,ok:!1,error:i instanceof Error?i.message:"Request failed"})}}return{handle(o,r){if(T(r)){if(r.kind==="thread-page:dirty"){e.onDirty(!0);return}if(r.kind==="thread-page:clean"){e.onDirty(!1);return}if(r.kind==="thread-page:submit"){E(o,r);return}if(!D(r,t.pageRevision)){l(o,M(r.id,"invalid_request","Invalid Thread Page bridge request"));return}p(o,r)}}}}async function oe(e){let t=new Uint8Array(await e.arrayBuffer()),n="",d=32768;for(let a=0;a<t.length;a+=d)n+=String.fromCharCode.apply(null,Array.from(t.subarray(a,a+d)));return btoa(n)}function j(e,t,n,d){let{frame:a,status:l,work:g,reload:f,dialog:S,acts:p,pin:v,read:E,archive:o,title:r}=n,s=null,i=!0,m=t.stale,c={setStatus(y,w){l.textContent=y,l.dataset.tone=w?"warn":""},setWorking(y){g.dataset.visible=y&&t.workingLabel?"true":"false"},showReload(y){f.dataset.visible=y?"true":"false"},onStaleChanged(y){m=y,s?.postMessage({kind:"thread-page:source-state",stale:y})},reloadView(){e.location.reload()}},h=N(e,t,c,d),u=U(e),b=I(S),k=$({config:t,confirmer:b,navigator:u,onDirty:y=>h.setDirty(y),...d?{fetchImpl:d}:{}}),x=e.document.querySelector("a.home");q(t,{acts:p,pin:v,read:E,archive:o,title:r},{confirmer:b,view:{setStatus:(y,w)=>c.setStatus(y,w),navigateAway:()=>{x?.href?e.location.assign(x.href):e.location.reload()}},...d?{fetchImpl:d}:{}});function X(){let y=new e.MessageChannel,w=y.port1;s=w,w.onmessage=ee=>k.handle(w,ee.data),w.start?.(),a.contentWindow?.postMessage({kind:"thread-page:connect",version:_},"*",[y.port2]),w.postMessage({kind:"thread-page:source-state",stale:m})}return e.addEventListener("message",y=>{if(!i||y.origin!=="null"||y.source!==a.contentWindow)return;let w=y.data;!T(w)||w.kind!=="thread-page:ready"||w.version!==_||(i=!1,X())}),f.addEventListener("click",()=>e.location.reload()),a.src=t.documentUrl,h.start(),{poller:h}}var ie=O(document.currentScript),z=document.querySelector("iframe"),V=document.querySelector("[data-shell-status]"),F=document.querySelector("[data-shell-working]"),W=document.querySelector("[data-shell-reload]"),G=document.querySelector("dialog"),J=document.querySelector("[data-shell-acts]"),K=document.querySelector(\'[data-act="pin"]\'),Y=document.querySelector(\'[data-act="read"]\'),Z=document.querySelector(\'[data-act="archive"]\'),Q=document.querySelector(".title");if(!z||!V||!F||!W||!G||!J||!K||!Y||!Z||!Q)throw new Error("Thread Page shell: chrome is incomplete");j(window,ie,{frame:z,status:V,work:F,reload:W,dialog:G,acts:J,pin:K,read:Y,archive:Z,title:Q});})();';
+var SHELL_RUNTIME = '"use strict";(()=>{var U=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var L=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],be=new Set(L);var Se=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${U.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var D=1,H=1,_="Not written yet \\u2014 the page appears here as soon as the agent saves it",se=new Set(L),ie=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,ae=/^[a-z][a-zA-Z0-9]*(?:\\.[a-z][a-zA-Z0-9]*)+$/;function x(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function P(e,t){return Object.keys(e).length===t.length&&t.every(u=>Object.prototype.hasOwnProperty.call(e,u))}function I(e){return typeof e=="string"&&ie.test(e)}function q(e,t){return x(e)&&P(e,["v","id","method","params","pageRevision"])&&e.v===H&&I(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&ae.test(e.method)&&e.pageRevision===t}function N(e,t){if(!x(e)||e.v!==H||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return P(e,["v","id","ok","result"]);if(!P(e,["v","id","ok","error"])||!x(e.error))return!1;let r=e.error;return P(r,["code","message"])&&typeof r.code=="string"&&se.has(r.code)&&typeof r.message=="string"&&r.message.length>0&&r.message.length<=512}function C(e,t,r){return{v:1,id:I(e)?e:"invalid",ok:!1,error:{code:t,message:r.slice(0,512)||"Request failed"}}}function $(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}var j="index.html",le="uploads/";function W(e){return typeof e!="string"||e.length===0||e.length>1024||e.includes("\\0")||e.includes("\\\\")||e.startsWith("/")||e.startsWith(le)||!e.split("/").every(t=>t.length>0&&t!=="."&&t!=="..")?!1:/\\.html?$/i.test(e)}function z(e,t,r){let{acts:u,pin:l,read:d,archive:m,title:y}=t,k=r.fetchImpl??fetch;if(e.stale){for(let p of[l,d,m])p.disabled=!0;return}let h=l.dataset.on==="true",S=d.dataset.on==="true",T=!1;function o(){l.textContent=h?"\\u2605":"\\u2606",l.dataset.on=String(h),l.setAttribute("aria-pressed",String(h)),l.title=h?"Pinned in bb":"Pin in bb"}function n(){d.textContent=S?"Read":"Unread",d.dataset.on=String(S),d.title=S?"Mark read":"Mark unread"}let s;function i(p){r.view.setStatus(p,!0),s!==void 0&&clearTimeout(s),s=setTimeout(()=>r.view.setStatus("",!1),6e3)}async function f(p){try{let E=await k(e.chromeActionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:e.actionToken,action:p})}),w=await E.json().catch(()=>null),M=w&&w.state;return!E.ok||!w||w.ok!==!0||!M?(i(w&&typeof w.message=="string"&&w.message||`Request failed (${E.status})`),null):{pinned:M.pinned===!0,unread:M.unread===!0,archived:M.archived===!0}}catch(E){return i(E instanceof Error?E.message:"Request failed"),null}}async function c(p){if(T)return null;T=!0,u.dataset.busy="true";try{return await f(p)}finally{T=!1,delete u.dataset.busy}}function v(p){h=p.pinned,S=p.unread,o(),n()}l.addEventListener("click",()=>{c(h?"unpin":"pin").then(p=>{p&&v(p)})}),d.addEventListener("click",()=>{c(S?"read":"unread").then(p=>{p&&v(p)})}),m.addEventListener("click",async()=>{if(T)return;let p=y.textContent?.trim()||"this session";if(!await r.confirmer.confirm(`Archive \\u201C${p}\\u201D? Its page stops being served.`))return;let w=await c("archive");w&&(w.archived?r.view.navigateAway():v(w))}),o(),n()}function F(e){let t=e.querySelector("p"),r=e.querySelector(\'button[value="cancel"]\'),u=e.querySelector(\'button[value="confirm"]\'),l=null,d;function m(y){let k=l;if(l=null,y&&d)try{d()}catch{}d=void 0,e.open&&e.close(),k?.(y)}return r?.addEventListener("click",y=>{y.preventDefault(),m(!1)}),u?.addEventListener("click",y=>{y.preventDefault(),m(!0)}),e.addEventListener("cancel",y=>{y.preventDefault(),m(!1)}),e.addEventListener("close",()=>{l&&m(!1)}),{confirm(y,k){return new Promise(h=>{if(l&&m(!1),t&&(t.textContent=y),l=h,d=k,typeof e.showModal=="function")try{e.showModal()}catch{m(!1)}else m(!1)})}}}function V(e){let t=null;return{inPlace(r){e.location.assign(r)},reserveWindow(){try{if(t=e.open("","_blank"),t)try{t.opener=null}catch{}}catch{t=null}},external(r){let u=t;if(t=null,u&&!u.closed)try{u.location.href=r;return}catch{try{u.close()}catch{}}e.location.assign(r)},release(){let r=t;t=null;try{r?.close()}catch{}}}}function G(e,t,r,u=e.fetch.bind(e)){let l=`"${t.pageRevision}"`,d=!1,m=!1,y=!1,k=t.stale,h=null,S=null;function T(i){h!==null&&clearTimeout(h),h=null,!(m||e.document.visibilityState!=="visible")&&(h=setTimeout(()=>{h=null,s()},i))}function o(){h!==null&&clearTimeout(h),h=null,S?.abort(),S=null}function n(){d?(r.setStatus("Page changed \\u2014 reload when ready",!0),r.showReload(!0)):r.reloadView()}async function s(){if(m||y||e.document.visibilityState!=="visible")return;if(Date.now()>=t.expiresAt-3e4){m=!0,d?(r.setStatus("Session expiring \\u2014 reload when ready",!0),r.showReload(!0)):r.reloadView();return}y=!0,S=new AbortController;let i=t.documentUrl;try{let f=await u(i,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":l},signal:S.signal});if(i!==t.documentUrl)return;if(f.status===401||f.status===403){m=!0,r.setStatus("Session expired \\u2014 reload this page",!0),r.showReload(!0);return}if(!f.ok&&f.status!==304){r.setStatus("Page unavailable",!0);return}let c=f.headers.get("x-thread-page-stale")==="true";r.setWorking(f.headers.get("x-thread-page-activity")==="working"),c!==k&&(k=c,r.onStaleChanged(c));let v=f.headers.get("x-thread-page-empty")==="true";r.setStatus(c?"Offline copy \\u2014 read-only":v?_:t.notice??"",c);let p=f.headers.get("etag");p&&p!==l&&(l=p,n())}catch(f){f instanceof DOMException&&f.name==="AbortError"||r.setStatus("Cannot check for updates",!0)}finally{S=null,y=!1,T(t.pollMs)}}return e.document.addEventListener("visibilitychange",()=>{e.document.visibilityState==="visible"?T(0):o()}),{start:()=>T(t.pollMs),setDirty:i=>{d=i},retarget:()=>{o(),l=`"${t.pageRevision}"`,k=t.stale,d=!1,m=!1,y=!1,T(t.pollMs)},pollNow:()=>s(),isStopped:()=>m}}function K(e){let{config:t,confirmer:r,navigator:u}=e,l=e.fetchImpl??fetch;function d(o,n){o.postMessage(n)}async function m(o){return(await l(t.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify(o)})).json().catch(()=>null)}function y(o){return!x(o)||o.kind!=="page"&&o.kind!=="host"&&o.kind!=="external"||typeof o.url!="string"||o.kind==="external"&&!/^https?:\\/\\//i.test(o.url)||o.kind!=="external"&&!o.url.startsWith("/")?null:{kind:o.kind,url:o.url}}function k(o,n,s){if(!x(s)||!N(s.response,n.id)){d(o,C(n.id,"invalid_response","The Thread Page bridge returned an invalid response"));return}let i=s.navigate===void 0?null:y(s.navigate);if(s.response.ok&&i){d(o,s.response),i.kind==="external"?u.external(i.url):u.inPlace(i.url);return}u.release(),d(o,s.response)}async function h(o,n){try{let s=await m({actionToken:t.actionToken,request:n});if(x(s)&&x(s.confirm)){let i=s.confirm;if(typeof i.challenge!="string"||typeof i.summary!="string"||i.requestId!==n.id){d(o,C(n.id,"invalid_response","The Thread Page bridge returned an invalid confirmation"));return}let f=n.method==="navigation.openExternal";if(!await r.confirm(i.summary,f?()=>u.reserveWindow():void 0)){d(o,C(n.id,"cancelled","You declined this action"));return}let v=await m({actionToken:t.actionToken,request:n,confirmation:i.challenge});k(o,n,v);return}k(o,n,s)}catch(s){u.release(),d(o,C(n.id,"unavailable",s instanceof Error?s.message:"The Thread Page bridge is unavailable"))}}async function S(o){let n=o.file;if(!n||typeof n.size!="number")throw new Error("Attachment is not a file");let s=n.name||"file";if(n.size<=0)throw new Error(`Attachment ${s} is empty`);if(n.size>t.maxUploadBytes)throw new Error(`Attachment ${s} is larger than ${Math.round(t.maxUploadBytes/(1024*1024))} MiB`);let i=await de(n),f=await l(t.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,pageRevision:t.pageRevision,name:s,content:i})}),c=await f.json().catch(()=>null);if(!f.ok||!c||c.ok!==!0||typeof c.name!="string"||typeof c.path!="string"||typeof c.sizeBytes!="number")throw new Error(c&&typeof c.message=="string"&&c.message||`Upload failed (${f.status})`);return{field:String(o.field||"file").slice(0,128),name:c.name,path:c.path,sizeBytes:c.sizeBytes}}async function T(o,n){let s=typeof n.submissionId=="string"?n.submissionId:"";try{let i=(Array.isArray(n.files)?n.files:[]).slice(0,t.maxUploads),f=[];for(let E=0;E<i.length;E+=1)d(o,{kind:"thread-page:submit-progress",submissionId:s,message:`Uploading ${E+1} of ${i.length}\\u2026`}),f.push(await S(i[E]));f.length>0&&d(o,{kind:"thread-page:submit-progress",submissionId:s,message:"Sending\\u2026"});let c=await l(t.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,submissionId:s,pageRevision:t.pageRevision,title:n.title,answers:n.answers,files:f})}),v=await c.json().catch(()=>({ok:!1,message:"Invalid server response"})),p=c.ok&&v.ok===!0;d(o,{kind:"thread-page:submit-result",submissionId:s,ok:p,message:typeof v.delivery=="string"?`Sent (${v.delivery})`:"Sent",error:typeof v.message=="string"?v.message:`Request failed (${c.status})`})}catch(i){d(o,{kind:"thread-page:submit-result",submissionId:s,ok:!1,error:i instanceof Error?i.message:"Request failed"})}}return{handle(o,n){if(x(n)){if(n.kind==="thread-page:dirty"){e.onDirty(!0);return}if(n.kind==="thread-page:clean"){e.onDirty(!1);return}if(n.kind==="thread-page:submit"){T(o,n);return}if(n.kind==="thread-page:open-document"){W(n.path)&&e.onOpenDocument?.(n.path);return}if(!q(n,t.pageRevision)){d(o,C(n.id,"invalid_request","Invalid Thread Page bridge request"));return}h(o,n)}}}}async function de(e){let t=new Uint8Array(await e.arrayBuffer()),r="",u=32768;for(let l=0;l<t.length;l+=u)r+=String.fromCharCode.apply(null,Array.from(t.subarray(l,l+u)));return btoa(r)}var B="threadPageDocument";function Y(e,t,r,u){let{status:l,work:d,reload:m,dialog:y,acts:k,pin:h,read:S,archive:T,title:o}=r,n=u??e.fetch.bind(e),s=r.frame,i=null,f=!0,c=t.stale,v={setStatus(a,g){l.textContent=a,l.dataset.tone=g?"warn":""},setWorking(a){d.dataset.visible=a&&t.workingLabel?"true":"false"},showReload(a){m.dataset.visible=a?"true":"false"},onStaleChanged(a){c=a,i?.postMessage({kind:"thread-page:source-state",stale:a})},reloadView(){e.location.reload()}},p=G(e,t,v,u),E=V(e),w=F(y),M=K({config:t,confirmer:w,navigator:E,onDirty:a=>p.setDirty(a),onOpenDocument:a=>{A(a,!0)},...u?{fetchImpl:u}:{}}),O=e.document.querySelector("a.home");k&&h&&S&&T&&z(t,{acts:k,pin:h,read:S,archive:T,title:o},{confirmer:w,view:{setStatus:(a,g)=>v.setStatus(a,g),navigateAway:()=>{O?.href?e.location.assign(O.href):e.location.reload()}},...u?{fetchImpl:u}:{}});function ne(){let a=new e.MessageChannel,g=a.port1;i=g,g.onmessage=R=>M.handle(g,R.data),g.start?.(),s.contentWindow?.postMessage({kind:"thread-page:connect",version:D},"*",[a.port2]),g.postMessage({kind:"thread-page:source-state",stale:c})}e.addEventListener("message",a=>{if(!f||a.origin!=="null"||a.source!==s.contentWindow)return;let g=a.data;!x(g)||g.kind!=="thread-page:ready"||g.version!==D||(f=!1,ne())});function re(a){let g=s.cloneNode(!1);g.setAttribute("src",a),s.replaceWith(g),s=g}function oe(a){let g=new URL(e.location.href);return a===j?g.searchParams.delete("path"):g.searchParams.set("path",a),`${g.pathname}${g.search}${g.hash}`}async function A(a,g=!0){if(!t.navigable||a===t.documentPath)return!1;try{let R=await n(t.documentSessionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,path:a})}),b=await R.json().catch(()=>null);return!R.ok||!x(b)||b.ok!==!0||typeof b.actionToken!="string"||typeof b.pageRevision!="string"||typeof b.expiresAt!="number"||typeof b.documentUrl!="string"||!b.documentUrl.startsWith("/")||typeof b.path!="string"?(v.setStatus(x(b)&&typeof b.message=="string"&&b.message||"That page could not be opened",!0),!1):(t.actionToken=b.actionToken,t.pageRevision=b.pageRevision,t.expiresAt=b.expiresAt,t.documentUrl=b.documentUrl,t.documentPath=b.path,t.stale=b.stale===!0,t.empty=b.empty===!0,c=t.stale,i=null,f=!0,re(t.documentUrl),p.retarget(),v.showReload(!1),v.setStatus(t.stale?"Offline copy \\u2014 read-only":t.empty?_:t.notice??"",t.stale),g&&e.history.pushState({[B]:t.documentPath},"",oe(t.documentPath)),!0)}catch{return v.setStatus("That page could not be opened",!0),!1}}if(t.navigable){try{e.history.replaceState({[B]:t.documentPath},"",e.location.href)}catch{}e.addEventListener("popstate",a=>{let g=a.state,R=x(g)&&typeof g[B]=="string"?g[B]:null;R&&A(R,!1)})}return m.addEventListener("click",()=>e.location.reload()),s.src=t.documentUrl,p.start(),{poller:p,openDocument:A}}var ce=$(document.currentScript),J=document.querySelector("iframe"),Z=document.querySelector("[data-shell-status]"),Q=document.querySelector("[data-shell-working]"),X=document.querySelector("[data-shell-reload]"),ee=document.querySelector("dialog"),te=document.querySelector(".title"),ue=document.querySelector("[data-shell-acts]"),pe=document.querySelector(\'[data-act="pin"]\'),ge=document.querySelector(\'[data-act="read"]\'),fe=document.querySelector(\'[data-act="archive"]\');if(!J||!Z||!Q||!X||!ee||!te)throw new Error("Thread Page shell: chrome is incomplete");Y(window,ce,{frame:J,status:Z,work:Q,reload:X,dialog:ee,title:te,acts:ue,pin:pe,read:ge,archive:fe});})();';
 
 // src/runtime/shared/protocol.ts
 var EMPTY_PAGE_STATUS = "Not written yet \u2014 the page appears here as soon as the agent saves it";
@@ -11703,11 +12706,23 @@ dialog::backdrop{background:rgb(0 0 0 / .45)}dialog h2{margin:0 0 .5rem;font-siz
 dialog .row{display:flex;gap:.5rem;justify-content:flex-end}dialog button{padding:.4rem .8rem;border:1px solid var(--line);border-radius:.4rem;color:var(--ink);background:var(--bg);cursor:pointer}
 dialog button[value=confirm]{color:#fff;background:var(--accent);border-color:var(--accent)}
 `;
+function initialStatus(config) {
+  if (config.stale) return "Offline copy \u2014 read-only";
+  if (config.empty) return EMPTY_PAGE_STATUS;
+  return config.notice ?? "";
+}
 function renderShell(view) {
   const title2 = escapeHtml(view.title);
   const nonce = escapeHtml(view.nonce);
   const config = escapeHtml(JSON.stringify(view.config));
   const working = view.working && view.config.workingLabel ? "true" : "false";
+  const warn = view.config.stale || !view.config.empty && view.config.notice !== null;
+  const acts = view.chrome ? `<span class="acts" data-shell-acts data-enabled="${view.config.stale ? "false" : "true"}">
+      <button type="button" class="act" data-act="pin" data-on="${view.chrome.pinned}" aria-pressed="${view.chrome.pinned}" title="${view.chrome.pinned ? "Pinned in bb" : "Pin in bb"}">${view.chrome.pinned ? "\u2605" : "\u2606"}</button>
+      <a class="act" href="${escapeHtml(view.chrome.hostUrl)}" title="Open this session in bb">bb</a>
+      <button type="button" class="act" data-act="read" data-on="${view.chrome.unread}" title="${view.chrome.unread ? "Mark read" : "Mark unread"}">${view.chrome.unread ? "Read" : "Unread"}</button>
+      <button type="button" class="act act-warn" data-act="archive" title="Archive this session">Archive</button>
+    </span>` : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -11723,13 +12738,8 @@ function renderShell(view) {
     ${view.homeUrl ? `<a class="home" href="${escapeHtml(view.homeUrl)}" title="All sessions">\u2190 Sessions</a>` : ""}
     <span class="title">${title2}</span>
     <span class="work" role="status" data-shell-working data-visible="${working}"><span class="dot" aria-hidden="true"></span><span class="word">${escapeHtml(view.config.workingLabel)}</span></span>
-    <span class="status" role="status" data-shell-status${view.config.stale ? ' data-tone="warn"' : ""}>${view.config.stale ? "Offline copy \u2014 read-only" : view.config.empty ? escapeHtml(EMPTY_PAGE_STATUS) : ""}</span>
-    <span class="acts" data-shell-acts data-enabled="${view.config.stale ? "false" : "true"}">
-      <button type="button" class="act" data-act="pin" data-on="${view.chrome.pinned}" aria-pressed="${view.chrome.pinned}" title="${view.chrome.pinned ? "Pinned in bb" : "Pin in bb"}">${view.chrome.pinned ? "\u2605" : "\u2606"}</button>
-      <a class="act" href="${escapeHtml(view.chrome.hostUrl)}" title="Open this session in bb">bb</a>
-      <button type="button" class="act" data-act="read" data-on="${view.chrome.unread}" title="${view.chrome.unread ? "Mark read" : "Mark unread"}">${view.chrome.unread ? "Read" : "Unread"}</button>
-      <button type="button" class="act act-warn" data-act="archive" title="Archive this session">Archive</button>
-    </span>
+    <span class="status" role="status" data-shell-status${warn ? ' data-tone="warn"' : ""}>${escapeHtml(initialStatus(view.config))}</span>
+    ${acts}
     <button type="button" class="reload" data-shell-reload aria-label="Reload updated page">Reload</button>
   </header>
   <iframe title="${title2}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
@@ -11749,38 +12759,115 @@ function renderShell(view) {
 </html>`;
 }
 
-// src/serving/shell-route.ts
-function shellRoute(serving) {
-  return async (context) => {
+// src/serving/home-route.ts
+var STALE_HOME_NOTICE = "Home pointed at a session that no longer exists \u2014 this is the built-in home page";
+function homeRoute(serving) {
+  return async (_context) => {
     try {
-      const id = sessionIdFrom(context);
-      const session = await eligibleSession(serving, id);
-      const page = await loadUnlessUnwritten(serving, id);
-      const revision = page?.revision ?? EMPTY_REVISION;
-      const stale = page?.stale ?? false;
+      const designated = serving.settings.current().homeSessionId;
+      let notice = null;
+      if (isSessionId(designated)) {
+        const session = await serving.host.sessions.get(designated).catch(() => null);
+        if (session && !session.deleted && !session.archived) {
+          return new Response(null, { status: 302, headers: { location: pageUrl(serving.routeBase, designated), "cache-control": "no-store, max-age=0" } });
+        }
+        notice = STALE_HOME_NOTICE;
+      }
       const now = serving.now();
-      const { token, payload } = mintActionToken({ session: id, revision, now }, serving.signingKey);
+      const { token, payload } = mintActionToken({ session: BUILTIN_HOME_ID, revision: BUILTIN_HOME_PAGE.revision, now }, serving.signingKey);
       const nonce = randomBytes2(18).toString("base64url");
       const settings = serving.settings.current();
-      const home3 = isSessionId(settings.homeSessionId) && settings.homeSessionId !== id ? homeUrl(serving.routeBase) : null;
       const html = renderShell({
         nonce,
-        title: session.title,
-        homeUrl: home3,
-        working: session.state === "working",
-        chrome: { hostUrl: serving.hostSessionUrl(id), pinned: session.pinned, unread: session.unread },
+        title: BUILTIN_HOME_TITLE,
+        homeUrl: null,
+        working: false,
+        chrome: null,
         config: {
           actionToken: token,
-          pageRevision: revision,
+          pageRevision: BUILTIN_HOME_PAGE.revision,
           expiresAt: payload.exp,
-          documentUrl: serving.site.documentUrl(id),
+          documentUrl: `${serving.routeBase}/home-document`,
+          documentPath: ENTRY_DOCUMENT,
           submitUrl: `${serving.routeBase}/submit`,
           uploadUrl: `${serving.routeBase}/upload`,
           bridgeUrl: `${serving.routeBase}/bridge`,
           chromeActionUrl: `${serving.routeBase}/chrome-action`,
+          documentSessionUrl: `${serving.routeBase}/document-session`,
+          navigable: false,
+          workingLabel: settings.workingLabel,
+          stale: false,
+          empty: false,
+          notice,
+          pollMs: LIMITS.shellPollMs,
+          maxUploadBytes: LIMITS.uploadFileBytes,
+          maxUploads: LIMITS.uploadsPerForm
+        }
+      });
+      const headers = baseHeaders("text/html; charset=utf-8");
+      headers.set("content-security-policy", shellCsp(nonce));
+      return new Response(html, { status: 200, headers });
+    } catch (error) {
+      return failureResponse(error, serving.host.log, "GET /home", true);
+    }
+  };
+}
+function homeDocumentRoute(serving) {
+  return async (context) => {
+    try {
+      const headers = baseHeaders("text/html; charset=utf-8");
+      headers.set("content-security-policy", documentCsp());
+      headers.set("etag", etagFor(BUILTIN_HOME_PAGE.revision));
+      headers.set("x-thread-page-stale", "false");
+      headers.set("x-thread-page-activity", "idle");
+      if (ifNoneMatchMatches(context.req.header("if-none-match"), etagFor(BUILTIN_HOME_PAGE.revision))) {
+        return new Response(null, { status: 304, headers });
+      }
+      const config = { pageRevision: BUILTIN_HOME_PAGE.revision, stale: false, siteRoot: null };
+      return new Response(injectKernel(BUILTIN_HOME_PAGE.html, { kernel: KERNEL_RUNTIME, config, baseHref: null }), { status: 200, headers });
+    } catch (error) {
+      return failureResponse(error, serving.host.log, "GET /home-document", true);
+    }
+  };
+}
+
+// src/serving/shell-route.ts
+import { randomBytes as randomBytes3 } from "node:crypto";
+function shellRoute(serving) {
+  return async (context) => {
+    try {
+      const id = sessionIdFrom(context);
+      const path = documentPathFrom(context);
+      const session = await eligibleSession(serving, id);
+      const page = path ? await serving.pages.load(id, path) : await loadUnlessUnwritten(serving, id);
+      const revision = page?.revision ?? EMPTY_REVISION;
+      const stale = page?.stale ?? false;
+      const now = serving.now();
+      const { token, payload } = mintActionToken({ session: id, revision, path, now }, serving.signingKey);
+      const nonce = randomBytes3(18).toString("base64url");
+      const settings = serving.settings.current();
+      const html = renderShell({
+        nonce,
+        title: session.title,
+        homeUrl: settings.homeSessionId !== id ? homeUrl(serving.routeBase) : null,
+        working: session.state === "working",
+        chrome: { hostUrl: serving.hostSessionUrl(session), pinned: session.pinned, unread: session.unread },
+        config: {
+          actionToken: token,
+          pageRevision: revision,
+          expiresAt: payload.exp,
+          documentUrl: serving.site.documentUrl(id, path),
+          documentPath: path ?? ENTRY_DOCUMENT,
+          submitUrl: `${serving.routeBase}/submit`,
+          uploadUrl: `${serving.routeBase}/upload`,
+          bridgeUrl: `${serving.routeBase}/bridge`,
+          chromeActionUrl: `${serving.routeBase}/chrome-action`,
+          documentSessionUrl: `${serving.routeBase}/document-session`,
+          navigable: true,
           workingLabel: settings.workingLabel,
           stale,
           empty: page === null,
+          notice: null,
           pollMs: LIMITS.shellPollMs,
           maxUploadBytes: LIMITS.uploadFileBytes,
           maxUploads: LIMITS.uploadsPerForm
@@ -11854,6 +12941,7 @@ function submitRoute(serving) {
       const submission = parseSubmission(body);
       if (!submission) throw new PageError("invalid_request", "Invalid submission");
       const token = requireActionToken(serving, submission.actionToken);
+      if (isBuiltinHome(token.session)) throw new PageError("forbidden", "The built-in home page has no session to answer.");
       if (submission.pageRevision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
       release = acquireRate(serving, token.session);
       const now = serving.now();
@@ -11863,7 +12951,7 @@ function submitRoute(serving) {
         fingerprint2,
         async () => {
           await eligibleSession(serving, token.session);
-          const page = await serving.pages.load(token.session);
+          const page = await serving.pages.load(token.session, token.path);
           if (page.stale) throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);
           if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
           const sent = await serving.host.sessions.send(token.session, formatSubmissionMessage(submission), "queue");
@@ -11883,7 +12971,7 @@ function submitRoute(serving) {
 }
 
 // src/serving/upload-route.ts
-import { randomBytes as randomBytes3 } from "node:crypto";
+import { randomBytes as randomBytes4 } from "node:crypto";
 var BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 function uploadRoute(serving) {
   const maxBody = Math.ceil(LIMITS.uploadFileBytes * 4 / 3) + 8192;
@@ -11894,15 +12982,16 @@ function uploadRoute(serving) {
       if (!body || typeof body !== "object" || Array.isArray(body)) throw new PageError("invalid_request", "Invalid upload envelope");
       const envelope = body;
       const token = requireActionToken(serving, envelope.actionToken);
+      if (isBuiltinHome(token.session)) throw new PageError("forbidden", "The built-in home page has no session to attach files to.");
       if (typeof envelope.content !== "string" || !BASE64.test(envelope.content)) throw new PageError("invalid_request", "Attachment content must be base64");
       release = acquireRate(serving, token.session);
       await eligibleSession(serving, token.session);
-      const page = await serving.pages.load(token.session);
+      const page = await serving.pages.load(token.session, token.path);
       if (page.stale) throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);
       const bytes = Buffer.from(envelope.content, "base64");
       if (bytes.byteLength === 0) throw new PageError("invalid_request", "The file is empty");
       if (bytes.byteLength > LIMITS.uploadFileBytes) throw new PageError("request_too_large", `Attachments must be at most ${mebibytes(LIMITS.uploadFileBytes)}`);
-      const name = uploadFileName(typeof envelope.name === "string" ? envelope.name : "upload", serving.now(), randomBytes3(3).toString("hex"));
+      const name = uploadFileName(typeof envelope.name === "string" ? envelope.name : "upload", serving.now(), randomBytes4(3).toString("hex"));
       const location = await serving.host.sessions.storage(token.session);
       const outcome = await serving.host.files.write(location, `${UPLOAD_DIR}/${name}`, bytes, { onlyIfAbsent: true });
       if (outcome !== "written") throw new PageError("conflict", "The attachment could not be stored under a fresh name; try again");
@@ -11921,14 +13010,16 @@ function registerRoutes(bb, serving) {
   bb.http.route("GET", "/page", shellRoute(serving), { auth: "local" });
   bb.http.route("GET", "/document", documentRoute(serving), { auth: "local" });
   bb.http.route("GET", "/home", homeRoute(serving), { auth: "local" });
+  bb.http.route("GET", "/home-document", homeDocumentRoute(serving), { auth: "local" });
   bb.http.route("POST", "/submit", submitRoute(serving), { auth: "local" });
   bb.http.route("POST", "/upload", uploadRoute(serving), { auth: "local" });
   bb.http.route("POST", "/bridge", bridgeRoute(dispatch), { auth: "local" });
   bb.http.route("POST", "/chrome-action", chromeActionRoute(serving), { auth: "local" });
+  bb.http.route("POST", "/document-session", documentSessionRoute(serving), { auth: "local" });
 }
 
 // src/serving/signing-key.ts
-import { randomBytes as randomBytes4 } from "node:crypto";
+import { randomBytes as randomBytes5 } from "node:crypto";
 var KEY = "signing-key:v3";
 async function loadSigningKey(host) {
   try {
@@ -11940,7 +13031,7 @@ async function loadSigningKey(host) {
   } catch (error) {
     host.log.warn(`signing key: could not read the stored key: ${errorText(error)}`);
   }
-  const generated = randomBytes4(32);
+  const generated = randomBytes5(32);
   try {
     await host.kv.set(KEY, generated.toString("base64url"));
   } catch (error) {
@@ -11961,12 +13052,16 @@ async function createPlugin(bb, options = {}) {
     // Strategy A cannot serve a sandboxed document's own files on an
     // authenticated origin, so the document carries them. Delete this
     // argument, and pages/inline.ts, once the host can authorise them.
-    pages: createPageStore(host, async (session, html) => {
+    pages: createPageStore(host, async (session, html, path) => {
       const location = await host.sessions.storage(session);
-      return resolveOwnFiles(html, async (path) => {
-        const file = await host.files.read(location, path);
-        return file ? { bytes: file.bytes } : null;
-      });
+      return resolveOwnFiles(
+        html,
+        async (relativePath) => {
+          const file = await host.files.read(location, relativePath);
+          return file ? { bytes: file.bytes } : null;
+        },
+        directoryOf(path)
+      );
     }),
     settings,
     signingKey,
@@ -11977,7 +13072,7 @@ async function createPlugin(bb, options = {}) {
     submissions: createOutcomeMemory(),
     replies: createOutcomeMemory(),
     selections: createSelectionStore(),
-    hostSessionUrl: (session) => `/threads/${encodeURIComponent(session)}`,
+    hostSessionUrl: bbSessionUrl,
     now: options.now ?? (() => Date.now())
   };
   const effectiveInstruction = () => {

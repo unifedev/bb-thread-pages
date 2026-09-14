@@ -3,6 +3,7 @@ import { LIMITS } from "../../src/domain/limits.ts";
 import { revisionOf } from "../../src/domain/revision.ts";
 import { mintActionToken } from "../../src/domain/tokens/action-token.ts";
 import { openChallenge } from "../../src/domain/tokens/confirmation.ts";
+import { BUILTIN_HOME_ID, BUILTIN_HOME_PAGE } from "../../src/serving/builtin-home.ts";
 import { fileKey, seedSession, sessionRecord } from "../support/fake-host.ts";
 import { loadPlugin, PAGE, ROUTE_BASE, type PluginFixture } from "../support/plugin.ts";
 
@@ -19,8 +20,9 @@ beforeEach(async () => {
 afterEach(() => fixture.dispose());
 
 type Transport = { response?: { ok: boolean; result?: unknown; error?: { code: string; message: string } }; navigate?: unknown; confirm?: { requestId: string; summary: string; challenge: string } };
+type CallOptions = { session?: string; revision?: string; confirmation?: string; id?: string };
 
-async function call(method: string, params: unknown = null, options: { session?: string; revision?: string; confirmation?: string; id?: string } = {}): Promise<{ status: number; body: Transport; id: string }> {
+async function call(method: string, params: unknown = null, options: CallOptions = {}): Promise<{ status: number; body: Transport; id: string }> {
   const session = options.session ?? "thr_a";
   const revision = options.revision ?? revisionOf(PAGE);
   const { token } = mintActionToken({ session, revision, now: fixture.clock.now }, fixture.serving.signingKey);
@@ -30,7 +32,7 @@ async function call(method: string, params: unknown = null, options: { session?:
   return { status: response.status, body: (await response.json()) as Transport, id };
 }
 
-async function confirmed(method: string, params: unknown, options: { session?: string } = {}) {
+async function confirmed(method: string, params: unknown, options: Pick<CallOptions, "session" | "revision"> = {}) {
   const first = await call(method, params, options);
   expect(first.status).toBe(401);
   expect(first.body.confirm?.requestId).toBe(first.id);
@@ -212,14 +214,51 @@ describe("navigation", () => {
     expect(page.body.response?.result).toEqual({ opened: true });
     expect(page.body.navigate).toEqual({ kind: "page", url: `${ROUTE_BASE}/page?session=thr_c` });
     expect((await call("pages.open", { sessionId: "thr_missing" })).body.response?.error?.code).toBe("not_found");
+    // bb's canonical address carries the project; only the Personal project uses /threads/<id>. spec R5.31a
     const host = await call("sessions.openHost", { sessionId: "thr_b" });
-    expect(host.body.navigate).toEqual({ kind: "host", url: "/threads/thr_b" });
+    expect(host.body.navigate).toEqual({ kind: "host", url: "/projects/proj_a/threads/thr_b" });
+    fixture.state.sessions.set("thr_p", sessionRecord({ id: "thr_p", projectId: "proj_personal" }));
+    expect((await call("sessions.openHost", { sessionId: "thr_p" })).body.navigate).toEqual({ kind: "host", url: "/threads/thr_p" });
   });
 
   it("confirms external navigation naming the origin", async () => {
     const { first, second } = await confirmed("navigation.openExternal", { url: "https://example.com/path?q=1", label: "Docs" });
     expect(first.body.confirm?.summary).toBe("Leave this page and open “Docs” at https://example.com");
     expect(second.body.navigate).toEqual({ kind: "external", url: "https://example.com/path?q=1" });
+  });
+});
+
+// The built-in home page acts under a reserved identity of its own. spec R7.9a, R5.18a, DECISIONS D14
+describe("the built-in home page", () => {
+  const home = { session: BUILTIN_HOME_ID, revision: BUILTIN_HOME_PAGE.revision };
+
+  it("reads, keeps its own storage, and starts work, under its own identity", async () => {
+    const context = (await call("context.get", null, home)).body.response!.result as { session: { id: string; projectId: string | null }; capabilities: { method: string }[] };
+    expect(context.session).toMatchObject({ id: BUILTIN_HOME_ID, projectId: null });
+    const methods = context.capabilities.map((entry) => entry.method);
+    expect(methods).toContain("sessions.snapshot");
+    expect(methods).not.toContain("session.reply");
+    expect(methods).not.toContain("session.activity");
+    expect((await call("storage.set", { key: "prefs", value: 1 }, home)).body.response?.result).toEqual({ stored: true });
+    expect((await call("storage.get", { key: "prefs" }, home)).body.response?.result).toEqual({ found: true, value: 1 });
+    expect((await call("storage.get", { key: "prefs" })).body.response?.result).toEqual({ found: false });
+    expect((await confirmed("sessions.start", { projectId: "proj_a", prompt: "Build me a home page." }, home)).second.body.response?.result).toEqual({ sessionId: "thr_new" });
+  });
+
+  it("refuses what needs a session of its own, and answers no session", async () => {
+    const refused: [string, unknown][] = [
+      ["session.reply", { result: 1 }],
+      ["session.activity", { limit: 1 }],
+      ["projects.browse", null],
+    ];
+    for (const [method, params] of refused) {
+      expect((await call(method, params, home)).body.response?.error?.code, method).toBe("unknown_method");
+    }
+    expect(fixture.state.calls.filter((entry) => entry.method === "sessions.send" || entry.method === "sessions.activity")).toHaveLength(0);
+    const { token } = mintActionToken({ ...home, now: fixture.clock.now }, fixture.serving.signingKey);
+    const submit = await fixture.post(`${ROUTE_BASE}/submit`, { actionToken: token, submissionId: "h1", pageRevision: home.revision, title: "T", answers: [] });
+    expect(submit.status).toBe(403);
+    expect((await fixture.post(`${ROUTE_BASE}/document-session`, { actionToken: token, path: "x.html" })).status).toBe(403);
   });
 });
 

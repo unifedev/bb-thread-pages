@@ -35,6 +35,8 @@ export type KernelMessage =
   | { kind: "thread-page:dirty" }
   | { kind: "thread-page:clean" }
   | { kind: "thread-page:submit"; submissionId: string; title: string; answers: SubmitAnswer[]; files: SubmitFile[] }
+  /** A link to another document of the page: the shell opens it in place. spec R1.12a */
+  | { kind: "thread-page:open-document"; path: string }
   | BridgeRequestMessage;
 
 export type ShellMessage =
@@ -47,22 +49,32 @@ export type ShellMessage =
 export interface KernelConfig {
   pageRevision: string;
   stale: boolean;
+  /** The URL the page's own files sit under; links to its HTML documents below it open in place. */
+  siteRoot?: string | null;
 }
 
-/** Carried in the shell script's `data-config` attribute. */
+/** Carried in the shell script's `data-config` attribute. The document fields change when another document of the page opens. */
 export interface ShellConfig {
   actionToken: string;
   pageRevision: string;
   expiresAt: number;
   documentUrl: string;
+  /** The open document within the page root; the entry document is `index.html`. */
+  documentPath: string;
   submitUrl: string;
   uploadUrl: string;
   bridgeUrl: string;
   chromeActionUrl: string;
+  /** Where the shell exchanges its token for one bound to another document. */
+  documentSessionUrl: string;
+  /** Whether links to the page's other documents open in place (not for the built-in home). */
+  navigable: boolean;
   workingLabel: string;
   stale: boolean;
   /** The agent has not written the page yet; the frame holds host text. spec R6.19 */
   empty: boolean;
+  /** A standing line for the status area, such as a home pointer that no longer resolves. spec R7.4 */
+  notice: string | null;
   pollMs: number;
   maxUploadBytes: number;
   maxUploads: number;

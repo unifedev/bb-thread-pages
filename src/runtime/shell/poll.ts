@@ -3,7 +3,9 @@ import { EMPTY_PAGE_STATUS, type ShellConfig } from "../shared/protocol.ts";
 /**
  * The revision poll: a conditional GET of the document every few seconds
  * while the tab is visible. It carries the working indicator and the
- * source state, so no second channel exists. spec R2.17–R2.26
+ * source state, so no second channel exists. It reads the shell's config at
+ * each poll, so opening another document of the page only needs a retarget.
+ * spec R2.17–R2.26
  */
 export interface PollView {
   setStatus(text: string, warn: boolean): void;
@@ -16,6 +18,8 @@ export interface PollView {
 export interface Poller {
   start(): void;
   setDirty(dirty: boolean): void;
+  /** Follows the config after the shell switched documents. */
+  retarget(): void;
   /** For tests: run one poll now. */
   pollNow(): Promise<void>;
   isStopped(): boolean;
@@ -70,14 +74,17 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
     }
     polling = true;
     controller = new AbortController();
+    const polled = config.documentUrl;
     try {
-      const response = await fetchImpl(config.documentUrl, {
+      const response = await fetchImpl(polled, {
         method: "GET",
         credentials: "same-origin",
         cache: "no-store",
         headers: { "if-none-match": etag },
         signal: controller.signal,
       });
+      // The shell opened another document while this poll was out.
+      if (polled !== config.documentUrl) return;
       if (response.status === 401 || response.status === 403) {
         stopped = true;
         view.setStatus("Session expired — reload this page", true);
@@ -95,7 +102,7 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
         view.onStaleChanged(stale);
       }
       const empty = response.headers.get("x-thread-page-empty") === "true";
-      view.setStatus(stale ? "Offline copy — read-only" : empty ? EMPTY_PAGE_STATUS : "", stale);
+      view.setStatus(stale ? "Offline copy — read-only" : empty ? EMPTY_PAGE_STATUS : (config.notice ?? ""), stale);
       const next = response.headers.get("etag");
       if (next && next !== etag) {
         etag = next;
@@ -119,6 +126,15 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
     start: () => schedule(config.pollMs),
     setDirty: (next) => {
       dirty = next;
+    },
+    retarget: () => {
+      pause();
+      etag = `"${config.pageRevision}"`;
+      lastStale = config.stale;
+      dirty = false;
+      stopped = false;
+      polling = false;
+      schedule(config.pollMs);
     },
     pollNow: () => poll(),
     isStopped: () => stopped,

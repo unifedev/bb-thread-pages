@@ -5,6 +5,7 @@ import { sha256Hex } from "../domain/revision.ts";
 import { formatSubmissionMessage } from "../domain/submissions/message.ts";
 import { parseSubmission } from "../domain/submissions/parse.ts";
 import { acquireRate, readJsonBody, requireActionToken } from "./action-request.ts";
+import { isBuiltinHome } from "./builtin-home.ts";
 import type { ServingContext } from "./context.ts";
 import { failureResponse, jsonResponse } from "./responses.ts";
 import { eligibleSession } from "./session-access.ts";
@@ -18,6 +19,7 @@ export function submitRoute(serving: ServingContext) {
       const submission = parseSubmission(body);
       if (!submission) throw new PageError("invalid_request", "Invalid submission");
       const token = requireActionToken(serving, submission.actionToken);
+      if (isBuiltinHome(token.session)) throw new PageError("forbidden", "The built-in home page has no session to answer.");
       if (submission.pageRevision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
       release = acquireRate(serving, token.session);
       const now = serving.now();
@@ -27,7 +29,7 @@ export function submitRoute(serving: ServingContext) {
         fingerprint,
         async () => {
           await eligibleSession(serving, token.session);
-          const page = await serving.pages.load(token.session);
+          const page = await serving.pages.load(token.session, token.path);
           if (page.stale) throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);
           if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
           const sent = await serving.host.sessions.send(token.session, formatSubmissionMessage(submission), "queue");

@@ -2,8 +2,10 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { registerCli } from "./agent/cli.ts";
 import { buildGuide } from "./agent/guide.ts";
 import { createBbHost } from "./bb/bb-host.ts";
+import { bbSessionUrl } from "./bb/host-urls.ts";
 import { defineSettings } from "./config/settings.ts";
 import { capabilityRegistry } from "./domain/capabilities/index.ts";
+import { directoryOf } from "./domain/document-path.ts";
 import { createRateLimiter } from "./domain/rate-limit.ts";
 import { createOutcomeMemory } from "./domain/submissions/idempotency.ts";
 import type { SessionHost } from "./host/contract.ts";
@@ -42,12 +44,16 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
     // Strategy A cannot serve a sandboxed document's own files on an
     // authenticated origin, so the document carries them. Delete this
     // argument, and pages/inline.ts, once the host can authorise them.
-    pages: createPageStore(host, async (session, html) => {
+    pages: createPageStore(host, async (session, html, path) => {
       const location = await host.sessions.storage(session);
-      return resolveOwnFiles(html, async (path) => {
-        const file = await host.files.read(location, path);
-        return file ? { bytes: file.bytes } : null;
-      });
+      return resolveOwnFiles(
+        html,
+        async (relativePath) => {
+          const file = await host.files.read(location, relativePath);
+          return file ? { bytes: file.bytes } : null;
+        },
+        directoryOf(path),
+      );
     }),
     settings,
     signingKey,
@@ -58,7 +64,7 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
     submissions: createOutcomeMemory(),
     replies: createOutcomeMemory(),
     selections: createSelectionStore(),
-    hostSessionUrl: (session) => `/threads/${encodeURIComponent(session)}`,
+    hostSessionUrl: bbSessionUrl,
     now: options.now ?? (() => Date.now()),
   };
 

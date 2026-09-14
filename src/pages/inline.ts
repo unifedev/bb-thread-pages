@@ -3,7 +3,7 @@ import { LIMITS } from "../domain/limits.ts";
 import { isSafeRelativePath } from "./layout.ts";
 
 /**
- * Resolving a page's own files into its entry document. spec R1.2, R1.3, R4.25–R4.27
+ * Resolving a page's own files into the document being served. spec R1.2, R1.3, R4.25–R4.27
  *
  * A page frame is sandboxed, so it has an opaque origin, so every subresource
  * it requests is cross-site and carries no host credential. A bb served over
@@ -12,13 +12,16 @@ import { isSafeRelativePath } from "./layout.ts";
  * data do not, nothing errors, and the author cannot see any of this from the
  * machine that wrote the page.
  *
- * So the entry document — the one artifact whose request is issued by trusted
+ * So the document — the one artifact whose request is issued by trusted
  * chrome and therefore always authorised — carries the page's own files with
  * it. Each relative reference is rewritten to a `data:` URL, which the
  * document's CSP already permits. Rewriting the attribute rather than moving
  * the bytes into the element keeps every other attribute meaningful (`defer`,
  * `type="module"`, `media`, `loading`) and avoids the escaping traps that
  * inlining raw text into `<script>` and `<style>` carries.
+ *
+ * A document in a subdirectory resolves its references from that directory,
+ * the way a browser would: pass its directory as `base`.
  *
  * THIS IS A WORKAROUND AND IT SHOULD BE DELETED. It exists only because the
  * host cannot authorise a sandboxed document's own subresource requests. Once
@@ -146,8 +149,10 @@ const CSS_URL = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
  * one level deep inside stylesheets as well. Anything that cannot be resolved
  * is left untouched and reported, so the page degrades to exactly the
  * behaviour it has without this pass rather than to a broken document.
+ * `base` is the served document's directory within the page root ("" or
+ * ending in "/").
  */
-export async function resolveOwnFiles(html: string, read: OwnFileReader): Promise<ResolveOutcome> {
+export async function resolveOwnFiles(html: string, read: OwnFileReader, base = ""): Promise<ResolveOutcome> {
   const document = parseHtml(html);
   const resolved: ResolvedFile[] = [];
   const skipped: SkippedFile[] = [];
@@ -189,14 +194,14 @@ export async function resolveOwnFiles(html: string, read: OwnFileReader): Promis
 
   /** A stylesheet becomes a `data:` URL, so its own relative `url()`s must be resolved first. */
   async function resolveCss(css: string, from: string, depth: number): Promise<string> {
-    const base = from.includes("/") ? from.slice(0, from.lastIndexOf("/") + 1) : "";
+    const cssBase = from.includes("/") ? from.slice(0, from.lastIndexOf("/") + 1) : "";
     const replacements = new Map<string, string>();
     for (const match of css.matchAll(CSS_URL)) {
       const reference = match[2] ?? "";
       if (!isOwnFileReference(reference) || replacements.has(reference)) continue;
       const path = pathOf(reference);
       if (!path) continue;
-      const url = await urlFor(normalise(base + path), depth + 1);
+      const url = await urlFor(normalise(cssBase + path), depth + 1);
       if (url) replacements.set(reference, url);
     }
     if (replacements.size === 0) return css;
@@ -222,7 +227,7 @@ export async function resolveOwnFiles(html: string, read: OwnFileReader): Promis
       if (reference === null || !isOwnFileReference(reference)) continue;
       const path = pathOf(reference);
       if (!path) continue;
-      const url = await urlFor(normalise(path), 0);
+      const url = await urlFor(normalise(base + path), 0);
       if (!url) continue;
       setAttribute(element, carrier.attr, url);
       changed = true;
@@ -231,7 +236,7 @@ export async function resolveOwnFiles(html: string, read: OwnFileReader): Promis
     if (element.tagName === "img" || element.tagName === "source") {
       const srcset = attributeOf(element, "srcset");
       if (srcset !== null) {
-        const rewritten = await resolveSrcset(srcset, urlFor);
+        const rewritten = await resolveSrcset(srcset, urlFor, base);
         if (rewritten !== null) {
           setAttribute(element, "srcset", rewritten);
           changed = true;
@@ -243,7 +248,7 @@ export async function resolveOwnFiles(html: string, read: OwnFileReader): Promis
   return { html: changed ? serializeHtml(document) : html, resolved, skipped };
 }
 
-async function resolveSrcset(srcset: string, urlFor: (path: string, depth: number) => Promise<string | null>): Promise<string | null> {
+async function resolveSrcset(srcset: string, urlFor: (path: string, depth: number) => Promise<string | null>, base: string): Promise<string | null> {
   const candidates = srcset.split(",").map((entry) => entry.trim()).filter(Boolean);
   const rewritten: string[] = [];
   let changed = false;
@@ -254,7 +259,7 @@ async function resolveSrcset(srcset: string, urlFor: (path: string, depth: numbe
       continue;
     }
     const path = pathOf(reference);
-    const url = path ? await urlFor(normalise(path), 0) : null;
+    const url = path ? await urlFor(normalise(base + path), 0) : null;
     if (!url) {
       rewritten.push(candidate);
       continue;

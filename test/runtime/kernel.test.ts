@@ -296,9 +296,14 @@ describe("anchors", () => {
     return element;
   };
 
-  it("routes external http(s) links through the capability and leaves fragments and own files alone", () => {
+  // A link to another document of the page opens in place. spec R4.15a, R1.12a
+  it("routes external links through the capability, opens the page's own documents in place, and leaves fragments and other files alone", () => {
     expect(decideAnchor(anchor("#section"), documentUrl, base)).toEqual({ kind: "default" });
-    expect(decideAnchor(anchor("other.html"), documentUrl, base)).toEqual({ kind: "default" });
+    expect(decideAnchor(anchor("other.html"), documentUrl, base)).toEqual({ kind: "document", path: "other.html" });
+    expect(decideAnchor(anchor("../index.html"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "index.html" });
+    expect(decideAnchor(anchor("next.html#part"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "guides/next.html" });
+    expect(decideAnchor(anchor("data.json"), documentUrl, base)).toEqual({ kind: "default" });
+    expect(decideAnchor(anchor("uploads/report.html"), documentUrl, base)).toEqual({ kind: "default" });
     expect(decideAnchor(anchor("https://github.com/x/y", "Repo"), documentUrl, base)).toEqual({ kind: "external", url: "https://github.com/x/y", label: "Repo" });
     expect(decideAnchor(anchor("javascript:alert(1)"), documentUrl, base)).toEqual({ kind: "block" });
     expect(decideAnchor(anchor("mailto:a@b.c"), documentUrl, base)).toEqual({ kind: "block" });
@@ -312,5 +317,14 @@ describe("anchors", () => {
     expect(event.defaultPrevented).toBe(true);
     const request = posted.messages.find((entry) => (entry as { method?: string }).method === "navigation.openExternal") as { params: unknown };
     expect(request.params).toEqual({ url: "https://example.com/docs", label: "Docs" });
+  });
+
+  it("asks the shell to open another document of the page on click", () => {
+    const { posted } = install(`<head><base href="https://bb.example/files/"></head><body><a id="doc" href="guides/next.html">Next</a></body>`);
+    const link = document.getElementById("doc")!;
+    const event = new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    link.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(posted.messages).toContainEqual({ kind: "thread-page:open-document", path: "guides/next.html" });
   });
 });

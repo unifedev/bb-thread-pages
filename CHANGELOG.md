@@ -2,8 +2,37 @@
 
 ## 1.3.0 — unreleased
 
-Implements spec 1.1 (`unife-bb-plugin`, DECISIONS D11–D16). In progress: the
-built-in home page and links between a page's own documents come next.
+Implements spec 1.1 (`unife-bb-plugin`, DECISIONS D11–D16).
+
+### Home ships ready
+
+- With no page designated as home, `/home` serves a built-in home page: the
+  owner's tested session hub, generalised (no personal destinations, no project
+  priorities, no remote fonts). It runs in the same sandbox as any page under a
+  reserved identity of its own — its own action token, `storage` namespace and
+  revision — and the capabilities that need a session (`session.reply`,
+  `session.activity`, `projects.browse`, `projects.create`) are refused for it
+  and left out of its `context.get` roster.
+- Every page links to home, which is the built-in home until a page is
+  designated. A designation that no longer resolves falls back to it with a
+  notice in the shell.
+- `bb thread-page home --clear` returns to the built-in home.
+
+### Several documents in one page
+
+- A link to another `.html` file in the page root opens that document inside
+  the page: the shell stays, exchanges its action token for one bound to that
+  document (`POST /document-session`), swaps the frame, and records the
+  document in the address so reload, back and forward return to it.
+- Each document has its own revision, offline copy and `<base>`; its own files
+  resolve from its directory. The action token names its document, so forms,
+  uploads and capabilities are checked against the document the reader sees.
+
+### Links to bb
+
+- `sessions.openHost` and the shell's "bb" action open
+  `/projects/<projectId>/threads/<id>`; only sessions in bb's Personal project
+  use `/threads/<id>`. 1.2.0 used the project-less address for every session.
 
 ### Nothing to fill in
 

@@ -18,6 +18,10 @@ const config: ShellConfig = {
   workingLabel: "Working",
   stale: false,
   empty: false,
+  notice: null,
+  documentPath: "index.html",
+  documentSessionUrl: "/document-session",
+  navigable: true,
   pollMs: 10_000,
   maxUploadBytes: 1024,
   maxUploads: 2,
@@ -223,5 +227,60 @@ describe("shell poller", () => {
     await expiring.pollNow();
     expect(seen.reloadView).toHaveBeenCalled();
     expect(expiring.isStopped()).toBe(true);
+  });
+});
+
+// A link to another document of the page swaps the frame in place. spec R1.12a–R1.12d
+describe("shell documents", () => {
+  function chrome() {
+    document.body.innerHTML = `<iframe></iframe><span data-shell-status></span><span data-shell-working></span><button data-shell-reload></button><dialog><p></p><button type="button" value="cancel"></button><button type="button" value="confirm"></button></dialog><span class="title">T</span>`;
+    return {
+      frame: document.querySelector("iframe")!,
+      status: document.querySelector<HTMLElement>("[data-shell-status]")!,
+      work: document.querySelector<HTMLElement>("[data-shell-working]")!,
+      reload: document.querySelector<HTMLButtonElement>("[data-shell-reload]")!,
+      dialog: document.querySelector("dialog")!,
+      title: document.querySelector<HTMLElement>(".title")!,
+      acts: null,
+      pin: null,
+      read: null,
+      archive: null,
+    };
+  }
+
+  it("exchanges the token, swaps the frame's document, and moves the address and history with it", async () => {
+    const { installShell } = await import("../../src/runtime/shell/install.ts");
+    const elements = chrome();
+    const local: ShellConfig = { ...config };
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/document-session") {
+        expect(JSON.parse(String(init!.body))).toEqual({ actionToken: "tok", path: "guides/next.html" });
+        return jsonResponse({ ok: true, actionToken: "tok2", pageRevision: "2".repeat(64), expiresAt: Date.now() + 3_600_000, documentUrl: "/document?session=thr_a&path=guides%2Fnext.html", path: "guides/next.html", stale: false, empty: false });
+      }
+      return new Response(null, { status: 304, headers: { etag: `"${REV}"` } });
+    });
+    const shell = installShell(window, local, elements, fetchImpl as never);
+    expect(await shell.openDocument("guides/next.html")).toBe(true);
+    expect(local).toMatchObject({ actionToken: "tok2", pageRevision: "2".repeat(64), documentPath: "guides/next.html" });
+    // A fresh frame element, so the frame adds no history entry of its own.
+    const frames = document.querySelectorAll("iframe");
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).not.toBe(elements.frame);
+    expect(frames[0]!.getAttribute("src")).toBe("/document?session=thr_a&path=guides%2Fnext.html");
+    expect(window.location.search).toContain("path=guides%2Fnext.html");
+    expect(window.history.state).toEqual({ threadPageDocument: "guides/next.html" });
+    expect(await shell.openDocument("guides/next.html")).toBe(false);
+  });
+
+  it("does nothing on the built-in home, and says so when a document cannot open", async () => {
+    const { installShell } = await import("../../src/runtime/shell/install.ts");
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: false, code: "not_found", message: "That document of the page does not exist." }, 404));
+    const home = installShell(window, { ...config, navigable: false }, chrome(), fetchImpl as never);
+    expect(await home.openDocument("other.html")).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalledWith("/document-session", expect.anything());
+    const elements = chrome();
+    const page = installShell(window, { ...config }, elements, fetchImpl as never);
+    expect(await page.openDocument("missing.html")).toBe(false);
+    expect(elements.status.textContent).toBe("That document of the page does not exist.");
   });
 });

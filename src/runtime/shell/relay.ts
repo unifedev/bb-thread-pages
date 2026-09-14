@@ -1,3 +1,4 @@
+import { isDocumentPath } from "../../domain/document-path.ts";
 import { isBridgeRequest, isBridgeResponse, isRecord, makeFailure, type BridgeRequestMessage, type ShellConfig, type ShellMessage, type SubmitFile } from "../shared/protocol.ts";
 import type { Confirmer } from "./confirm.ts";
 import type { Navigator } from "./navigate.ts";
@@ -6,6 +7,7 @@ import type { Navigator } from "./navigate.ts";
  * The shell's side of the port: it validates every message from the frame,
  * carries bridge calls and submissions to the host with the action token,
  * shows host-authored confirmations, and executes host-validated navigation.
+ * It reads the config at each call, so a document switch needs nothing here.
  * spec R3.5–R3.7, R3.17
  */
 export interface RelayDeps {
@@ -13,6 +15,8 @@ export interface RelayDeps {
   confirmer: Confirmer;
   navigator: Navigator;
   onDirty(dirty: boolean): void;
+  /** A link to another document of the page; the path is already validated. spec R1.12a */
+  onOpenDocument?(path: string): void;
   fetchImpl?: typeof fetch;
 }
 
@@ -163,6 +167,10 @@ export function createRelay(deps: RelayDeps): Relay {
       }
       if (data.kind === "thread-page:submit") {
         void relaySubmit(port, data);
+        return;
+      }
+      if (data.kind === "thread-page:open-document") {
+        if (isDocumentPath(data.path)) deps.onOpenDocument?.(data.path);
         return;
       }
       if (!isBridgeRequest(data, config.pageRevision)) {

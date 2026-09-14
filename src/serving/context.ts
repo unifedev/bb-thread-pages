@@ -3,6 +3,7 @@ import type { RateLimiter } from "../domain/rate-limit.ts";
 import type { OutcomeMemory } from "../domain/submissions/idempotency.ts";
 import type { LiveSettings } from "../config/settings.ts";
 import type { SessionHost } from "../host/contract.ts";
+import type { SessionRecord } from "../host/types.ts";
 import type { PageStore } from "../pages/page-store.ts";
 import type { SiteStrategy } from "../pages/site.ts";
 import type { SelectionStore } from "./bridge/selection-store.ts";
@@ -20,13 +21,15 @@ export interface ServingContext {
   readonly submissions: OutcomeMemory<{ status: number; body: Record<string, unknown> }>;
   readonly replies: OutcomeMemory<{ delivery: "started" | "queued" | "steered" }>;
   readonly selections: SelectionStore;
-  /** The host application's URL for a session's conversation, origin-relative. */
-  readonly hostSessionUrl: (session: string) => string;
+  /** The host application's canonical URL for a session's conversation, origin-relative. spec R5.31a */
+  readonly hostSessionUrl: (session: Pick<SessionRecord, "id" | "projectId">) => string;
   readonly now: () => number;
 }
 
-export function pageUrl(routeBase: string, session: string): string {
-  return `${routeBase}/page?session=${encodeURIComponent(session)}`;
+/** A page's shell URL; `path` opens a document other than the entry document. spec R1.12d */
+export function pageUrl(routeBase: string, session: string, path?: string | null): string {
+  const base = `${routeBase}/page?session=${encodeURIComponent(session)}`;
+  return path ? `${base}&path=${encodeURIComponent(path)}` : base;
 }
 
 export function homeUrl(routeBase: string): string {

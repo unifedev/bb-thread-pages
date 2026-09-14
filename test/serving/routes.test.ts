@@ -14,12 +14,12 @@ beforeEach(async () => {
 
 afterEach(() => fixture.dispose());
 
-function token(session = "thr_a", revision = revisionOf(PAGE)): string {
-  return mintActionToken({ session, revision, now: fixture.clock.now }, fixture.serving.signingKey).token;
+function token(session = "thr_a", revision = revisionOf(PAGE), path: string | null = null): string {
+  return mintActionToken({ session, revision, path, now: fixture.clock.now }, fixture.serving.signingKey).token;
 }
 
 describe("the shell", () => {
-  it("serves trusted chrome with the action token inside and a sandboxed frame", async () => {
+  it("serves trusted chrome with the action token inside, a sandboxed frame, and the session's bb address", async () => {
     const response = await fixture.get(`${ROUTE_BASE}/page?session=thr_a`);
     expect(response.status).toBe(200);
     const html = await response.text();
@@ -27,10 +27,13 @@ describe("the shell", () => {
     expect(html).toContain('sandbox="allow-scripts allow-forms"');
     expect(html).toContain("data-config=");
     expect(html).toContain("&quot;actionToken&quot;");
-    expect(html).not.toContain("← Sessions");
+    // With no page designated, home is the built-in home page. spec R7.10
+    expect(html).toContain(`href="${ROUTE_BASE}/home"`);
+    // bb's canonical address carries the project. spec R5.31a
+    expect(html).toContain('href="/projects/proj_a/threads/thr_a"');
   });
 
-  it("refuses unknown, ineligible and page-less sessions with a readable page", async () => {
+  it("refuses unknown, ineligible and malformed sessions with a readable page", async () => {
     expect((await fixture.get(`${ROUTE_BASE}/page?session=thr_nope`)).status).toBe(404);
     fixture.state.sessions.set("thr_child", { ...fixture.state.sessions.get("thr_a")!, id: "thr_child", parentId: "thr_a" });
     const child = await fixture.get(`${ROUTE_BASE}/page?session=thr_child`);
@@ -65,7 +68,7 @@ describe("the shell", () => {
     expect(after).toContain("&quot;empty&quot;:false");
   });
 
-  it("links to home from every page but home, and degrades on a stale pointer", async () => {
+  it("links to home from every page but the designated one, and falls back to the built-in home", async () => {
     seedSession(fixture.state, "thr_home", PAGE);
     await fixture.harness.behavior.setSettings({ homeSessionId: "thr_home" });
     expect(await (await fixture.get(`${ROUTE_BASE}/page?session=thr_a`)).text()).toContain(`href="${ROUTE_BASE}/home"`);
@@ -75,13 +78,17 @@ describe("the shell", () => {
     expect(redirect.headers.get("location")).toBe(`${ROUTE_BASE}/page?session=thr_home`);
     await fixture.harness.behavior.setSettings({ homeSessionId: "thr_gone" });
     expect((await fixture.get(`${ROUTE_BASE}/page?session=thr_a`)).status).toBe(200);
-    const missing = await fixture.get(`${ROUTE_BASE}/home`);
-    expect(missing.status).toBe(404);
-    expect(await missing.text()).toMatch(/no longer exists/);
+    const stale = await fixture.get(`${ROUTE_BASE}/home`);
+    expect(stale.status).toBe(200);
+    expect(await stale.text()).toMatch(/data-shell-status data-tone="warn">Home pointed at a session that no longer exists/);
     await fixture.harness.behavior.setSettings({ homeSessionId: null });
-    const none = await fixture.get(`${ROUTE_BASE}/home`);
-    expect(none.status).toBe(404);
-    expect(await none.text()).toMatch(/Set up my Thread Pages home page/);
+    const builtin = await fixture.get(`${ROUTE_BASE}/home`);
+    expect(builtin.status).toBe(200);
+    const html = await builtin.text();
+    expect(html).toContain(`documentUrl&quot;:&quot;${ROUTE_BASE}/home-document`);
+    // The shell's runtime names the selector too, so look for the element itself.
+    expect(html).not.toContain('class="acts" data-shell-acts');
+    expect(html).not.toContain("← Sessions");
   });
 
   it("hides the working indicator when the label is blank", async () => {
@@ -133,6 +140,47 @@ describe("the document", () => {
     expect(submit.status).toBe(503);
     expect(await submit.json()).toMatchObject({ ok: false, code: "unavailable" });
     expect(fixture.state.calls.filter((call) => call.method === "sessions.send")).toHaveLength(0);
+  });
+});
+
+// A page may be a site of several documents that link to each other and open
+// in place. spec R1.12a–R1.12d, DECISIONS D15
+describe("several documents in one page", () => {
+  const SECOND = PAGE.replace("Test page", "Second");
+
+  it("serves another document with the kernel, its own directory as base, and its own revision", async () => {
+    fixture.state.files.set(fileKey("thr_a", "guides/second.html"), Buffer.from(SECOND));
+    const doc = await fixture.get(`${ROUTE_BASE}/document?session=thr_a&path=guides%2Fsecond.html`);
+    expect(doc.status).toBe(200);
+    expect(doc.headers.get("etag")).toBe(`"${revisionOf(SECOND)}"`);
+    const html = await doc.text();
+    expect(html).toContain('<base href="/api/v1/threads/thr_a/thread-storage/files/guides/">');
+    expect(html).toContain("siteRoot&quot;:&quot;/api/v1/threads/thr_a/thread-storage/files/&quot;");
+    const shell = await (await fixture.get(`${ROUTE_BASE}/page?session=thr_a&path=guides%2Fsecond.html`)).text();
+    expect(shell).toContain("documentPath&quot;:&quot;guides/second.html&quot;");
+    expect(shell).toContain(`documentUrl&quot;:&quot;${ROUTE_BASE}/document?session=thr_a&amp;path=guides%2Fsecond.html`);
+    expect((await fixture.get(`${ROUTE_BASE}/document?session=thr_a&path=missing.html`)).status).toBe(404);
+    for (const bad of ["..%2Fx.html", "%2Fetc%2Fx.html", "data.json", "uploads%2Fx.html"]) {
+      expect((await fixture.get(`${ROUTE_BASE}/document?session=thr_a&path=${bad}`)).status, bad).toBe(400);
+    }
+  });
+
+  it("exchanges the shell's token for one bound to another document, and acts against that document", async () => {
+    fixture.state.files.set(fileKey("thr_a", "second.html"), Buffer.from(SECOND));
+    const exchanged = await fixture.post(`${ROUTE_BASE}/document-session`, { actionToken: token(), path: "second.html" });
+    expect(exchanged.status).toBe(200);
+    const body = (await exchanged.json()) as { actionToken: string };
+    expect(body).toMatchObject({ ok: true, pageRevision: revisionOf(SECOND), path: "second.html", documentUrl: `${ROUTE_BASE}/document?session=thr_a&path=second.html`, stale: false, empty: false });
+    const submitted = await fixture.post(`${ROUTE_BASE}/submit`, { actionToken: body.actionToken, submissionId: "doc-1", pageRevision: revisionOf(SECOND), title: "T", answers: [] });
+    expect(submitted.status).toBe(200);
+    fixture.state.files.set(fileKey("thr_a", "second.html"), Buffer.from(SECOND.replace("Second", "Changed")));
+    const stale = await fixture.post(`${ROUTE_BASE}/submit`, { actionToken: body.actionToken, submissionId: "doc-2", pageRevision: revisionOf(SECOND), title: "T", answers: [] });
+    expect(await stale.json()).toMatchObject({ code: "stale_page" });
+    const back = await fixture.post(`${ROUTE_BASE}/document-session`, { actionToken: body.actionToken, path: "index.html" });
+    expect(await back.json()).toMatchObject({ pageRevision: revisionOf(PAGE), path: "index.html", documentUrl: `${ROUTE_BASE}/document?session=thr_a` });
+    expect((await fixture.post(`${ROUTE_BASE}/document-session`, { actionToken: token(), path: "../x.html" })).status).toBe(400);
+    expect((await fixture.post(`${ROUTE_BASE}/document-session`, { actionToken: token(), path: "nope.html" })).status).toBe(404);
+    expect((await fixture.post(`${ROUTE_BASE}/document-session`, { actionToken: "bad", path: "second.html" })).status).toBe(401);
   });
 });
 

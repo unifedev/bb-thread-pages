@@ -4,6 +4,7 @@ import type { JsonValue } from "../../../domain/json/strict-json.ts";
 import { LIMITS } from "../../../domain/limits.ts";
 import type { SessionRecord } from "../../../host/types.ts";
 import { ENTRY_FILE, joinPath } from "../../../pages/layout.ts";
+import { SESSIONLESS_CAPABILITIES, isBuiltinHome } from "../../builtin-home.ts";
 import { handler, type HandlerContext } from "../handler.ts";
 
 /** Read capabilities. spec 05 §Reads */
@@ -11,12 +12,15 @@ import { handler, type HandlerContext } from "../handler.ts";
 export const contextGet = handler<null, unknown>({
   method: "context.get",
   async execute(_params, { serving, session, page }) {
+    // The roster is honest per page: the built-in home has no session of its own. spec R5.9, R7.9a
+    const descriptors = serving.registry.descriptors();
+    const capabilities = isBuiltinHome(session.id) ? descriptors.filter((entry) => !SESSIONLESS_CAPABILITIES.has(entry.method)) : descriptors;
     return {
       result: {
         protocolVersion: 1,
         session: { id: session.id, title: session.title.slice(0, LIMITS.titleChars), projectId: session.projectId },
         page: { revision: page.revision, readOnly: page.stale },
-        capabilities: serving.registry.descriptors(),
+        capabilities,
       },
     };
   },

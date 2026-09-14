@@ -16,6 +16,7 @@ export function buildGuide(registry: CapabilityRegistry, site: SiteStrategy): st
     forms(),
     uploads(),
     ownFiles(site),
+    documents(),
     keepingCurrent(),
     runtimeApi(),
     capabilities(registry),
@@ -358,19 +359,41 @@ session, and that session's agent builds the page the first time, whether or
 not a script takes over afterwards. A page with no agent behind it is a page
 nobody can be asked to change.`;
 
+const documents = () => `## Several documents in one page
+
+Your page may hold more than one HTML document. Any \`.html\` file in your page
+root other than ${ENTRY_FILE} — nested directories included, ${UPLOAD_DIR}/ excluded
+— is a document of the page. Link to it relatively, as a static site would:
+
+    <a href="details.html">Details</a>
+
+A click on such a link opens that document **inside the page**: the top bar
+stays, the address changes so reload, back and forward return to it, and it
+runs with the same runtime — its forms answer your session and its
+capabilities act for it. Each document has its own revision, so saving one
+reloads only a reader who is looking at it. Its own relative references
+resolve from its own directory.
+
+What does not carry over: script state. Each document starts fresh, like a
+page load. When state has to survive switching — a half-typed answer on one
+view while the reader looks at another — keep the views in one document and
+switch them with script instead.`;
+
 const home = () => `## The home page
 
 One page is home; every other page shows a "← Sessions" link back to it in
-chrome you never write. \`bb thread-page home\` sets the pointer for the
-current session (\`--clear\` removes it) and never creates or touches page
-content. Home is an ordinary page. If the reader asks for one place to see and
-steer their sessions, build it in a session dedicated to it — start one for
-the purpose if you are mid-task — so nothing else ever rewrites it: its
-buttons open other pages and start fresh sessions, and nothing messages its
-own session. The reader can ask that session to change it at any time.
+chrome you never write. Until a page is designated, home is the **built-in
+home page**: a hub of the reader's sessions the plugin ships, running in the
+same sandbox as any page. \`bb thread-page home\` makes the current session's
+page home instead (\`--clear\` returns to the built-in one); it never creates
+or touches page content.
 
-Refresh a page like this on a slow watch, not a tight timer: it shares a rate
-budget of ${LIMITS.ratePerMinute} requests a minute with its own forms.`;
+If the reader asks for a home of their own, build it in a session dedicated
+to it — start one for the purpose if you are mid-task — so nothing else ever
+rewrites it: its buttons open other pages and start fresh sessions, and
+nothing messages its own session. The reader can ask that session to change
+it at any time. Refresh a page like this on a slow watch, not a tight timer:
+it shares a rate budget of ${LIMITS.ratePerMinute} requests a minute with its own forms.`;
 
 const accessibility = () => `## Before you save
 

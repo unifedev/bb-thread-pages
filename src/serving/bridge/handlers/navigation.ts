@@ -27,7 +27,10 @@ export const sessionsOpenHost = handler<{ sessionId: string }, unknown>({
     if (!target || target.deleted) throw new PageError("not_found", "That session is not available");
   },
   async execute(params, { serving }) {
-    return { result: { opened: true }, navigate: { kind: "host", url: serving.hostSessionUrl(params.sessionId) } };
+    const target = await serving.host.sessions.get(params.sessionId);
+    if (!target || target.deleted) throw new PageError("not_found", "That session is not available");
+    // The host's canonical address includes the session's project. spec R5.31a
+    return { result: { opened: true }, navigate: { kind: "host", url: serving.hostSessionUrl(target) } };
   },
 });
 

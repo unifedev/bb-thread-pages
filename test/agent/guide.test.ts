@@ -108,10 +108,19 @@ describe("the authoring guide", () => {
     expect(files).toContain("so an open page");
   });
 
-  it("describes home as a pointer that never creates content", () => {
+  it("describes home as a pointer that never creates content, and the built-in home it replaces", () => {
     const home = section(coreGuide, "## The home page", "## Before you save");
-    expect(home).toContain("never creates or touches page");
+    expect(home).toContain("never creates");
+    expect(home).toContain("built-in");
     expect(home).not.toContain("invoke(");
+  });
+
+  it("explains several documents in one page: how a link opens one and what does not carry over", () => {
+    const documents = section(coreGuide, "## Several documents in one page", "## The home page");
+    expect(documents).toContain('<a href="details.html">');
+    expect(documents).toContain("inside the page");
+    expect(documents).toContain("back and forward");
+    expect(documents).toContain("script state");
   });
 });
 

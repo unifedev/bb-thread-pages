@@ -4,6 +4,7 @@ import type { JsonValue } from "../../domain/json/strict-json.ts";
 import { LIMITS } from "../../domain/limits.ts";
 import { challengeMatches, mintChallenge, openChallenge } from "../../domain/tokens/confirmation.ts";
 import { acquireRate, requireActionToken } from "../action-request.ts";
+import { BUILTIN_HOME_PAGE, BUILTIN_HOME_REFUSAL, BUILTIN_HOME_SESSION, SESSIONLESS_CAPABILITIES, isBuiltinHome } from "../builtin-home.ts";
 import type { ServingContext } from "../context.ts";
 import { eligibleSession } from "../session-access.ts";
 import type { CapabilityHandler, HandlerContext } from "./handler.ts";
@@ -13,7 +14,10 @@ import type { CapabilityHandler, HandlerContext } from "./handler.ts";
  *
  *   envelope → action token → rate budget → resolve (stale, unknown, params)
  *   → cheap refusals → confirmation (challenge out, or verify one in)
- *   → session still eligible, page still current → handler → projection
+ *   → session still eligible, document still current → handler → projection
+ *
+ * The built-in home page takes the same path under its reserved identity; the
+ * capabilities that need a session of its own are refused for it. spec R7.9a
  */
 export interface DispatchResult {
   readonly status: number;
@@ -61,10 +65,14 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
       const entry = byMethod.get(invocation.spec.method);
       if (!entry) throw new PageError("unknown_method", `Unknown capability: ${invocation.spec.method}`);
 
-      const session = await eligibleSession(serving, token.session).catch((error: unknown) => {
-        throw PageError.is(error) && error.code === "ineligible" ? new PageError("conflict", "This session no longer accepts page actions") : error;
-      });
-      const page = await serving.pages.load(token.session);
+      const home = isBuiltinHome(token.session);
+      if (home && SESSIONLESS_CAPABILITIES.has(invocation.spec.method)) throw new PageError("unknown_method", BUILTIN_HOME_REFUSAL);
+      const session = home
+        ? BUILTIN_HOME_SESSION
+        : await eligibleSession(serving, token.session).catch((error: unknown) => {
+            throw PageError.is(error) && error.code === "ineligible" ? new PageError("conflict", "This session no longer accepts page actions") : error;
+          });
+      const page = home ? BUILTIN_HOME_PAGE : await serving.pages.load(token.session, token.path);
       if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
       const context: HandlerContext = { serving, session, page, requestId: request.id };
 
