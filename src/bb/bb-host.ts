@@ -1,10 +1,11 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { PageError, PUBLIC_MESSAGES, errorText } from "../domain/errors.ts";
 import type { JsonValue } from "../domain/json/strict-json.ts";
-import type { SessionHost } from "../host/contract.ts";
+import type { ContributorAnswer, ContributorHost, SessionHost } from "../host/contract.ts";
 import type { ActivityItem, ProjectRecord, ProviderChoice, SessionRecord, StorageLocation } from "../host/types.ts";
 import { joinPath } from "../pages/layout.ts";
-import { activityItemsOf, asRecord, sessionStateOf } from "./activity.ts";
+import { LIMITS } from "../domain/limits.ts";
+import { activityItemsOf, asRecord, questionOf, sessionStateOf } from "./activity.ts";
 import { createPublicOrigin } from "./public-origin.ts";
 
 /**
@@ -16,30 +17,37 @@ import { createPublicOrigin } from "./public-origin.ts";
 export function createBbHost(bb: BbPluginApi): SessionHost {
   const publicOrigin = createPublicOrigin(bb);
 
-  async function pendingInteraction(threadId: string): Promise<boolean> {
+  async function pendingInteraction(threadId: string): Promise<{ pending: boolean; question: string | null }> {
     try {
       const listed = (await bb.sdk.threads.interactions.list({ threadId })) as unknown;
       const record = asRecord(listed);
       const interactions = Array.isArray(listed) ? listed : Array.isArray(record?.interactions) ? record.interactions : [];
-      return interactions.length > 0;
+      return { pending: interactions.length > 0, question: questionOf(interactions, LIMITS.questionChars) };
     } catch {
-      return false;
+      return { pending: false, question: null };
     }
   }
 
-  function projectThread(thread: Record<string, unknown>, hasPendingInteraction: boolean): SessionRecord {
+  function projectThread(thread: Record<string, unknown>, hasPendingInteraction: boolean, question: string | null = null): SessionRecord {
+    const state = sessionStateOf(thread, hasPendingInteraction);
+    const attentionAtMs = typeof thread.latestAttentionAt === "number" ? Math.max(0, Math.trunc(thread.latestAttentionAt)) : 0;
     return {
       id: String(thread.id),
       title: (typeof thread.title === "string" && thread.title) || (typeof thread.titleFallback === "string" && thread.titleFallback) || "Untitled",
       projectId: typeof thread.projectId === "string" ? thread.projectId : null,
-      state: sessionStateOf(thread, hasPendingInteraction),
+      state,
       visibility: thread.visibility === "hidden" ? "hidden" : "visible",
       parentId: typeof thread.parentThreadId === "string" ? thread.parentThreadId : null,
       forkOfId: typeof thread.sourceThreadId === "string" ? thread.sourceThreadId : null,
       archived: thread.archivedAt !== null && thread.archivedAt !== undefined,
       deleted: thread.deletedAt !== null && thread.deletedAt !== undefined,
       updatedAtMs: typeof thread.updatedAt === "number" ? Math.max(0, Math.trunc(thread.updatedAt)) : 0,
-      attentionAtMs: typeof thread.latestAttentionAt === "number" ? Math.max(0, Math.trunc(thread.latestAttentionAt)) : 0,
+      attentionAtMs,
+      startedAtMs: typeof thread.createdAt === "number" ? Math.max(0, Math.trunc(thread.createdAt)) : 0,
+      // bb records no turn end of its own; a turn's end is when the thread
+      // last asked for attention, which bb sets as a turn ends. spec R5.11b
+      turnEndedAtMs: state === "working" || attentionAtMs === 0 ? null : attentionAtMs,
+      question: state === "waiting" ? question : null,
       unread: unreadOf(thread),
       pinned: typeof thread.pinnedAt === "number",
       environmentId: typeof thread.environmentId === "string" ? thread.environmentId : null,
@@ -62,7 +70,8 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
         const thread = await getThread(id);
         if (!thread) return null;
         const idle = sessionStateOf(thread, false) === "idle";
-        return projectThread(thread, idle ? await pendingInteraction(id) : false);
+        const pending = idle ? await pendingInteraction(id) : { pending: false, question: null };
+        return projectThread(thread, pending.pending, pending.question);
       },
       async list(query) {
         const rows = (await bb.sdk.threads.list({
@@ -74,10 +83,15 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
           offset: query.offset,
         })) as unknown;
         if (!Array.isArray(rows)) return [];
-        return rows
-          .map((row) => asRecord(row))
-          .filter((row): row is Record<string, unknown> => row !== null)
-          .map((row) => projectThread(row, row.hasPendingInteraction === true));
+        const records = rows.map((row) => asRecord(row)).filter((row): row is Record<string, unknown> => row !== null);
+        // Only waiting threads cost a further read, for the question they wait on. spec R5.11c
+        return Promise.all(
+          records.map(async (row) => {
+            const waiting = row.hasPendingInteraction === true && sessionStateOf(row, true) === "waiting";
+            const question = waiting ? (await pendingInteraction(String(row.id))).question : null;
+            return projectThread(row, row.hasPendingInteraction === true, question);
+          }),
+        );
       },
       async send(id, text, mode) {
         const before = await getThread(id);
@@ -248,6 +262,7 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
     },
     origin: { public: publicOrigin },
     log: bb.log,
+    contributors: createBbContributors(bb),
   };
   return host;
 }
@@ -283,4 +298,85 @@ function isConflict(error: unknown): boolean {
 
 function hostUnavailable(error: unknown): PageError {
   return PageError.is(error) ? error : new PageError("unavailable", PUBLIC_MESSAGES.unavailable, { cause: error });
+}
+
+/**
+ * On bb a contributor is a plugin that answers two plugin RPC methods:
+ *
+ *   threadPagesContributions → its declaration: { version, methods, instruction?, guide? }
+ *   threadPagesInvoke        ← { method, params, caller: { sessionId }, requestId }
+ *                            → { ok: true, result } | { ok: false, error: { code, message?, reason?, detail? } }
+ *
+ * Every enabled, running plugin is asked for a declaration; one that has no
+ * such method is not a contributor. The namespace is the plugin's id, so bb's
+ * own uniqueness of plugin ids keeps one contributor per namespace.
+ * spec R5.42, R5.43, R8.30–R8.32, DECISIONS D20
+ */
+export const CONTRIBUTIONS_RPC = "threadPagesContributions";
+export const INVOKE_RPC = "threadPagesInvoke";
+const DECLARATION_TIMEOUT_MS = 5_000;
+
+// callRpc only calls `parse` on the schema; the declaration is checked by the domain.
+const passThrough = { parse: (value: unknown) => value } as never;
+
+export function createBbContributors(bb: BbPluginApi): ContributorHost {
+  return {
+    async list() {
+      const listed = (await bb.sdk.plugins.list()) as unknown as { plugins?: { id?: unknown; enabled?: unknown; status?: unknown }[] };
+      const candidates = (listed.plugins ?? []).filter(
+        (plugin): plugin is { id: string; enabled: true; status: string } =>
+          typeof plugin.id === "string" && plugin.id !== bb.pluginId && plugin.enabled === true && plugin.status === "running",
+      );
+      const answers = await Promise.all(
+        candidates.map(async (plugin) => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const declaration = await Promise.race([
+              bb.sdk.plugins.callRpc({ pluginId: plugin.id, method: CONTRIBUTIONS_RPC, outputSchema: passThrough }),
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error("timed out")), DECLARATION_TIMEOUT_MS);
+              }),
+            ]);
+            return { id: plugin.id, declaration: declaration as unknown };
+          } catch (error) {
+            // No such method: not a contributor. Anything else shows as absence, never as a fault in pages.
+            const message = error instanceof Error ? error.message : String(error);
+            // A 404 is a plugin that contributes nothing, the common case; anything else is worth the operator's eye.
+            if (!/\b404\b/.test(message)) bb.log.warn(`contributors: ${plugin.id} did not declare: ${message}`);
+            return null;
+          } finally {
+            if (timer !== undefined) clearTimeout(timer);
+          }
+        }),
+      );
+      return answers.filter((entry): entry is { id: string; declaration: unknown } => entry !== null);
+    },
+    async invoke(contributorId, call) {
+      const answer = (await bb.sdk.plugins.callRpc({
+        pluginId: contributorId,
+        method: INVOKE_RPC,
+        input: { method: call.method, params: call.params, caller: { sessionId: call.caller.sessionId }, requestId: call.requestId },
+        outputSchema: passThrough,
+      })) as unknown;
+      return answerOf(answer);
+    },
+  };
+}
+
+function answerOf(value: unknown): ContributorAnswer {
+  const record = asRecord(value);
+  if (record?.ok === true && "result" in record) return { ok: true, result: record.result };
+  const error = asRecord(record?.error);
+  if (record?.ok === false && error && typeof error.code === "string") {
+    return {
+      ok: false,
+      error: {
+        code: error.code,
+        ...(typeof error.message === "string" ? { message: error.message } : {}),
+        ...(typeof error.reason === "string" ? { reason: error.reason } : {}),
+        ...("detail" in error ? { detail: error.detail } : {}),
+      },
+    };
+  }
+  return { ok: false, error: { code: "handler_error", message: "The contributor's answer has the wrong shape" } };
 }

@@ -13,7 +13,8 @@ import { hasSeed, renderSeed } from "./seed/seed.ts";
  */
 export interface CliDeps {
   serving: ServingContext;
-  guide: string;
+  /** The guide as of now: contributed capabilities change while the host runs. spec R6.28 */
+  guide(): Promise<string>;
   /** The exact instruction a new eligible session receives now, or null when none would. */
   effectiveInstruction(): string | null;
 }
@@ -35,7 +36,7 @@ export function registerCli(bb: BbPluginApi, deps: CliDeps): void {
           case "init":
             return rest.length === 0 ? await init(deps, context) : usage();
           case "guide":
-            return rest.length === 0 ? { exitCode: 0, stdout: `${deps.guide}\n` } : usage();
+            return rest.length === 0 ? { exitCode: 0, stdout: `${await deps.guide()}\n` } : usage();
           case "home":
             if (rest.length === 0) return await home(deps, context);
             if (rest.length === 1 && rest[0] === "--clear") return await clearHome(deps);
@@ -51,6 +52,14 @@ export function registerCli(bb: BbPluginApi, deps: CliDeps): void {
       }
     },
   });
+}
+
+/** Which contributors and methods are registered, for the operator. spec R7.13a */
+function contributedLine(set: { contributors: readonly { id: string; version: string; methods: readonly { method: string; effect: string }[] }[] }): string {
+  if (set.contributors.length === 0) return "(none registered)";
+  return set.contributors
+    .map((contributor) => `${contributor.id} ${contributor.version}: ${contributor.methods.map((method) => `${method.method} (${method.effect})`).join(", ") || "no methods"}`)
+    .join("; ");
 }
 
 function usage(text = "bb thread-page <init|guide|home [--clear]|status>"): PluginCliResult {
@@ -195,6 +204,7 @@ async function status(deps: CliDeps, context: PluginCliContext): Promise<PluginC
     `homeSessionId: ${settings.homeSessionId || "(none — pages link to the built-in home page)"}`,
     `site strategy: ${serving.site.name}`,
     `limits: entry ${LIMITS.entryDocumentBytes / (1024 * 1024)} MiB, upload ${LIMITS.uploadFileBytes / (1024 * 1024)} MiB × ${LIMITS.uploadsPerForm}, rate ${LIMITS.ratePerMinute}/min`,
+    `contributed capabilities: ${contributedLine(await serving.contributions.current())}`,
     "",
     "## Instruction a new eligible session receives now",
     "",

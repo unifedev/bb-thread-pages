@@ -18,7 +18,7 @@ export interface BridgeRequestMessage {
 
 export type BridgeResponseMessage =
   | { v: 1; id: string; ok: true; result: unknown }
-  | { v: 1; id: string; ok: false; error: { code: BridgeErrorCode; message: string } };
+  | { v: 1; id: string; ok: false; error: { code: BridgeErrorCode; message: string; reason?: string; detail?: unknown } };
 
 export interface SubmitFile {
   field: string;
@@ -85,7 +85,8 @@ export const EMPTY_PAGE_STATUS = "Not written yet — the page appears here as s
 
 const ERROR_CODES: ReadonlySet<string> = new Set(BRIDGE_ERROR_CODES);
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
-const METHOD_PATTERN = /^[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
+const METHOD_PATTERN = /^[a-z][a-zA-Z0-9-]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
+const REASON_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -122,8 +123,14 @@ export function isBridgeResponse(value: unknown, expectedId?: string): value is 
   if (value.ok === true) return hasExactKeys(value, ["v", "id", "ok", "result"]);
   if (!hasExactKeys(value, ["v", "id", "ok", "error"]) || !isRecord(value.error)) return false;
   const error = value.error;
+  // A contributed capability's failure may add a declared reason and its detail. spec R4.28a, R5.41b
+  const keys = Object.keys(error);
+  if (!keys.every((key) => key === "code" || key === "message" || key === "reason" || key === "detail")) return false;
+  if ("reason" in error && (typeof error.reason !== "string" || !REASON_PATTERN.test(error.reason))) return false;
+  if ("detail" in error && !("reason" in error)) return false;
   return (
-    hasExactKeys(error, ["code", "message"]) &&
+    "code" in error &&
+    "message" in error &&
     typeof error.code === "string" &&
     ERROR_CODES.has(error.code) &&
     typeof error.message === "string" &&

@@ -2,7 +2,7 @@ import { boundedMessage, isBridgeErrorCode, PageError, type BridgeErrorCode } fr
 import { isMethodName, isRequestId, isRevision } from "../ids.ts";
 import { isJsonObject, validateJson, type JsonValue } from "../json/strict-json.ts";
 import { LIMITS } from "../limits.ts";
-import type { CapabilityRegistry } from "./registry.ts";
+import type { CapabilityLookup } from "./registry.ts";
 import type { AnyCapabilitySpec } from "./contract.ts";
 import { unknownMethodMessage } from "./renamed.ts";
 
@@ -31,7 +31,7 @@ export interface BridgeFailure {
   readonly v: 1;
   readonly id: string;
   readonly ok: false;
-  readonly error: { readonly code: BridgeErrorCode; readonly message: string };
+  readonly error: { readonly code: BridgeErrorCode; readonly message: string; readonly reason?: string; readonly detail?: JsonValue };
 }
 
 export type BridgeResponse = BridgeSuccess | BridgeFailure;
@@ -47,8 +47,12 @@ export type NavigationDirective =
   | { readonly kind: "host"; readonly url: string }
   | { readonly kind: "external"; readonly url: string };
 
+/**
+ * The envelope is checked against the largest bound any capability may
+ * declare; the method's own bound is applied once it is known. spec R5.47
+ */
 export function decodeBridgeRequest(input: unknown): BridgeRequest {
-  const checked = validateJson(input);
+  const checked = validateJson(input, { maxBytes: LIMITS.contributedPayloadMaxBytes + 1024 });
   if (!checked.ok) {
     const tooLarge = checked.issues.some((issue) => issue.code === "too_large");
     throw new PageError(tooLarge ? "request_too_large" : "invalid_request", tooLarge ? "Bridge request is too large" : "Bridge request is not strict JSON");
@@ -68,8 +72,9 @@ export function safeRequestId(value: unknown): string {
   return isRequestId(value) ? value : "invalid";
 }
 
-export function failure(id: unknown, code: BridgeErrorCode, message: string): BridgeFailure {
-  return { v: 1, id: safeRequestId(id), ok: false, error: { code, message: boundedMessage(message) } };
+export function failure(id: unknown, code: BridgeErrorCode, message: string, extra?: { reason?: string; detail?: JsonValue }): BridgeFailure {
+  const error = { code, message: boundedMessage(message), ...(extra?.reason ? { reason: extra.reason, ...(extra.detail !== undefined ? { detail: extra.detail } : {}) } : {}) };
+  return { v: 1, id: safeRequestId(id), ok: false, error };
 }
 
 export function failureFromError(id: unknown, error: unknown): BridgeFailure {
@@ -87,10 +92,14 @@ export interface ResolvedInvocation<Params = unknown> {
  * Looks a request up in the registry and validates its parameters. Stale
  * revisions are refused before the method is even looked at. spec R2.13
  */
-export function resolveInvocation(request: BridgeRequest, registry: CapabilityRegistry, currentRevision: string): ResolvedInvocation {
+export function resolveInvocation(request: BridgeRequest, registry: CapabilityLookup, currentRevision: string): ResolvedInvocation {
   if (request.pageRevision !== currentRevision) throw new PageError("stale_page", "This page changed; reload it before responding.");
   const spec = registry.get(request.method);
   if (!spec || !spec.implemented) throw new PageError("unknown_method", unknownMethodMessage(request.method));
+  const bound = spec.maxRequestBytes ?? LIMITS.capabilityPayloadBytes;
+  if (Buffer.byteLength(JSON.stringify(request), "utf8") > bound) {
+    throw new PageError("request_too_large", `Request for ${spec.method} is larger than ${bound} bytes`);
+  }
   const params = spec.validateParams(request.params);
   if (!params.ok) {
     const first = params.issues[0];
@@ -103,10 +112,13 @@ export function resolveInvocation(request: BridgeRequest, registry: CapabilityRe
 export function completeInvocation(invocation: ResolvedInvocation, result: unknown): BridgeResponse {
   const projected = invocation.spec.validateResult(result);
   if (!projected.ok) return failure(invocation.request.id, "invalid_result", `Invalid result for ${invocation.spec.method}`);
-  const json = validateJson(projected.value);
+  const json = validateJson(projected.value, { maxBytes: invocation.spec.maxResponseBytes ?? LIMITS.capabilityPayloadBytes });
+  if (!json.ok && json.issues.some((issue) => issue.code === "too_large")) {
+    return failure(invocation.request.id, "response_too_large", "Bridge response is too large");
+  }
   if (!json.ok) return failure(invocation.request.id, "invalid_result", `Result for ${invocation.spec.method} is not strict JSON`);
   const response: BridgeSuccess = { v: 1, id: invocation.request.id, ok: true, result: json.value };
-  if (Buffer.byteLength(JSON.stringify(response), "utf8") > LIMITS.capabilityPayloadBytes) {
+  if (Buffer.byteLength(JSON.stringify(response), "utf8") > (invocation.spec.maxResponseBytes ?? LIMITS.capabilityPayloadBytes)) {
     return failure(invocation.request.id, "response_too_large", "Bridge response is too large");
   }
   return response;

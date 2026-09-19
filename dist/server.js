@@ -46,6 +46,21 @@ var LIMITS = Object.freeze({
   /** Capability request and response, serialised. R5.2 */
   capabilityPayloadBytes: 64 * 1024,
   capabilityJsonDepth: 16,
+  /**
+   * Contributed capabilities declare their own request and response bounds,
+   * each at most this; undeclared they get `capabilityPayloadBytes`. R5.47, D21
+   */
+  contributedPayloadMaxBytes: 1024 * 1024,
+  /** One contributed call, before it answers `unavailable`. R5.51, D22 */
+  contributedCallMs: 3e4,
+  /** How long a contributor's declarations are reused before they are read again. */
+  contributionsTtlMs: 1e4,
+  /** A contributor's instruction fragment and guide text. R6.29, D27 */
+  contributorInstructionBytes: 2 * 1024,
+  contributorGuideBytes: 16 * 1024,
+  contributorMethods: 64,
+  /** `question` in session reads, marked when cut. R5.11c, D25 */
+  questionChars: 1024,
   capabilityJsonNodes: 1e4,
   /** `sessions.start` and `sessions.send` prompts. */
   promptChars: 32 * 1024,
@@ -206,7 +221,7 @@ var PUBLIC_MESSAGES = Object.freeze({
 // src/domain/ids.ts
 var SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
 var REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
-var METHOD_NAME = /^[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
+var METHOD_NAME = /^[a-z][a-zA-Z0-9-]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
 var REVISION = /^[a-f0-9]{64}$/;
 function isSessionId(value) {
   return typeof value === "string" && SESSION_ID.test(value);
@@ -302,7 +317,7 @@ function registerCli(bb, deps) {
           case "init":
             return rest.length === 0 ? await init(deps, context) : usage();
           case "guide":
-            return rest.length === 0 ? { exitCode: 0, stdout: `${deps.guide}
+            return rest.length === 0 ? { exitCode: 0, stdout: `${await deps.guide()}
 ` } : usage();
           case "home":
             if (rest.length === 0) return await home(deps, context);
@@ -320,6 +335,10 @@ function registerCli(bb, deps) {
       }
     }
   });
+}
+function contributedLine(set) {
+  if (set.contributors.length === 0) return "(none registered)";
+  return set.contributors.map((contributor) => `${contributor.id} ${contributor.version}: ${contributor.methods.map((method) => `${method.method} (${method.effect})`).join(", ") || "no methods"}`).join("; ");
 }
 function usage(text = "bb thread-page <init|guide|home [--clear]|status>") {
   return { exitCode: 2, stderr: `Usage: ${text}
@@ -440,6 +459,7 @@ async function status(deps, context) {
     `homeSessionId: ${settings.homeSessionId || "(none \u2014 pages link to the built-in home page)"}`,
     `site strategy: ${serving.site.name}`,
     `limits: entry ${LIMITS.entryDocumentBytes / (1024 * 1024)} MiB, upload ${LIMITS.uploadFileBytes / (1024 * 1024)} MiB \xD7 ${LIMITS.uploadsPerForm}, rate ${LIMITS.ratePerMinute}/min`,
+    `contributed capabilities: ${contributedLine(await serving.contributions.current())}`,
     "",
     "## Instruction a new eligible session receives now",
     "",
@@ -464,7 +484,7 @@ async function status(deps, context) {
 }
 
 // src/agent/guide.ts
-function buildGuide(registry, site) {
+function buildGuide(registry, site, contributors = []) {
   return [
     intro(),
     forms(),
@@ -474,6 +494,7 @@ function buildGuide(registry, site) {
     keepingCurrent(),
     runtimeApi(),
     capabilities(registry),
+    contributed(contributors),
     startingSessions(),
     network(),
     unavailable(),
@@ -668,6 +689,66 @@ The complete page-facing API; it is frozen and cannot be replaced.
   outcome every page calling a confirmed capability must handle, not an error.
 
 Check what is enabled rather than assume: \`(await invoke("context.get")).capabilities\`.`;
+function contributed(contributors) {
+  const perMinute = (seconds) => Math.round(60 / seconds * 10) / 10;
+  const registered = contributors.length === 0 ? "None is registered on this host now." : contributors.map((contributor) => {
+    const methods = contributor.methods.map((spec2) => {
+      const reasons = [...spec2.reasons?.keys() ?? []];
+      return `- \`${spec2.method}\` \u2014 ${spec2.effect}. ${spec2.description} Request up to ${kibibytes(spec2.maxRequestBytes)}, response up to ${kibibytes(spec2.maxResponseBytes)}.${reasons.length ? ` Reasons: ${reasons.join(", ")}.` : ""}`;
+    });
+    return [`### ${contributor.id} ${contributor.version}`, "", ...methods.length ? methods : ["- (no methods)"], ...contributor.guide ? ["", contributor.guide] : []].join("\n");
+  }).join("\n\n");
+  return `## Capabilities from other plugins
+
+Other plugins installed on this host may add capabilities to your page. Each
+lives in a namespace named after its plugin \u2014 \`syns.read\`, say \u2014 and means
+what that plugin says it means; Thread Pages only checks and delivers the call.
+The plugin's own section below, and its instruction, explain its methods.
+
+**Check, do not assume.** Call \`context.get\` when the page loads. A contributed
+method appears in \`capabilities\` with \`contributor: { id, version }\`, a
+\`description\`, its \`reasons\` and \`maxRequestBytes\`/\`maxResponseBytes\`. A method
+that is not there answers unknown_method.
+
+**When a method you need is missing,** keep the rest of the page working and
+tell the reader, in your own words, what is missing and what would supply it \u2014
+usually installing or enabling the plugin its namespace names. Never show
+invented or example data in its place.
+
+**No dialog.** These calls run the moment you make them, writes included; the
+plugin answers for what it does. If a write is something the reader would not
+expect from the control they touched, make that plain on the page first.
+
+**Your session is passed for you.** The plugin learns which session's page is
+calling from the host; a session id in your parameters chooses nothing. From
+the built-in home page there is no session.
+
+**Failures.** The rejected Error carries \`code\` as usual, and may carry
+\`reason\` \u2014 a word the method declares, such as \`no_repo\` \u2014 and \`detail\`,
+data for that reason, such as the current version on a conflict. Branch on
+\`reason\` when you know the plugin, on \`code\` when any will do: conflict \u2014
+what you based a write on has moved, so read again; unavailable \u2014 the method
+exists but cannot serve this page now (not answering, over ${LIMITS.contributedCallMs / 1e3} s, or nothing this
+session can reach); unknown_method \u2014 no installed plugin provides it.
+
+**Sizes.** Each method's bounds are in the roster: ${kibibytes(LIMITS.capabilityPayloadBytes)} unless the plugin
+declares more, never more than ${mebibytes(LIMITS.contributedPayloadMaxBytes)}. Larger data comes in parts through
+the method's own offset and limit, or cursor. A response is never cut short;
+it fails with response_too_large.
+
+**The budget is shared.** Every call, built-in or contributed, counts against
+${LIMITS.ratePerMinute} a minute and ${LIMITS.rateConcurrent} at once. One watch at the default ${LIMITS.watchDefaultMs / 1e3} s costs ${perMinute(LIMITS.watchDefaultMs / 1e3)} calls a
+minute; at the ${LIMITS.watchMinMs / 1e3} s floor, ${perMinute(LIMITS.watchMinMs / 1e3)}. Reading 300 items one call each costs 300 \u2014
+more than two minutes of budget. Load many items with the plugin's batched read
+when it has one, and poll one small thing, such as a version.
+
+**Changes arrive by polling.** \`watch\` a contributed read method and read more
+only when it changes. There is no push. \`watch\` refuses a method that writes.
+
+### Registered now
+
+${registered}`;
+}
 function capabilities(registry) {
   const rows = registry.list().map((spec2) => {
     const status2 = spec2.implemented ? spec2.confirmed ? "confirmed in trusted chrome" : "no confirmation" : "not implemented on this host: unknown_method";
@@ -880,6 +961,8 @@ var limits = () => `## Limits
 | Uploads per form | ${LIMITS.uploadsPerForm} |
 | Submission body | ${kibibytes(LIMITS.submissionBodyBytes)} excluding uploaded bytes; ${LIMITS.answersPerSubmission} answers; ${LIMITS.answerValueChars} characters per answer |
 | Capability payload | ${kibibytes(LIMITS.capabilityPayloadBytes)} request and response, depth ${LIMITS.capabilityJsonDepth}, ${LIMITS.capabilityJsonNodes} nodes |
+| Contributed capability payload | as each method declares in the roster, at most ${mebibytes(LIMITS.contributedPayloadMaxBytes)}; ${kibibytes(LIMITS.capabilityPayloadBytes)} when it declares none |
+| Contributed call | ${LIMITS.contributedCallMs / 1e3} s, then unavailable |
 | Prompt | ${kibibytes(LIMITS.promptChars)} characters (sessions.start, sessions.send) |
 | session.reply result | ${kibibytes(LIMITS.resultTextBytes)} |
 | Title | ${LIMITS.titleChars} characters |
@@ -906,6 +989,26 @@ var limitations = (site) => `## Known limitations
 - Your own files are carried inside the entry document rather than served as files, because this host cannot authorise a sandboxed document's own requests. That is why they count against the document's size limits.` : ""}`;
 
 // src/bb/activity.ts
+function questionOf(interactions, maxChars) {
+  const parts = [];
+  for (const raw of interactions) {
+    const payload = asRecord(asRecord(raw)?.payload);
+    if (!payload) continue;
+    if (payload.kind === "user_question" && Array.isArray(payload.questions)) {
+      for (const question of payload.questions) {
+        const prompt2 = asRecord(question)?.prompt;
+        if (typeof prompt2 === "string" && prompt2.trim()) parts.push(prompt2.trim());
+      }
+    } else if (typeof payload.title === "string" && payload.title.trim()) {
+      parts.push(payload.title.trim());
+    } else if (payload.kind === "approval") {
+      parts.push(typeof payload.reason === "string" && payload.reason.trim() ? `Approval requested: ${payload.reason.trim()}` : "Approval requested");
+    }
+  }
+  const text = parts.join("\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+  if (!text) return null;
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}\u2026`;
+}
 function sessionStateOf(thread, hasPendingInteraction) {
   const runtime = asRecord(thread.runtime);
   const display = typeof runtime?.displayStatus === "string" ? runtime.displayStatus : typeof thread.status === "string" ? thread.status : "idle";
@@ -995,24 +1098,31 @@ function createBbHost(bb) {
       const listed = await bb.sdk.threads.interactions.list({ threadId });
       const record = asRecord(listed);
       const interactions = Array.isArray(listed) ? listed : Array.isArray(record?.interactions) ? record.interactions : [];
-      return interactions.length > 0;
+      return { pending: interactions.length > 0, question: questionOf(interactions, LIMITS.questionChars) };
     } catch {
-      return false;
+      return { pending: false, question: null };
     }
   }
-  function projectThread(thread, hasPendingInteraction) {
+  function projectThread(thread, hasPendingInteraction, question = null) {
+    const state = sessionStateOf(thread, hasPendingInteraction);
+    const attentionAtMs = typeof thread.latestAttentionAt === "number" ? Math.max(0, Math.trunc(thread.latestAttentionAt)) : 0;
     return {
       id: String(thread.id),
       title: typeof thread.title === "string" && thread.title || typeof thread.titleFallback === "string" && thread.titleFallback || "Untitled",
       projectId: typeof thread.projectId === "string" ? thread.projectId : null,
-      state: sessionStateOf(thread, hasPendingInteraction),
+      state,
       visibility: thread.visibility === "hidden" ? "hidden" : "visible",
       parentId: typeof thread.parentThreadId === "string" ? thread.parentThreadId : null,
       forkOfId: typeof thread.sourceThreadId === "string" ? thread.sourceThreadId : null,
       archived: thread.archivedAt !== null && thread.archivedAt !== void 0,
       deleted: thread.deletedAt !== null && thread.deletedAt !== void 0,
       updatedAtMs: typeof thread.updatedAt === "number" ? Math.max(0, Math.trunc(thread.updatedAt)) : 0,
-      attentionAtMs: typeof thread.latestAttentionAt === "number" ? Math.max(0, Math.trunc(thread.latestAttentionAt)) : 0,
+      attentionAtMs,
+      startedAtMs: typeof thread.createdAt === "number" ? Math.max(0, Math.trunc(thread.createdAt)) : 0,
+      // bb records no turn end of its own; a turn's end is when the thread
+      // last asked for attention, which bb sets as a turn ends. spec R5.11b
+      turnEndedAtMs: state === "working" || attentionAtMs === 0 ? null : attentionAtMs,
+      question: state === "waiting" ? question : null,
       unread: unreadOf(thread),
       pinned: typeof thread.pinnedAt === "number",
       environmentId: typeof thread.environmentId === "string" ? thread.environmentId : null
@@ -1033,7 +1143,8 @@ function createBbHost(bb) {
         const thread = await getThread(id);
         if (!thread) return null;
         const idle = sessionStateOf(thread, false) === "idle";
-        return projectThread(thread, idle ? await pendingInteraction(id) : false);
+        const pending = idle ? await pendingInteraction(id) : { pending: false, question: null };
+        return projectThread(thread, pending.pending, pending.question);
       },
       async list(query) {
         const rows = await bb.sdk.threads.list({
@@ -1045,7 +1156,14 @@ function createBbHost(bb) {
           offset: query.offset
         });
         if (!Array.isArray(rows)) return [];
-        return rows.map((row) => asRecord(row)).filter((row) => row !== null).map((row) => projectThread(row, row.hasPendingInteraction === true));
+        const records = rows.map((row) => asRecord(row)).filter((row) => row !== null);
+        return Promise.all(
+          records.map(async (row) => {
+            const waiting = row.hasPendingInteraction === true && sessionStateOf(row, true) === "waiting";
+            const question = waiting ? (await pendingInteraction(String(row.id))).question : null;
+            return projectThread(row, row.hasPendingInteraction === true, question);
+          })
+        );
       },
       async send(id, text, mode) {
         const before = await getThread(id);
@@ -1204,7 +1322,8 @@ function createBbHost(bb) {
       delete: (key) => bb.storage.kv.delete(key)
     },
     origin: { public: publicOrigin },
-    log: bb.log
+    log: bb.log,
+    contributors: createBbContributors(bb)
   };
   return host;
 }
@@ -1234,6 +1353,67 @@ function isConflict(error) {
 }
 function hostUnavailable(error) {
   return PageError.is(error) ? error : new PageError("unavailable", PUBLIC_MESSAGES.unavailable, { cause: error });
+}
+var CONTRIBUTIONS_RPC = "threadPagesContributions";
+var INVOKE_RPC = "threadPagesInvoke";
+var DECLARATION_TIMEOUT_MS = 5e3;
+var passThrough = { parse: (value) => value };
+function createBbContributors(bb) {
+  return {
+    async list() {
+      const listed = await bb.sdk.plugins.list();
+      const candidates = (listed.plugins ?? []).filter(
+        (plugin) => typeof plugin.id === "string" && plugin.id !== bb.pluginId && plugin.enabled === true && plugin.status === "running"
+      );
+      const answers = await Promise.all(
+        candidates.map(async (plugin) => {
+          let timer;
+          try {
+            const declaration = await Promise.race([
+              bb.sdk.plugins.callRpc({ pluginId: plugin.id, method: CONTRIBUTIONS_RPC, outputSchema: passThrough }),
+              new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error("timed out")), DECLARATION_TIMEOUT_MS);
+              })
+            ]);
+            return { id: plugin.id, declaration };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!/\b404\b/.test(message)) bb.log.warn(`contributors: ${plugin.id} did not declare: ${message}`);
+            return null;
+          } finally {
+            if (timer !== void 0) clearTimeout(timer);
+          }
+        })
+      );
+      return answers.filter((entry) => entry !== null);
+    },
+    async invoke(contributorId, call) {
+      const answer = await bb.sdk.plugins.callRpc({
+        pluginId: contributorId,
+        method: INVOKE_RPC,
+        input: { method: call.method, params: call.params, caller: { sessionId: call.caller.sessionId }, requestId: call.requestId },
+        outputSchema: passThrough
+      });
+      return answerOf(answer);
+    }
+  };
+}
+function answerOf(value) {
+  const record = asRecord(value);
+  if (record?.ok === true && "result" in record) return { ok: true, result: record.result };
+  const error = asRecord(record?.error);
+  if (record?.ok === false && error && typeof error.code === "string") {
+    return {
+      ok: false,
+      error: {
+        code: error.code,
+        ...typeof error.message === "string" ? { message: error.message } : {},
+        ...typeof error.reason === "string" ? { reason: error.reason } : {},
+        ..."detail" in error ? { detail: error.detail } : {}
+      }
+    };
+  }
+  return { ok: false, error: { code: "handler_error", message: "The contributor's answer has the wrong shape" } };
 }
 
 // src/bb/host-urls.ts
@@ -1380,10 +1560,20 @@ function readSettings(values) {
 }
 
 // src/domain/capabilities/contract.ts
-var EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state"];
+var EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state", "contributed-write"];
 var CONFIRMED_EFFECTS = /* @__PURE__ */ new Set(["cross-session-write", "destructive", "device"]);
 
 // src/domain/capabilities/registry.ts
+function describe(spec2) {
+  return {
+    method: spec2.method,
+    effect: spec2.effect,
+    confirmation: spec2.confirmed ? "required" : "none",
+    maxRequestBytes: spec2.maxRequestBytes ?? LIMITS.capabilityPayloadBytes,
+    maxResponseBytes: spec2.maxResponseBytes ?? LIMITS.capabilityPayloadBytes,
+    ...spec2.contributor ? { contributor: spec2.contributor, description: spec2.description, reasons: [...spec2.reasons?.keys() ?? []] } : {}
+  };
+}
 function createRegistry(specs) {
   const byMethod = /* @__PURE__ */ new Map();
   for (const spec2 of specs) {
@@ -1393,7 +1583,10 @@ function createRegistry(specs) {
     if (CONFIRMED_EFFECTS.has(spec2.effect) && !spec2.confirmed) {
       throw new TypeError(`${spec2.method} has a ${spec2.effect} effect and must be confirmed`);
     }
-    if ((spec2.effect === "read" || spec2.effect === "own-session-write" || spec2.effect === "reader-state") && spec2.confirmed) {
+    if (spec2.effect === "contributed-write" && !spec2.contributor) {
+      throw new TypeError(`${spec2.method}: only a contributed capability may declare contributed-write`);
+    }
+    if ((spec2.effect === "read" || spec2.effect === "own-session-write" || spec2.effect === "reader-state" || spec2.effect === "contributed-write") && spec2.confirmed) {
       throw new TypeError(`${spec2.method} is a ${spec2.effect} and must not be confirmed`);
     }
     if (typeof spec2.description !== "string" || spec2.description.trim().length === 0 || spec2.description.length > 240) {
@@ -1403,11 +1596,7 @@ function createRegistry(specs) {
   }
   const list = Object.freeze([...byMethod.values()]);
   const descriptors = Object.freeze(
-    list.filter((spec2) => spec2.implemented).map((spec2) => ({
-      method: spec2.method,
-      effect: spec2.effect,
-      confirmation: spec2.confirmed ? "required" : "none"
-    }))
+    list.filter((spec2) => spec2.implemented).map(describe)
   );
   return Object.freeze({
     get: (method) => byMethod.get(method),
@@ -1701,17 +1890,22 @@ var contextGet = spec({
       capabilities: array(
         object({
           method: string({ min: 3, max: LIMITS.methodNameChars, label: "Method" }),
-          effect: literal(["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state"]),
-          confirmation: literal(["none", "required"])
+          effect: literal(EFFECT_CLASSES),
+          confirmation: literal(["none", "required"]),
+          maxRequestBytes: integer(1, LIMITS.contributedPayloadMaxBytes, "Bound"),
+          maxResponseBytes: integer(1, LIMITS.contributedPayloadMaxBytes, "Bound"),
+          contributor: optional(object({ id: string({ min: 1, max: 32, label: "Contributor" }), version: string({ min: 1, max: 64, label: "Version" }) })),
+          description: optional(string({ min: 1, max: 240, label: "Description" })),
+          reasons: optional(array(string({ min: 1, max: 64, label: "Reason" }), 64))
         }),
-        64
+        512
       )
     })
   ),
   doc: {
     params: "None.",
-    result: "`{ protocolVersion: 1, session: { id, title, projectId }, page: { revision, readOnly }, capabilities: [{ method, effect, confirmation }] }`.",
-    notes: "The roster lists what is actually enabled; check it rather than assume."
+    result: "`{ protocolVersion: 1, session: { id, title, projectId }, page: { revision, readOnly }, capabilities: [{ method, effect, confirmation, maxRequestBytes, maxResponseBytes, contributor?, description?, reasons? }] }`. `contributor: { id, version }`, `description` and `reasons` appear only on capabilities another plugin contributes.",
+    notes: "The roster lists what is actually enabled, contributed capabilities included; check it rather than assume."
   }
 });
 var sessionActivity = spec({
@@ -1725,6 +1919,9 @@ var sessionActivity = spec({
     object({
       state: sessionState,
       updatedAtMs: timestamp,
+      startedAtMs: timestamp,
+      turnEndedAtMs: nullable(timestamp),
+      question: nullable(string({ min: 1, max: LIMITS.questionChars, label: "Question" })),
       items: array(
         object({
           kind: string({ min: 1, max: 80, label: "Kind" }),
@@ -1739,7 +1936,7 @@ var sessionActivity = spec({
   ),
   doc: {
     params: `\`{ limit? }\` \u2014 1 to ${LIMITS.activityMax}, default ${LIMITS.activityDefault}. It never takes a session id: it is always this page's own session.`,
-    result: "`{ state, updatedAtMs, items: [{ kind, done, atMs, label, text }] }` where `state` is one of `working`, `idle`, `waiting`, `failed`, `stopped`."
+    result: `\`{ state, updatedAtMs, startedAtMs, turnEndedAtMs, question, items: [{ kind, done, atMs, label, text }] }\` where \`state\` is one of \`working\`, \`idle\`, \`waiting\`, \`failed\`, \`stopped\`. \`turnEndedAtMs\` is when the last turn ended (null while one runs); \`question\` is, while waiting, what the session waits on, at most ${LIMITS.questionChars} characters.`
   }
 });
 var snapshotParams = object({
@@ -1759,7 +1956,10 @@ var sessionSummary = object({
   page: object({ available: boolean(), revision: nullable(string({ min: 64, max: 64, pattern: /^[a-f0-9]{64}$/ })) }),
   updatedAtMs: timestamp,
   attentionAtMs: timestamp,
-  unread: boolean()
+  unread: boolean(),
+  startedAtMs: timestamp,
+  turnEndedAtMs: nullable(timestamp),
+  question: nullable(string({ min: 1, max: LIMITS.questionChars, label: "Question" }))
 });
 var sessionsSnapshot = spec({
   method: "sessions.snapshot",
@@ -1777,8 +1977,8 @@ var sessionsSnapshot = spec({
   ),
   doc: {
     params: `\`{ projectId?, includeArchived?, includeChildren?, limit?, cursor? }\` \u2014 \`limit\` 1 to ${LIMITS.snapshotMax}, default ${LIMITS.snapshotDefault}; pass the previous result's \`nextCursor\` to continue. By default only root sessions are listed, the way the host's own sidebar shows them; \`includeChildren: true\` adds sub-agent sessions (with \`parentSessionId\` set).`,
-    result: "`{ sessions: [{ id, title, projectId, parentSessionId, status, archived, unread, attentionAtMs, updatedAtMs, page: { available, revision } }], nextCursor, generatedAtMs }` where `status` is one of `working`, `idle`, `waiting`, `failed`, `stopped`. `unread` means the session asked for the reader's attention (a turn ended, a question) after they last looked at it \u2014 the same mark the host's sidebar shows; `attentionAtMs` is when. `page.revision` is known for pages this host has served recently and `null` otherwise.",
-    notes: "No message bodies or agent output are included."
+    result: "`{ sessions: [{ id, title, projectId, parentSessionId, status, archived, unread, attentionAtMs, updatedAtMs, startedAtMs, turnEndedAtMs, question, page: { available, revision } }], nextCursor, generatedAtMs }` where `startedAtMs` is when the session was created, `turnEndedAtMs` when its last turn ended (null while one runs \u2014 with `status: idle` that is when it finished), and `question`, only while `waiting`, what it waits on as plain text of at most 1024 characters, or null when the host cannot tell. `status` is one of `working`, `idle`, `waiting`, `failed`, `stopped`. `unread` means the session asked for the reader's attention (a turn ended, a question) after they last looked at it \u2014 the same mark the host's sidebar shows; `attentionAtMs` is when. `page.revision` is known for pages this host has served recently and `null` otherwise.",
+    notes: "No message bodies are included. The one piece of agent output is `question`; a session's prompt and the files it changed are not."
   }
 });
 var projectsList = spec({
@@ -2074,6 +2274,302 @@ var ALL_CAPABILITIES = Object.freeze([
   voiceCaptureAndTranscribe
 ]);
 
+// src/domain/capabilities/contributed.ts
+var RESERVED_NAMESPACES = /* @__PURE__ */ new Set([
+  "context",
+  "session",
+  "sessions",
+  "projects",
+  "providers",
+  "storage",
+  "pages",
+  "navigation",
+  "voice"
+]);
+var CONTRIBUTED_EFFECTS = ["read", "contributed-write"];
+var NAMESPACE = /^[a-z][a-z0-9-]{0,31}$/;
+var LOCAL_NAME = /^[a-z][A-Za-z0-9]{0,63}$/;
+var REASON = /^[a-z][a-z0-9_]{0,63}$/;
+var VERSION = /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$/;
+var DESCRIPTION_MAX = 240;
+function isReservedNamespace(namespace) {
+  return RESERVED_NAMESPACES.has(namespace);
+}
+function parseContributor(id, input) {
+  const problems = [];
+  const refuse = (problem) => ({ contributor: null, problems: [...problems, problem] });
+  if (!NAMESPACE.test(id)) return refuse(`contributor id "${id}" is not a usable namespace`);
+  if (isReservedNamespace(id)) return refuse(`contributor "${id}" uses a reserved namespace`);
+  const checked = validateJson(input, { maxBytes: 256 * 1024, maxDepth: 32, maxNodes: 5e4 });
+  if (!checked.ok || !isJsonObject(checked.value)) return refuse(`contributor "${id}": the declaration is not a JSON object`);
+  const declaration = checked.value;
+  const unknown = Object.keys(declaration).filter((key) => !["version", "methods", "instruction", "guide"].includes(key));
+  if (unknown.length > 0) return refuse(`contributor "${id}": unknown keys ${unknown.join(", ")}`);
+  if (typeof declaration.version !== "string" || !VERSION.test(declaration.version)) return refuse(`contributor "${id}": a version is required`);
+  const ref = Object.freeze({ id, version: declaration.version });
+  const instruction = boundedText(declaration.instruction, LIMITS.contributorInstructionBytes);
+  if (instruction === false) return refuse(`contributor "${id}": the instruction must be text of at most ${LIMITS.contributorInstructionBytes} bytes`);
+  const guide = boundedText(declaration.guide, LIMITS.contributorGuideBytes);
+  if (guide === false) return refuse(`contributor "${id}": the guide must be text of at most ${LIMITS.contributorGuideBytes} bytes`);
+  const rawMethods = declaration.methods ?? [];
+  if (!Array.isArray(rawMethods)) return refuse(`contributor "${id}": methods must be a list`);
+  if (rawMethods.length > LIMITS.contributorMethods) return refuse(`contributor "${id}": at most ${LIMITS.contributorMethods} methods`);
+  const methods = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const raw of rawMethods) {
+    const parsed = parseMethod(ref, raw);
+    if (typeof parsed === "string") {
+      problems.push(`contributor "${id}": ${parsed}`);
+      continue;
+    }
+    if (seen.has(parsed.method)) {
+      problems.push(`contributor "${id}": ${parsed.method} is declared twice`);
+      continue;
+    }
+    seen.add(parsed.method);
+    methods.push(parsed);
+  }
+  return {
+    contributor: Object.freeze({ id, version: ref.version, methods: Object.freeze(methods), instruction, guide }),
+    problems
+  };
+}
+function boundedText(value, maxBytes) {
+  if (value === void 0 || value === null) return null;
+  if (typeof value !== "string" || utf8Bytes(value) > maxBytes) return false;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+var METHOD_KEYS = ["name", "description", "effect", "params", "result", "maxRequestBytes", "maxResponseBytes", "reasons"];
+function parseMethod(contributor, raw) {
+  if (!isJsonObject(raw)) return "a method declaration must be an object";
+  const name = typeof raw.name === "string" ? raw.name : "";
+  const label = name || "a method";
+  const unknown = Object.keys(raw).filter((key) => !METHOD_KEYS.includes(key));
+  if (unknown.length > 0) return `${label}: unknown keys ${unknown.join(", ")}`;
+  const dot = name.indexOf(".");
+  const namespace = dot < 0 ? "" : name.slice(0, dot);
+  const local = dot < 0 ? "" : name.slice(dot + 1);
+  if (namespace !== contributor.id || !LOCAL_NAME.test(local)) return `${label}: the name must be "${contributor.id}.<name>"`;
+  if (typeof raw.description !== "string" || raw.description.trim().length === 0 || raw.description.length > DESCRIPTION_MAX) {
+    return `${name}: a description of at most ${DESCRIPTION_MAX} characters is required`;
+  }
+  if (!CONTRIBUTED_EFFECTS.includes(raw.effect)) return `${name}: effect must be "read" or "contributed-write"`;
+  const effect = raw.effect;
+  const maxRequestBytes = bound(raw.maxRequestBytes);
+  const maxResponseBytes = bound(raw.maxResponseBytes);
+  if (maxRequestBytes === null || maxResponseBytes === null) {
+    return `${name}: bounds must be whole numbers of bytes from 1024 to ${LIMITS.contributedPayloadMaxBytes}`;
+  }
+  const params2 = compileSchema(raw.params ?? { type: "object", properties: {}, additionalProperties: false }, "params");
+  if (typeof params2 === "string") return `${name}: params schema: ${params2}`;
+  const result2 = compileSchema(raw.result, "result");
+  if (typeof result2 === "string") return `${name}: result schema: ${result2}`;
+  const reasons = /* @__PURE__ */ new Map();
+  if (raw.reasons !== void 0) {
+    if (!isJsonObject(raw.reasons)) return `${name}: reasons must be an object of reason \u2192 { detail? }`;
+    for (const [reason, entry] of Object.entries(raw.reasons)) {
+      if (!REASON.test(reason)) return `${name}: reason "${reason}" must match ${REASON}`;
+      if (!isJsonObject(entry) || Object.keys(entry).some((key) => key !== "detail" && key !== "description")) {
+        return `${name}: reason "${reason}" must be { detail?, description? }`;
+      }
+      if (entry.detail === void 0) {
+        reasons.set(reason, null);
+        continue;
+      }
+      const detail = compileSchema(entry.detail, "result");
+      if (typeof detail === "string") return `${name}: detail schema for "${reason}": ${detail}`;
+      reasons.set(reason, (value) => detail.parse(value, "$"));
+    }
+  }
+  const validateParams = (value) => params2.parse(value === void 0 || value === null ? params2.emptyValue : value, "$");
+  return Object.freeze({
+    method: name,
+    description: raw.description.trim(),
+    effect,
+    confirmed: false,
+    implemented: true,
+    validateParams,
+    validateResult: (value) => result2.parse(value, "$"),
+    doc: { params: "Declared by the contributor.", result: "Declared by the contributor." },
+    maxRequestBytes,
+    maxResponseBytes,
+    contributor,
+    reasons
+  });
+}
+function bound(value) {
+  if (value === void 0) return LIMITS.capabilityPayloadBytes;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1024 && value <= LIMITS.contributedPayloadMaxBytes ? value : null;
+}
+var KEYWORDS = /* @__PURE__ */ new Set([
+  "type",
+  "description",
+  "properties",
+  "required",
+  "additionalProperties",
+  "enum",
+  "const",
+  "minimum",
+  "maximum",
+  "minLength",
+  "maxLength",
+  "pattern",
+  "items",
+  "minItems",
+  "maxItems"
+]);
+var TYPES = /* @__PURE__ */ new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
+function compileSchema(schema, mode) {
+  try {
+    const node = compileNode(schema, mode, "$", 0);
+    const types = isJsonObject(schema) ? typeList(schema.type) : [];
+    return { parse: node, emptyValue: types.length === 1 && types[0] === "object" ? {} : void 0 };
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+function typeList(value) {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.filter((item) => typeof item === "string");
+  return [];
+}
+function compileNode(schema, mode, at, depth) {
+  if (depth > 16) throw new Error(`${at}: the schema is nested too deeply`);
+  if (!isJsonObject(schema)) throw new Error(`${at}: a schema must be an object`);
+  for (const key of Object.keys(schema)) {
+    if (!KEYWORDS.has(key)) throw new Error(`${at}: "${key}" is not in the supported subset`);
+  }
+  const types = typeList(schema.type);
+  if (schema.type !== void 0 && (types.length === 0 || types.some((type) => !TYPES.has(type)) || Array.isArray(schema.type) && types.length !== schema.type.length)) {
+    throw new Error(`${at}: type must be one of ${[...TYPES].join(", ")}, or a list of them`);
+  }
+  if (types.length === 0 && schema.enum === void 0 && schema.const === void 0) throw new Error(`${at}: a type, enum or const is required`);
+  const enumValues = schema.enum;
+  if (enumValues !== void 0 && (!Array.isArray(enumValues) || enumValues.length === 0)) throw new Error(`${at}: enum must be a non-empty list`);
+  const constValue = schema.const;
+  const numberLimit = (key) => {
+    const value = schema[key];
+    if (value === void 0) return void 0;
+    if (typeof value !== "number") throw new Error(`${at}: ${key} must be a number`);
+    return value;
+  };
+  const countLimit = (key) => {
+    const value = schema[key];
+    if (value === void 0) return void 0;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(`${at}: ${key} must be a whole number`);
+    return value;
+  };
+  const minimum = numberLimit("minimum");
+  const maximum = numberLimit("maximum");
+  const minLength = countLimit("minLength");
+  const maxLength = countLimit("maxLength");
+  const minItems = countLimit("minItems");
+  const maxItems = countLimit("maxItems");
+  let pattern;
+  if (schema.pattern !== void 0) {
+    if (typeof schema.pattern !== "string" || schema.pattern.length > 512) throw new Error(`${at}: pattern must be a string of at most 512 characters`);
+    try {
+      pattern = new RegExp(schema.pattern, "u");
+    } catch {
+      throw new Error(`${at}: pattern is not a valid regular expression`);
+    }
+  }
+  let properties = null;
+  let required = /* @__PURE__ */ new Set();
+  if (types.includes("object")) {
+    const declared = schema.properties ?? {};
+    if (!isJsonObject(declared)) throw new Error(`${at}: properties must be an object`);
+    properties = /* @__PURE__ */ new Map();
+    for (const [key, child] of Object.entries(declared)) properties.set(key, compileNode(child, mode, pathForKey(at, key), depth + 1));
+    const requiredList = schema.required ?? [];
+    if (!Array.isArray(requiredList) || requiredList.some((key) => typeof key !== "string" || !properties.has(key))) {
+      throw new Error(`${at}: required must list declared properties`);
+    }
+    required = new Set(requiredList);
+    if (schema.additionalProperties !== void 0 && typeof schema.additionalProperties !== "boolean") {
+      throw new Error(`${at}: additionalProperties must be true or false`);
+    }
+    if (mode === "params" && schema.additionalProperties !== false) throw new Error(`${at}: a parameter object must set additionalProperties to false`);
+  }
+  let items = null;
+  if (types.includes("array")) {
+    if (schema.items === void 0) throw new Error(`${at}: an array needs items`);
+    items = compileNode(schema.items, mode, `${at}[]`, depth + 1);
+  }
+  const node = (value, path) => {
+    if (value === void 0) return invalid(path, "Missing value", "missing_key");
+    if (constValue !== void 0 && JSON.stringify(value) !== JSON.stringify(constValue)) return invalid(path, `Expected ${JSON.stringify(constValue)}`);
+    if (enumValues !== void 0 && !enumValues.some((option) => JSON.stringify(option) === JSON.stringify(value))) {
+      return invalid(path, "Not one of the allowed values");
+    }
+    if (types.length > 0 && !types.some((type) => matchesType(type, value))) {
+      return invalid(path, `Expected ${types.join(" or ")}`, "invalid_type");
+    }
+    if (typeof value === "string") {
+      if (minLength !== void 0 && value.length < minLength) return invalid(path, `At least ${minLength} characters`);
+      if (maxLength !== void 0 && value.length > maxLength) return invalid(path, `At most ${maxLength} characters`, "too_large");
+      if (pattern && !pattern.test(value)) return invalid(path, "Invalid format");
+      return valid(value);
+    }
+    if (typeof value === "number") {
+      if (minimum !== void 0 && value < minimum) return invalid(path, `At least ${minimum}`);
+      if (maximum !== void 0 && value > maximum) return invalid(path, `At most ${maximum}`);
+      return valid(value);
+    }
+    if (Array.isArray(value)) {
+      if (minItems !== void 0 && value.length < minItems) return invalid(path, `At least ${minItems} items`);
+      if (maxItems !== void 0 && value.length > maxItems) return invalid(path, `At most ${maxItems} items`, "too_large");
+      const out = [];
+      for (let index = 0; index < value.length; index += 1) {
+        const parsed = items ? items(value[index], `${path}[${index}]`) : valid(value[index]);
+        if (!parsed.ok) return parsed;
+        out.push(parsed.value);
+      }
+      return valid(out);
+    }
+    if (isJsonObject(value) && properties) {
+      const out = {};
+      for (const key of Object.keys(value)) {
+        if (!properties.has(key) && mode === "params") return invalid(pathForKey(path, key), "Unknown key", "unknown_key");
+      }
+      for (const [key, child] of properties) {
+        const present = Object.prototype.hasOwnProperty.call(value, key);
+        if (!present) {
+          if (required.has(key)) return invalid(pathForKey(path, key), "Missing required key", "missing_key");
+          continue;
+        }
+        const parsed = child(value[key], pathForKey(path, key));
+        if (!parsed.ok) return parsed;
+        out[key] = parsed.value;
+      }
+      return valid(out);
+    }
+    return valid(value);
+  };
+  return node;
+}
+function matchesType(type, value) {
+  switch (type) {
+    case "object":
+      return isJsonObject(value);
+    case "array":
+      return Array.isArray(value);
+    case "string":
+      return typeof value === "string";
+    case "number":
+      return typeof value === "number";
+    case "integer":
+      return typeof value === "number" && Number.isSafeInteger(value);
+    case "boolean":
+      return typeof value === "boolean";
+    case "null":
+      return value === null;
+    default:
+      return false;
+  }
+}
+
 // src/domain/capabilities/renamed.ts
 var RENAMED_METHODS = Object.freeze({
   "threads.spawn": "sessions.start",
@@ -2100,7 +2596,7 @@ function unknownMethodMessage(method) {
 // src/domain/capabilities/protocol.ts
 var BRIDGE_PROTOCOL_VERSION = 1;
 function decodeBridgeRequest(input) {
-  const checked = validateJson(input);
+  const checked = validateJson(input, { maxBytes: LIMITS.contributedPayloadMaxBytes + 1024 });
   if (!checked.ok) {
     const tooLarge = checked.issues.some((issue) => issue.code === "too_large");
     throw new PageError(tooLarge ? "request_too_large" : "invalid_request", tooLarge ? "Bridge request is too large" : "Bridge request is not strict JSON");
@@ -2118,8 +2614,9 @@ function decodeBridgeRequest(input) {
 function safeRequestId(value) {
   return isRequestId(value) ? value : "invalid";
 }
-function failure(id, code, message) {
-  return { v: 1, id: safeRequestId(id), ok: false, error: { code, message: boundedMessage(message) } };
+function failure(id, code, message, extra) {
+  const error = { code, message: boundedMessage(message), ...extra?.reason ? { reason: extra.reason, ...extra.detail !== void 0 ? { detail: extra.detail } : {} } : {} };
+  return { v: 1, id: safeRequestId(id), ok: false, error };
 }
 function failureFromError(id, error) {
   if (PageError.is(error) && isBridgeErrorCode(error.code)) return failure(id, error.code, error.message);
@@ -2129,6 +2626,10 @@ function resolveInvocation(request, registry, currentRevision) {
   if (request.pageRevision !== currentRevision) throw new PageError("stale_page", "This page changed; reload it before responding.");
   const spec2 = registry.get(request.method);
   if (!spec2 || !spec2.implemented) throw new PageError("unknown_method", unknownMethodMessage(request.method));
+  const bound2 = spec2.maxRequestBytes ?? LIMITS.capabilityPayloadBytes;
+  if (Buffer.byteLength(JSON.stringify(request), "utf8") > bound2) {
+    throw new PageError("request_too_large", `Request for ${spec2.method} is larger than ${bound2} bytes`);
+  }
   const params2 = spec2.validateParams(request.params);
   if (!params2.ok) {
     const first = params2.issues[0];
@@ -2139,10 +2640,13 @@ function resolveInvocation(request, registry, currentRevision) {
 function completeInvocation(invocation, result2) {
   const projected = invocation.spec.validateResult(result2);
   if (!projected.ok) return failure(invocation.request.id, "invalid_result", `Invalid result for ${invocation.spec.method}`);
-  const json2 = validateJson(projected.value);
+  const json2 = validateJson(projected.value, { maxBytes: invocation.spec.maxResponseBytes ?? LIMITS.capabilityPayloadBytes });
+  if (!json2.ok && json2.issues.some((issue) => issue.code === "too_large")) {
+    return failure(invocation.request.id, "response_too_large", "Bridge response is too large");
+  }
   if (!json2.ok) return failure(invocation.request.id, "invalid_result", `Result for ${invocation.spec.method} is not strict JSON`);
   const response = { v: 1, id: invocation.request.id, ok: true, result: json2.value };
-  if (Buffer.byteLength(JSON.stringify(response), "utf8") > LIMITS.capabilityPayloadBytes) {
+  if (Buffer.byteLength(JSON.stringify(response), "utf8") > (invocation.spec.maxResponseBytes ?? LIMITS.capabilityPayloadBytes)) {
     return failure(invocation.request.id, "response_too_large", "Bridge response is too large");
   }
   return response;
@@ -10827,6 +11331,121 @@ function createSelectionStore() {
   };
 }
 
+// src/serving/contributions.ts
+var ContributedError = class extends PageError {
+  reason;
+  detail;
+  constructor(code, message, extra = {}) {
+    super(code, message);
+    this.reason = extra.reason;
+    this.detail = extra.reason ? extra.detail : void 0;
+  }
+};
+var EMPTY = Object.freeze({ contributors: Object.freeze([]), get: () => void 0 });
+function createContributions(host, log, now) {
+  let set = EMPTY;
+  let readAt = -Infinity;
+  let inFlight = null;
+  const reported = /* @__PURE__ */ new Set();
+  async function read() {
+    if (!host) return EMPTY;
+    let listed;
+    try {
+      listed = await host.list();
+    } catch (error) {
+      log.warn(`contributions: could not list contributors: ${errorText(error)}`);
+      return set;
+    }
+    const contributors = [];
+    const byMethod = /* @__PURE__ */ new Map();
+    for (const entry of listed) {
+      const parsed = parseContributor(entry.id, entry.declaration);
+      for (const problem of parsed.problems) {
+        if (!reported.has(problem)) {
+          reported.add(problem);
+          log.warn(`contributions: refused ${problem}`);
+        }
+      }
+      if (!parsed.contributor) continue;
+      contributors.push(parsed.contributor);
+      for (const method of parsed.contributor.methods) byMethod.set(method.method, method);
+    }
+    return Object.freeze({ contributors: Object.freeze(contributors), get: (method) => byMethod.get(method) });
+  }
+  function refresh() {
+    if (!inFlight) {
+      inFlight = read().then((next) => {
+        set = next;
+        readAt = now();
+        return next;
+      }).finally(() => {
+        inFlight = null;
+      });
+    }
+    return inFlight;
+  }
+  const fresh = () => now() - readAt < LIMITS.contributionsTtlMs;
+  return {
+    async current() {
+      return fresh() ? set : refresh();
+    },
+    cached() {
+      if (!fresh()) void refresh().catch(() => void 0);
+      return set;
+    },
+    async invoke(spec2, params2, caller, requestId) {
+      if (!host) throw new PageError("unknown_method", `Unknown capability: ${spec2.method}`);
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new PageError("unavailable", `${spec2.contributor.id} did not answer within ${LIMITS.contributedCallMs / 1e3} seconds`)), LIMITS.contributedCallMs);
+      });
+      let answer;
+      try {
+        answer = await Promise.race([host.invoke(spec2.contributor.id, { method: spec2.method, params: params2, caller, requestId }), timeout]);
+      } catch (error) {
+        if (PageError.is(error)) throw error;
+        throw new PageError("unavailable", `${spec2.contributor.id} is not answering`, { cause: error });
+      } finally {
+        if (timer !== void 0) clearTimeout(timer);
+      }
+      if (answer.ok) return answer.result;
+      throw contributedFailure(spec2, answer.error, log);
+    }
+  };
+}
+function contributedFailure(spec2, error, log) {
+  const message = typeof error.message === "string" && error.message.trim() ? error.message : `${spec2.method} failed`;
+  if (!isBridgeErrorCode(error.code) || error.code === "confirmation_required" || error.code === "cancelled") {
+    log.warn(`contributions: ${spec2.method} answered code "${String(error.code)}", outside the fixed set: ${message}`);
+    return new PageError("handler_error", "Could not execute the page action.");
+  }
+  if (error.code === "handler_error") log.warn(`contributions: ${spec2.method} failed: ${message}`);
+  if (error.reason === void 0) return new ContributedError(error.code, message);
+  const detailCheck = spec2.reasons?.get(error.reason);
+  if (detailCheck === void 0) {
+    log.warn(`contributions: ${spec2.method} answered undeclared reason "${String(error.reason)}"; dropped`);
+    return new ContributedError(error.code, message);
+  }
+  if (detailCheck === null || error.detail === void 0) return new ContributedError(error.code, message, { reason: error.reason });
+  const detail = detailCheck(error.detail);
+  if (!detail.ok) {
+    log.warn(`contributions: ${spec2.method} reason "${error.reason}" carried a detail that fails its schema; dropped`);
+    return new ContributedError(error.code, message, { reason: error.reason });
+  }
+  return new ContributedError(error.code, message, { reason: error.reason, detail: detail.value });
+}
+function combinedLookup(registry, set) {
+  return { get: (method) => registry.get(method) ?? set.get(method) };
+}
+function rosterOf(registry, set) {
+  return [...registry.descriptors(), ...set.contributors.flatMap((contributor) => contributor.methods.map(describe))];
+}
+function instructionFragments(set) {
+  return set.contributors.filter((contributor) => contributor.instruction).map((contributor) => `## From ${contributor.id}
+
+${contributor.instruction}`).join("\n\n");
+}
+
 // src/domain/json/canonical.ts
 import { createHash as createHash3 } from "node:crypto";
 function canonicalJson(value) {
@@ -11874,6 +12493,9 @@ var BUILTIN_HOME_SESSION = Object.freeze({
   deleted: false,
   updatedAtMs: 0,
   attentionAtMs: 0,
+  startedAtMs: 0,
+  turnEndedAtMs: null,
+  question: null,
   unread: false,
   pinned: false,
   environmentId: null
@@ -11926,19 +12548,21 @@ function createDispatcher(serving, handlers) {
       release = acquireRate(serving, token.session);
       const request = decodeBridgeRequest(envelope.request);
       requestId = request.id;
-      const invocation = resolveInvocation(request, serving.registry, token.revision);
-      const entry = byMethod.get(invocation.spec.method);
-      if (!entry) throw new PageError("unknown_method", `Unknown capability: ${invocation.spec.method}`);
+      const lookup = serving.registry.get(request.method) ? serving.registry : combinedLookup(serving.registry, await serving.contributions.current());
+      const invocation = resolveInvocation(request, lookup, token.revision);
+      const contributed2 = invocation.spec.contributor ? invocation.spec : null;
+      const entry = contributed2 ? null : byMethod.get(invocation.spec.method);
+      if (!contributed2 && !entry) throw new PageError("unknown_method", `Unknown capability: ${invocation.spec.method}`);
       const home3 = isBuiltinHome(token.session);
-      if (home3 && SESSIONLESS_CAPABILITIES.has(invocation.spec.method)) throw new PageError("unknown_method", BUILTIN_HOME_REFUSAL);
+      if (home3 && !contributed2 && SESSIONLESS_CAPABILITIES.has(invocation.spec.method)) throw new PageError("unknown_method", BUILTIN_HOME_REFUSAL);
       const session = home3 ? BUILTIN_HOME_SESSION : await eligibleSession(serving, token.session).catch((error) => {
         throw PageError.is(error) && error.code === "ineligible" ? new PageError("conflict", "This session no longer accepts page actions") : error;
       });
       const page = home3 ? BUILTIN_HOME_PAGE : await serving.pages.load(token.session, token.path);
       if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
       const context = { serving, session, page, requestId: request.id };
-      await entry.refuse?.(invocation.params, context);
-      if (invocation.spec.confirmed) {
+      await entry?.refuse?.(invocation.params, context);
+      if (invocation.spec.confirmed && entry) {
         const binding = { session: token.session, revision: token.revision, requestId: request.id, method: request.method, params: invocation.params };
         if (envelope.confirmation === null) {
           const summary = await entry.summarize?.(invocation.params, context) ?? invocation.spec.description;
@@ -11955,8 +12579,20 @@ function createDispatcher(serving, handlers) {
       }
       let outcome;
       try {
-        outcome = await entry.execute(invocation.params, context);
+        if (contributed2) {
+          const caller = { sessionId: home3 ? null : token.session };
+          const result2 = await serving.contributions.invoke(contributed2, invocation.params, caller, request.id);
+          if (contributed2.effect === "contributed-write") {
+            serving.host.log.info(`contributed write ${contributed2.method} for ${token.session}: ok`);
+          }
+          outcome = { result: result2 };
+        } else {
+          outcome = await entry.execute(invocation.params, context);
+        }
       } catch (error) {
+        if (contributed2?.effect === "contributed-write") {
+          serving.host.log.info(`contributed write ${contributed2.method} for ${token.session}: ${PageError.is(error) ? error.code : "failed"}`);
+        }
         if (PageError.is(error) && isBridgeErrorCode(error.code)) throw error;
         serving.host.log.warn(`bridge ${request.method} for ${token.session}: ${errorText(error)}`);
         throw new PageError("handler_error", PUBLIC_MESSAGES.handler, { cause: error });
@@ -11967,7 +12603,8 @@ function createDispatcher(serving, handlers) {
       if (PageError.is(error)) {
         if (error.cause !== void 0) serving.host.log.warn(`bridge: ${error.code}: ${errorText(error.cause)}`);
         const code = isBridgeErrorCode(error.code) ? error.code : error.code === "ineligible" || error.code === "no_page" ? "not_found" : "handler_error";
-        return { status: error.status, body: { response: failure(requestId, code, error.message) } };
+        const extra = error instanceof ContributedError && error.reason ? { reason: error.reason, ...error.detail !== void 0 ? { detail: error.detail } : {} } : void 0;
+        return { status: error.status, body: { response: failure(requestId, code, error.message, extra) } };
       }
       serving.host.log.warn(`bridge: ${errorText(error)}`);
       return { status: 500, body: { response: failureFromError(requestId, error) } };
@@ -12024,8 +12661,8 @@ var navigationOpenExternal2 = handler({
 var contextGet2 = handler({
   method: "context.get",
   async execute(_params, { serving, session, page }) {
-    const descriptors = serving.registry.descriptors();
-    const capabilities2 = isBuiltinHome(session.id) ? descriptors.filter((entry) => !SESSIONLESS_CAPABILITIES.has(entry.method)) : descriptors;
+    const descriptors = rosterOf(serving.registry, await serving.contributions.current());
+    const capabilities2 = isBuiltinHome(session.id) ? descriptors.filter((entry) => entry.contributor || !SESSIONLESS_CAPABILITIES.has(entry.method)) : descriptors;
     return {
       result: {
         protocolVersion: 1,
@@ -12040,7 +12677,16 @@ var sessionActivity2 = handler({
   method: "session.activity",
   async execute(params2, { serving, session }) {
     const items = await serving.host.sessions.activity(session.id, params2.limit);
-    return { result: { state: session.state, updatedAtMs: session.updatedAtMs, items } };
+    return {
+      result: {
+        state: session.state,
+        updatedAtMs: session.updatedAtMs,
+        startedAtMs: session.startedAtMs,
+        turnEndedAtMs: session.turnEndedAtMs,
+        question: session.state === "waiting" ? session.question : null,
+        items
+      }
+    };
   }
 });
 function queryKey(params2) {
@@ -12129,7 +12775,10 @@ var sessionsSnapshot2 = handler({
       page: { available: availability.get(record.id) === true, revision: availability.get(record.id) ? serving.pages.knownRevision(record.id) : null },
       updatedAtMs: record.updatedAtMs,
       attentionAtMs: record.attentionAtMs,
-      unread: record.unread
+      unread: record.unread,
+      startedAtMs: record.startedAtMs,
+      turnEndedAtMs: record.turnEndedAtMs,
+      question: record.state === "waiting" ? record.question : null
     }));
     return { result: { sessions, nextCursor: next ? encodeCursor(next) : null, generatedAtMs: serving.now() } };
   }
@@ -12459,7 +13108,7 @@ function bridgeRoute(dispatch) {
   return async (context) => {
     let body;
     try {
-      body = await readJsonBody(context, LIMITS.capabilityPayloadBytes + 8192);
+      body = await readJsonBody(context, LIMITS.contributedPayloadMaxBytes + 16384);
     } catch (error) {
       const failed = PageError.is(error) ? error : new PageError("invalid_json", "Invalid bridge body");
       const code = failed.code === "request_too_large" ? "request_too_large" : "invalid_json";
@@ -12582,7 +13231,7 @@ ${source}
 }
 
 // src/generated/kernel-runtime.ts
-var KERNEL_RUNTIME = '"use strict";(()=>{var re=Object.defineProperty;var oe=(e,t,n)=>t in e?re(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var A=(e,t,n)=>oe(e,typeof t!="symbol"?t+"":t,n);var v=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var _=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],Te=new Set(_);var ke=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${v.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var H=1,P=1;var ie=new Set(_);function w(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function I(e,t){return Object.keys(e).length===t.length&&t.every(o=>Object.prototype.hasOwnProperty.call(e,o))}function N(e,t){if(!w(e)||e.v!==P||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return I(e,["v","id","ok","result"]);if(!I(e,["v","id","ok","error"])||!w(e.error))return!1;let n=e.error;return I(n,["code","message"])&&typeof n.code=="string"&&ie.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function K(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}var se="uploads/";function j(e){return typeof e!="string"||e.length===0||e.length>1024||e.includes("\\0")||e.includes("\\\\")||e.startsWith("/")||e.startsWith(se)||!e.split("/").every(t=>t.length>0&&t!=="."&&t!=="..")?!1:/\\.html?$/i.test(e)}function ae(e,t,n,o=n){let i=e.getAttribute("href");if(i===null)return{kind:"default"};if(i.startsWith("#"))return{kind:"default"};let u;try{u=new URL(i,n??t)}catch{return{kind:"block"}}if(u.protocol!=="http:"&&u.protocol!=="https:")return{kind:"block"};if(o&&u.href.startsWith(o)){if(e.hasAttribute("download"))return{kind:"default"};let a=le(u,o);return a!==null&&j(a)?{kind:"document",path:a}:{kind:"default"}}return e.hasAttribute("download")?{kind:"default"}:{kind:"external",url:u.href,label:(e.textContent||"").replace(/\\s+/g," ").trim().slice(0,160)}}function le(e,t){let n=new URL(t).pathname;if(!e.pathname.startsWith(n))return null;try{return decodeURIComponent(e.pathname.slice(n.length))}catch{return null}}function $(e,t,n=null){e.addEventListener("click",o=>{if(o.defaultPrevented||o.button!==0)return;let u=o.target?.closest?.("a[href]");if(!u)return;let a=e.querySelector("base")?.getAttribute("href")??null,l=a?new URL(a,e.baseURI).href:null,m=n?new URL(n,e.baseURI).href:l,c=ae(u,e.baseURI,l,m);c.kind!=="default"&&(o.preventDefault(),c.kind==="external"?t.external(c.url,c.label):c.kind==="document"&&t.document(c.path))},!0)}function z(e,t){let n=Object.freeze({version:1,invoke:t.invoke,watch:t.watch,setDirty:t.setDirty});Object.defineProperty(e,"threadPage",{value:n,writable:!1,configurable:!1,enumerable:!0})}var T=class extends Error{constructor(n,o){super(o);A(this,"code");this.name="ThreadPageError",this.code=n,Object.defineProperty(this,"code",{value:n,enumerable:!0,writable:!1})}};function V(e,t){let n=new Map,o=[],i=null,u=0;function a(){return u+=1,`tp-${typeof crypto<"u"&&typeof crypto.randomUUID=="function"?crypto.randomUUID():`${Date.now()}-${u}`}`}function l(f){let p=n.get(f);if(!(!p||!i))try{i(p.request)}catch(h){n.delete(f),p.reject(new T("invalid_request",h instanceof Error?h.message:"The request could not be sent"))}}function m(f,p){return new Promise((h,y)=>{if(typeof f!="string"){y(new T("invalid_request","A method name is required"));return}let b=a(),r={v:P,id:b,method:f,params:p===void 0?null:p,pageRevision:e};n.set(b,{request:r,resolve:h,reject:y}),i?l(b):o.push(b)})}function c(f,p,h,y){if(typeof h!="function")throw new TypeError("Thread Page watch needs a listener");let b=y?.intervalMs,r=typeof b=="number"&&Number.isFinite(b)?Math.max(v.watchMinMs,Math.min(v.watchMaxMs,Math.round(b))):v.watchDefaultMs,s=!1,g=!1,d=null;function E(x){s||(d!==null&&clearTimeout(d),d=setTimeout(k,x))}async function k(){if(d=null,!(s||g||t.visibilityState==="hidden")){g=!0;try{let x=await m(f,p);s||h(x,null)}catch(x){s||h(void 0,x)}finally{g=!1,s||E(r)}}}function F(){s||(t.visibilityState==="hidden"?(d!==null&&clearTimeout(d),d=null):E(0))}return t.addEventListener("visibilitychange",F),E(0),()=>{s||(s=!0,d!==null&&clearTimeout(d),d=null,t.removeEventListener("visibilitychange",F))}}return{invoke:m,watch:c,attach(f){for(i=f;o.length>0;){let p=o.shift();p&&l(p)}},receive(f){if(typeof f!="object"||f===null)return!1;let p=f.id;if(typeof p!="string")return!1;let h=n.get(p);if(!h)return!1;if(n.delete(p),!N(f,p))return h.reject(new T("invalid_response","The Thread Page bridge returned an invalid response")),!0;let y=f;return y.ok?h.resolve(y.result):h.reject(new T(y.error.code,y.error.message)),!0}}}function W(e){let t=new Map,n=0,o=!1,i=!1;function u(){let a=o||t.size>0;a!==i&&(i=a,e(a))}return{isDirty:()=>i,markForm(a){return n+=1,t.set(a,n),u(),n},versionOf:a=>t.get(a),clearForm(a,l){l!==void 0&&t.get(a)===l&&(t.delete(a),u())},setCustom(a){o=a===!0,u()}}}var ue="input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]";function B(e){if(!e)return"";let t=e.cloneNode(!0);for(let n of Array.from(t.querySelectorAll(ue)))n.remove();return(t.textContent||"").replace(/\\s+/g," ").trim()}function de(e,t){let n=t.getAttribute("data-label");if(n&&n.trim())return n.trim();let o=t.closest("fieldset");if(o){let a=B(o.querySelector("legend"));if(a)return a}let i=t.getAttribute("aria-label");if(i&&i.trim())return i.trim();let u=t.closest("label");if(u){let a=B(u);if(a)return a}if(t.id){let a=e.ownerDocument,l=Array.from(a.querySelectorAll("label[for]")).find(c=>c.htmlFor===t.id),m=B(l??null);if(m)return m}return t.name}var ce=new Set(["button","submit","reset","image","file"]);function me(e){return Array.from(e.elements).filter(t=>{let n=t;return typeof n.name=="string"&&n.name.length>0&&!n.disabled&&"type"in n})}function G(e,t){let n=me(e),o=[],i=new Set;if(t&&(C(t)==="button"||C(t)==="input")){let u=t,a=u.value||(u.textContent||"").trim();o.push({name:u.name||"action",label:"Action",value:a}),u.name&&i.add(u.name)}for(let u of n){let a=u.name,l=String(u.type||"").toLowerCase();if(i.has(a)||ce.has(l))continue;i.add(a);let m=n.filter(c=>c.name===a);o.push({name:a,label:de(e,u),value:fe(u,m,l)})}return o}function C(e){return e.tagName.toLowerCase()}function fe(e,t,n){if(n==="checkbox"){let o=t.filter(i=>C(i)==="input");return o.length===1?o[0]?.checked===!0:o.filter(i=>i.checked).map(i=>i.value)}if(n==="radio"){let o=t.find(i=>C(i)==="input"&&i.checked);return o?o.value:""}return C(e)==="select"&&e.multiple?Array.from(e.selectedOptions).map(o=>o.value):t.length>1?t.map(o=>String(o.value??"")):String(e.value??"")}var pe="data-thread-page-manual",Y="data-thread-page-status",ge="data-thread-page-range",he=new Set(["input","textarea","select","button","fieldset"]);function L(e){return e.hasAttribute(pe)}function D(e){let t=[];return"tagName"in e&&e.tagName.toLowerCase()==="form"&&t.push(e),"querySelectorAll"in e&&t.push(...Array.from(e.querySelectorAll("form"))),t.filter(n=>!L(n))}function O(e){if(!e)return null;let t=e.form;return t&&typeof t=="object"&&t.tagName?.toLowerCase()==="form"?t:e.closest?.("form")??null}function R(e){let t=new Set(D(e)),n=[];"hasAttribute"in e&&e.hasAttribute("form")&&n.push(e),"querySelectorAll"in e&&n.push(...Array.from(e.querySelectorAll("[form]")));for(let o of n){let i=O(o);i&&!L(i)&&t.add(i)}return[...t]}function M(e){let t=e.querySelector(`[${Y}]`);return t||(t=e.ownerDocument.createElement("p"),t.setAttribute(Y,""),t.setAttribute("role","status"),e.appendChild(t)),t}var Z=new WeakSet;function J(e){e.noValidate=!0;for(let t of S(e)){if(t.tagName.toLowerCase()!=="input"||t.type!=="range")continue;let n=t;if(Z.has(n))continue;Z.add(n);let o=e.ownerDocument.createElement("output");o.setAttribute(ge,"");let i=()=>{o.textContent=String(n.value)};n.addEventListener("input",i),i(),n.insertAdjacentElement("afterend",o)}}function S(e){return Array.from(e.elements).filter(t=>he.has(t.tagName.toLowerCase()))}function ye(e){let t=[];for(let n of S(e)){if(n.tagName.toLowerCase()!=="input"||n.type!=="file")continue;let o=n;if(!o.disabled)for(let i of Array.from(o.files??[])){if(t.length>=v.uploadsPerForm)return t;t.push({field:o.name||"file",file:i})}}return t}function X(e){let t=[];for(let n of S(e))n.disabled||(n.disabled=!0,t.push(n));return t}function q(e){for(let t of e)t.disabled=!1}function be(e){let t=e.getAttribute("data-title");return t&&t.trim()?t.trim().slice(0,300):(e.ownerDocument.querySelector("h1")?.textContent||"").trim().slice(0,300)||"Thread Page"}function Q(e,t,n){return{submissionId:n,form:e,title:be(e),answers:G(e,t),files:ye(e)}}var ee="data-thread-page-offline",U="Offline copy \\u2014 responses are disabled until the source host reconnects.";function te(e,t){let n=new Set,o=t;function i(){if(!e.body)return;let l=e.querySelector(`[${ee}="host"]`);o&&!l?(l=e.createElement("aside"),l.setAttribute(ee,"host"),l.setAttribute("role","status"),l.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText"),l.textContent=U,e.body.insertBefore(l,e.body.firstChild)):!o&&l&&l.remove()}function u(l){for(let m of R(l)){for(let c of S(m))c.disabled||(c.disabled=!0,n.add(c));M(m).textContent=U}}function a(){for(let l of n)l.disabled=!1;n.clear();for(let l of D(e)){let m=M(l);m.textContent===U&&(m.textContent="")}}return{isReadOnly:()=>o,apply(l){o=l,l?u(e):a(),i()},prepare(l){o&&u(l),i()}}}function ne(e,t){let n=e.document,o=null,i=new Map,u=new WeakSet;function a(r){if(!o)return!1;try{return o.postMessage(r),!0}catch{return!1}}let l=W(r=>{a({kind:r?"thread-page:dirty":"thread-page:clean"})}),m=V(t.pageRevision,n),c=te(n,t.stale);z(e,{version:1,invoke:(r,s)=>m.invoke(r,s),watch:(r,s,g,d)=>m.watch(r,s,g,d),setDirty:r=>l.setCustom(r!==!1)});function f(r){for(let s of R(r))J(s);c.prepare(r)}f(n),n.readyState==="loading"&&n.addEventListener("DOMContentLoaded",()=>f(n),{once:!0}),typeof e.MutationObserver=="function"&&n.documentElement&&new e.MutationObserver(s=>{for(let g of s)for(let d of Array.from(g.addedNodes))d.nodeType===1&&f(d)}).observe(n.documentElement,{childList:!0,subtree:!0});function p(r){let s=O(r.target);!s||L(s)||l.markForm(s)}n.addEventListener("input",p,!0),n.addEventListener("change",p,!0),n.addEventListener("submit",r=>{let s=r.target;if(!s||s.tagName?.toLowerCase()!=="form"||L(s)||(r.preventDefault(),c.isReadOnly()||u.has(s)))return;let g=`sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,d=s,E=Q(d,r.submitter??null,g),k={form:d,disabled:[],dirtyVersion:l.versionOf(d)};i.set(g,k),u.add(d),M(d).textContent=E.files.length>0?"Uploading\\u2026":"Sending\\u2026",k.disabled=X(d),a({kind:"thread-page:submit",submissionId:g,title:E.title,answers:E.answers,files:E.files})||(i.delete(g),u.delete(d),q(k.disabled),M(d).textContent="Page connection is not ready; try again in a moment.")},!0),$(n,{external:(r,s)=>{m.invoke("navigation.openExternal",s?{url:r,label:s}:{url:r}).catch(()=>{})},document:r=>{a({kind:"thread-page:open-document",path:r})}},t.siteRoot??null);function h(r){if(w(r)){if(r.kind==="thread-page:source-state"){c.apply(r.stale===!0);return}if(r.kind==="thread-page:submit-progress"){let s=typeof r.submissionId=="string"?i.get(r.submissionId):void 0;s&&(M(s.form).textContent=String(r.message??"Working\\u2026").slice(0,160));return}if(r.kind==="thread-page:submit-result"){let s=typeof r.submissionId=="string"?i.get(r.submissionId):void 0;if(!s)return;i.delete(r.submissionId),u.delete(s.form);let g=r.ok===!0;M(s.form).textContent=g?String(r.message??"Sent").slice(0,160):String(r.error??"Could not send").slice(0,160),q(s.disabled),c.isReadOnly()&&c.apply(!0),g&&l.clearForm(s.form,s.dirtyVersion);return}m.receive(r)}}function y(r){o=r,r.onmessage=s=>h(s.data),r.start?.(),m.attach(s=>{r.postMessage(s)}),l.isDirty()&&a({kind:"thread-page:dirty"})}function b(r){if(o||r.source!==e.parent)return;let s=r.data;if(!w(s)||s.kind!=="thread-page:connect"||s.version!==H||!r.ports||r.ports.length!==1)return;r.stopImmediatePropagation();let g=r.ports[0];g&&y(g)}return e.addEventListener("message",b,!0),t.stale&&c.apply(!0),e.parent.postMessage({kind:"thread-page:ready",version:H},"*"),{deliver:r=>h(r),connect:r=>y(r)}}ne(window,K(document.currentScript));})();';
+var KERNEL_RUNTIME = '"use strict";(()=>{var ae=Object.defineProperty;var le=(e,t,n)=>t in e?ae(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var S=(e,t,n)=>le(e,typeof t!="symbol"?t+"":t,n);var h=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,contributedPayloadMaxBytes:1048576,contributedCallMs:3e4,contributionsTtlMs:1e4,contributorInstructionBytes:2048,contributorGuideBytes:16384,contributorMethods:64,questionChars:1024,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var I=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],ve=new Set(I);var Ae=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${h.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var P=1,F=1;var ue=new Set(I);var de=/^[a-z][a-z0-9_]{0,63}$/;function T(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function J(e,t){return Object.keys(e).length===t.length&&t.every(o=>Object.prototype.hasOwnProperty.call(e,o))}function V(e,t){if(!T(e)||e.v!==F||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return J(e,["v","id","ok","result"]);if(!J(e,["v","id","ok","error"])||!T(e.error))return!1;let n=e.error;return!Object.keys(n).every(s=>s==="code"||s==="message"||s==="reason"||s==="detail")||"reason"in n&&(typeof n.reason!="string"||!de.test(n.reason))||"detail"in n&&!("reason"in n)?!1:"code"in n&&"message"in n&&typeof n.code=="string"&&ue.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function q(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}var ce="uploads/";function U(e){return typeof e!="string"||e.length===0||e.length>1024||e.includes("\\0")||e.includes("\\\\")||e.startsWith("/")||e.startsWith(ce)||!e.split("/").every(t=>t.length>0&&t!=="."&&t!=="..")?!1:/\\.html?$/i.test(e)}function fe(e,t,n,o=n){let s=e.getAttribute("href");if(s===null)return{kind:"default"};if(s.startsWith("#"))return{kind:"default"};let u;try{u=new URL(s,n??t)}catch{return{kind:"block"}}if(u.protocol!=="http:"&&u.protocol!=="https:")return{kind:"block"};if(o&&u.href.startsWith(o)){if(e.hasAttribute("download"))return{kind:"default"};let a=me(u,o);return a!==null&&U(a)?{kind:"document",path:a}:{kind:"default"}}return e.hasAttribute("download")?{kind:"default"}:{kind:"external",url:u.href,label:(e.textContent||"").replace(/\\s+/g," ").trim().slice(0,160)}}function me(e,t){let n=new URL(t).pathname;if(!e.pathname.startsWith(n))return null;try{return decodeURIComponent(e.pathname.slice(n.length))}catch{return null}}function z(e,t,n=null){e.addEventListener("click",o=>{if(o.defaultPrevented||o.button!==0)return;let u=o.target?.closest?.("a[href]");if(!u)return;let a=e.querySelector("base")?.getAttribute("href")??null,l=a?new URL(a,e.baseURI).href:null,p=n?new URL(n,e.baseURI).href:l,c=fe(u,e.baseURI,l,p);c.kind!=="default"&&(o.preventDefault(),c.kind==="external"?t.external(c.url,c.label):c.kind==="document"&&t.document(c.path))},!0)}function K(e,t){let n=Object.freeze({version:1,invoke:t.invoke,watch:t.watch,setDirty:t.setDirty});Object.defineProperty(e,"threadPage",{value:n,writable:!1,configurable:!1,enumerable:!0})}var G=new Set(["context","session","sessions","projects","providers","storage","pages","navigation","voice"]);var M=class extends Error{constructor(n,o,s){super(o);S(this,"code");S(this,"reason");S(this,"detail");this.name="ThreadPageError",this.code=n,Object.defineProperty(this,"code",{value:n,enumerable:!0,writable:!1}),s?.reason!==void 0&&(Object.defineProperty(this,"reason",{value:s.reason,enumerable:!0,writable:!1}),s.detail!==void 0&&Object.defineProperty(this,"detail",{value:s.detail,enumerable:!0,writable:!1}))}};function pe(e){let t=e.indexOf(".");return t>0&&!G.has(e.slice(0,t))}function W(e,t){let n=new Map,o=[],s=null,u=0,a=null;function l(){return a??(a=w("context.get").then(d=>{let m=d?.capabilities??[];return new Map(m.map(g=>[String(g.method),String(g.effect)]))},d=>{throw a=null,d})),a}function p(){return u+=1,`tp-${typeof crypto<"u"&&typeof crypto.randomUUID=="function"?crypto.randomUUID():`${Date.now()}-${u}`}`}function c(d){let m=n.get(d);if(!(!m||!s))try{s(m.request)}catch(g){n.delete(d),m.reject(new M("invalid_request",g instanceof Error?g.message:"The request could not be sent"))}}function w(d,m){return new Promise((g,r)=>{if(typeof d!="string"){r(new M("invalid_request","A method name is required"));return}let i=p(),y={v:F,id:i,method:d,params:m===void 0?null:m,pageRevision:e};n.set(i,{request:y,resolve:g,reject:r}),s?c(i):o.push(i)})}function A(d,m,g,r){if(typeof g!="function")throw new TypeError("Thread Page watch needs a listener");let i=r?.intervalMs,y=typeof i=="number"&&Number.isFinite(i)?Math.max(h.watchMinMs,Math.min(h.watchMaxMs,Math.round(i))):h.watchDefaultMs,f=!1,E=!1,b=null;function R(k){f||(b!==null&&clearTimeout(b),b=setTimeout(ie,k))}async function ie(){if(b=null,!(f||E||t.visibilityState==="hidden")){E=!0;try{if(pe(d)){let $=(await l()).get(d);if($!==void 0&&$!=="read"){f=!0,t.removeEventListener("visibilitychange",O),g(void 0,new M("invalid_params",`watch polls read capabilities only; ${d} is ${$}`));return}}let k=await w(d,m);f||g(k,null)}catch(k){f||g(void 0,k)}finally{E=!1,f||R(y)}}}function O(){f||(t.visibilityState==="hidden"?(b!==null&&clearTimeout(b),b=null):R(0))}return t.addEventListener("visibilitychange",O),R(0),()=>{f||(f=!0,b!==null&&clearTimeout(b),b=null,t.removeEventListener("visibilitychange",O))}}return{invoke:w,watch:A,attach(d){for(s=d;o.length>0;){let m=o.shift();m&&c(m)}},receive(d){if(typeof d!="object"||d===null)return!1;let m=d.id;if(typeof m!="string")return!1;let g=n.get(m);if(!g)return!1;if(n.delete(m),!V(d,m))return g.reject(new M("invalid_response","The Thread Page bridge returned an invalid response")),!0;let r=d;return r.ok?g.resolve(r.result):g.reject(new M(r.error.code,r.error.message,r.error)),!0}}}function Z(e){let t=new Map,n=0,o=!1,s=!1;function u(){let a=o||t.size>0;a!==s&&(s=a,e(a))}return{isDirty:()=>s,markForm(a){return n+=1,t.set(a,n),u(),n},versionOf:a=>t.get(a),clearForm(a,l){l!==void 0&&t.get(a)===l&&(t.delete(a),u())},setCustom(a){o=a===!0,u()}}}var ge="input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]";function B(e){if(!e)return"";let t=e.cloneNode(!0);for(let n of Array.from(t.querySelectorAll(ge)))n.remove();return(t.textContent||"").replace(/\\s+/g," ").trim()}function ye(e,t){let n=t.getAttribute("data-label");if(n&&n.trim())return n.trim();let o=t.closest("fieldset");if(o){let a=B(o.querySelector("legend"));if(a)return a}let s=t.getAttribute("aria-label");if(s&&s.trim())return s.trim();let u=t.closest("label");if(u){let a=B(u);if(a)return a}if(t.id){let a=e.ownerDocument,l=Array.from(a.querySelectorAll("label[for]")).find(c=>c.htmlFor===t.id),p=B(l??null);if(p)return p}return t.name}var be=new Set(["button","submit","reset","image","file"]);function he(e){return Array.from(e.elements).filter(t=>{let n=t;return typeof n.name=="string"&&n.name.length>0&&!n.disabled&&"type"in n})}function Y(e,t){let n=he(e),o=[],s=new Set;if(t&&(C(t)==="button"||C(t)==="input")){let u=t,a=u.value||(u.textContent||"").trim();o.push({name:u.name||"action",label:"Action",value:a}),u.name&&s.add(u.name)}for(let u of n){let a=u.name,l=String(u.type||"").toLowerCase();if(s.has(a)||be.has(l))continue;s.add(a);let p=n.filter(c=>c.name===a);o.push({name:a,label:ye(e,u),value:Ee(u,p,l)})}return o}function C(e){return e.tagName.toLowerCase()}function Ee(e,t,n){if(n==="checkbox"){let o=t.filter(s=>C(s)==="input");return o.length===1?o[0]?.checked===!0:o.filter(s=>s.checked).map(s=>s.value)}if(n==="radio"){let o=t.find(s=>C(s)==="input"&&s.checked);return o?o.value:""}return C(e)==="select"&&e.multiple?Array.from(e.selectedOptions).map(o=>o.value):t.length>1?t.map(o=>String(o.value??"")):String(e.value??"")}var xe="data-thread-page-manual",X="data-thread-page-status",we="data-thread-page-range",Me=new Set(["input","textarea","select","button","fieldset"]);function _(e){return e.hasAttribute(xe)}function N(e){let t=[];return"tagName"in e&&e.tagName.toLowerCase()==="form"&&t.push(e),"querySelectorAll"in e&&t.push(...Array.from(e.querySelectorAll("form"))),t.filter(n=>!_(n))}function j(e){if(!e)return null;let t=e.form;return t&&typeof t=="object"&&t.tagName?.toLowerCase()==="form"?t:e.closest?.("form")??null}function L(e){let t=new Set(N(e)),n=[];"hasAttribute"in e&&e.hasAttribute("form")&&n.push(e),"querySelectorAll"in e&&n.push(...Array.from(e.querySelectorAll("[form]")));for(let o of n){let s=j(o);s&&!_(s)&&t.add(s)}return[...t]}function x(e){let t=e.querySelector(`[${X}]`);return t||(t=e.ownerDocument.createElement("p"),t.setAttribute(X,""),t.setAttribute("role","status"),e.appendChild(t)),t}var Q=new WeakSet;function ee(e){e.noValidate=!0;for(let t of v(e)){if(t.tagName.toLowerCase()!=="input"||t.type!=="range")continue;let n=t;if(Q.has(n))continue;Q.add(n);let o=e.ownerDocument.createElement("output");o.setAttribute(we,"");let s=()=>{o.textContent=String(n.value)};n.addEventListener("input",s),s(),n.insertAdjacentElement("afterend",o)}}function v(e){return Array.from(e.elements).filter(t=>Me.has(t.tagName.toLowerCase()))}function ke(e){let t=[];for(let n of v(e)){if(n.tagName.toLowerCase()!=="input"||n.type!=="file")continue;let o=n;if(!o.disabled)for(let s of Array.from(o.files??[])){if(t.length>=h.uploadsPerForm)return t;t.push({field:o.name||"file",file:s})}}return t}function te(e){let t=[];for(let n of v(e))n.disabled||(n.disabled=!0,t.push(n));return t}function D(e){for(let t of e)t.disabled=!1}function Se(e){let t=e.getAttribute("data-title");return t&&t.trim()?t.trim().slice(0,300):(e.ownerDocument.querySelector("h1")?.textContent||"").trim().slice(0,300)||"Thread Page"}function ne(e,t,n){return{submissionId:n,form:e,title:Se(e),answers:Y(e,t),files:ke(e)}}var re="data-thread-page-offline",H="Offline copy \\u2014 responses are disabled until the source host reconnects.";function oe(e,t){let n=new Set,o=t;function s(){if(!e.body)return;let l=e.querySelector(`[${re}="host"]`);o&&!l?(l=e.createElement("aside"),l.setAttribute(re,"host"),l.setAttribute("role","status"),l.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText"),l.textContent=H,e.body.insertBefore(l,e.body.firstChild)):!o&&l&&l.remove()}function u(l){for(let p of L(l)){for(let c of v(p))c.disabled||(c.disabled=!0,n.add(c));x(p).textContent=H}}function a(){for(let l of n)l.disabled=!1;n.clear();for(let l of N(e)){let p=x(l);p.textContent===H&&(p.textContent="")}}return{isReadOnly:()=>o,apply(l){o=l,l?u(e):a(),s()},prepare(l){o&&u(l),s()}}}function se(e,t){let n=e.document,o=null,s=new Map,u=new WeakSet;function a(r){if(!o)return!1;try{return o.postMessage(r),!0}catch{return!1}}let l=Z(r=>{a({kind:r?"thread-page:dirty":"thread-page:clean"})}),p=W(t.pageRevision,n),c=oe(n,t.stale);K(e,{version:1,invoke:(r,i)=>p.invoke(r,i),watch:(r,i,y,f)=>p.watch(r,i,y,f),setDirty:r=>l.setCustom(r!==!1)});function w(r){for(let i of L(r))ee(i);c.prepare(r)}w(n),n.readyState==="loading"&&n.addEventListener("DOMContentLoaded",()=>w(n),{once:!0}),typeof e.MutationObserver=="function"&&n.documentElement&&new e.MutationObserver(i=>{for(let y of i)for(let f of Array.from(y.addedNodes))f.nodeType===1&&w(f)}).observe(n.documentElement,{childList:!0,subtree:!0});function A(r){let i=j(r.target);!i||_(i)||l.markForm(i)}n.addEventListener("input",A,!0),n.addEventListener("change",A,!0),n.addEventListener("submit",r=>{let i=r.target;if(!i||i.tagName?.toLowerCase()!=="form"||_(i)||(r.preventDefault(),c.isReadOnly()||u.has(i)))return;let y=`sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,f=i,E=ne(f,r.submitter??null,y),b={form:f,disabled:[],dirtyVersion:l.versionOf(f)};s.set(y,b),u.add(f),x(f).textContent=E.files.length>0?"Uploading\\u2026":"Sending\\u2026",b.disabled=te(f),a({kind:"thread-page:submit",submissionId:y,title:E.title,answers:E.answers,files:E.files})||(s.delete(y),u.delete(f),D(b.disabled),x(f).textContent="Page connection is not ready; try again in a moment.")},!0),z(n,{external:(r,i)=>{p.invoke("navigation.openExternal",i?{url:r,label:i}:{url:r}).catch(()=>{})},document:r=>{a({kind:"thread-page:open-document",path:r})}},t.siteRoot??null);function d(r){if(T(r)){if(r.kind==="thread-page:source-state"){c.apply(r.stale===!0);return}if(r.kind==="thread-page:submit-progress"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;i&&(x(i.form).textContent=String(r.message??"Working\\u2026").slice(0,160));return}if(r.kind==="thread-page:submit-result"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;if(!i)return;s.delete(r.submissionId),u.delete(i.form);let y=r.ok===!0;x(i.form).textContent=y?String(r.message??"Sent").slice(0,160):String(r.error??"Could not send").slice(0,160),D(i.disabled),c.isReadOnly()&&c.apply(!0),y&&l.clearForm(i.form,i.dirtyVersion);return}p.receive(r)}}function m(r){o=r,r.onmessage=i=>d(i.data),r.start?.(),p.attach(i=>{r.postMessage(i)}),l.isDirty()&&a({kind:"thread-page:dirty"})}function g(r){if(o||r.source!==e.parent)return;let i=r.data;if(!T(i)||i.kind!=="thread-page:connect"||i.version!==P||!r.ports||r.ports.length!==1)return;r.stopImmediatePropagation();let y=r.ports[0];y&&m(y)}return e.addEventListener("message",g,!0),t.stale&&c.apply(!0),e.parent.postMessage({kind:"thread-page:ready",version:P},"*"),{deliver:r=>d(r),connect:r=>m(r)}}se(window,q(document.currentScript));})();';
 
 // src/serving/document-access.ts
 function documentPathFrom(context) {
@@ -12687,7 +13336,7 @@ function documentSessionRoute(serving) {
 import { randomBytes as randomBytes2 } from "node:crypto";
 
 // src/generated/shell-runtime.ts
-var SHELL_RUNTIME = '"use strict";(()=>{var U=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var L=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],be=new Set(L);var Se=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${U.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var D=1,H=1,_="Not written yet \\u2014 the page appears here as soon as the agent saves it",se=new Set(L),ie=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,ae=/^[a-z][a-zA-Z0-9]*(?:\\.[a-z][a-zA-Z0-9]*)+$/;function x(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function P(e,t){return Object.keys(e).length===t.length&&t.every(u=>Object.prototype.hasOwnProperty.call(e,u))}function I(e){return typeof e=="string"&&ie.test(e)}function q(e,t){return x(e)&&P(e,["v","id","method","params","pageRevision"])&&e.v===H&&I(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&ae.test(e.method)&&e.pageRevision===t}function N(e,t){if(!x(e)||e.v!==H||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return P(e,["v","id","ok","result"]);if(!P(e,["v","id","ok","error"])||!x(e.error))return!1;let r=e.error;return P(r,["code","message"])&&typeof r.code=="string"&&se.has(r.code)&&typeof r.message=="string"&&r.message.length>0&&r.message.length<=512}function C(e,t,r){return{v:1,id:I(e)?e:"invalid",ok:!1,error:{code:t,message:r.slice(0,512)||"Request failed"}}}function $(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}var j="index.html",le="uploads/";function W(e){return typeof e!="string"||e.length===0||e.length>1024||e.includes("\\0")||e.includes("\\\\")||e.startsWith("/")||e.startsWith(le)||!e.split("/").every(t=>t.length>0&&t!=="."&&t!=="..")?!1:/\\.html?$/i.test(e)}function z(e,t,r){let{acts:u,pin:l,read:d,archive:m,title:y}=t,k=r.fetchImpl??fetch;if(e.stale){for(let p of[l,d,m])p.disabled=!0;return}let h=l.dataset.on==="true",S=d.dataset.on==="true",T=!1;function o(){l.textContent=h?"\\u2605":"\\u2606",l.dataset.on=String(h),l.setAttribute("aria-pressed",String(h)),l.title=h?"Pinned in bb":"Pin in bb"}function n(){d.textContent=S?"Read":"Unread",d.dataset.on=String(S),d.title=S?"Mark read":"Mark unread"}let s;function i(p){r.view.setStatus(p,!0),s!==void 0&&clearTimeout(s),s=setTimeout(()=>r.view.setStatus("",!1),6e3)}async function f(p){try{let E=await k(e.chromeActionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:e.actionToken,action:p})}),w=await E.json().catch(()=>null),M=w&&w.state;return!E.ok||!w||w.ok!==!0||!M?(i(w&&typeof w.message=="string"&&w.message||`Request failed (${E.status})`),null):{pinned:M.pinned===!0,unread:M.unread===!0,archived:M.archived===!0}}catch(E){return i(E instanceof Error?E.message:"Request failed"),null}}async function c(p){if(T)return null;T=!0,u.dataset.busy="true";try{return await f(p)}finally{T=!1,delete u.dataset.busy}}function v(p){h=p.pinned,S=p.unread,o(),n()}l.addEventListener("click",()=>{c(h?"unpin":"pin").then(p=>{p&&v(p)})}),d.addEventListener("click",()=>{c(S?"read":"unread").then(p=>{p&&v(p)})}),m.addEventListener("click",async()=>{if(T)return;let p=y.textContent?.trim()||"this session";if(!await r.confirmer.confirm(`Archive \\u201C${p}\\u201D? Its page stops being served.`))return;let w=await c("archive");w&&(w.archived?r.view.navigateAway():v(w))}),o(),n()}function F(e){let t=e.querySelector("p"),r=e.querySelector(\'button[value="cancel"]\'),u=e.querySelector(\'button[value="confirm"]\'),l=null,d;function m(y){let k=l;if(l=null,y&&d)try{d()}catch{}d=void 0,e.open&&e.close(),k?.(y)}return r?.addEventListener("click",y=>{y.preventDefault(),m(!1)}),u?.addEventListener("click",y=>{y.preventDefault(),m(!0)}),e.addEventListener("cancel",y=>{y.preventDefault(),m(!1)}),e.addEventListener("close",()=>{l&&m(!1)}),{confirm(y,k){return new Promise(h=>{if(l&&m(!1),t&&(t.textContent=y),l=h,d=k,typeof e.showModal=="function")try{e.showModal()}catch{m(!1)}else m(!1)})}}}function V(e){let t=null;return{inPlace(r){e.location.assign(r)},reserveWindow(){try{if(t=e.open("","_blank"),t)try{t.opener=null}catch{}}catch{t=null}},external(r){let u=t;if(t=null,u&&!u.closed)try{u.location.href=r;return}catch{try{u.close()}catch{}}e.location.assign(r)},release(){let r=t;t=null;try{r?.close()}catch{}}}}function G(e,t,r,u=e.fetch.bind(e)){let l=`"${t.pageRevision}"`,d=!1,m=!1,y=!1,k=t.stale,h=null,S=null;function T(i){h!==null&&clearTimeout(h),h=null,!(m||e.document.visibilityState!=="visible")&&(h=setTimeout(()=>{h=null,s()},i))}function o(){h!==null&&clearTimeout(h),h=null,S?.abort(),S=null}function n(){d?(r.setStatus("Page changed \\u2014 reload when ready",!0),r.showReload(!0)):r.reloadView()}async function s(){if(m||y||e.document.visibilityState!=="visible")return;if(Date.now()>=t.expiresAt-3e4){m=!0,d?(r.setStatus("Session expiring \\u2014 reload when ready",!0),r.showReload(!0)):r.reloadView();return}y=!0,S=new AbortController;let i=t.documentUrl;try{let f=await u(i,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":l},signal:S.signal});if(i!==t.documentUrl)return;if(f.status===401||f.status===403){m=!0,r.setStatus("Session expired \\u2014 reload this page",!0),r.showReload(!0);return}if(!f.ok&&f.status!==304){r.setStatus("Page unavailable",!0);return}let c=f.headers.get("x-thread-page-stale")==="true";r.setWorking(f.headers.get("x-thread-page-activity")==="working"),c!==k&&(k=c,r.onStaleChanged(c));let v=f.headers.get("x-thread-page-empty")==="true";r.setStatus(c?"Offline copy \\u2014 read-only":v?_:t.notice??"",c);let p=f.headers.get("etag");p&&p!==l&&(l=p,n())}catch(f){f instanceof DOMException&&f.name==="AbortError"||r.setStatus("Cannot check for updates",!0)}finally{S=null,y=!1,T(t.pollMs)}}return e.document.addEventListener("visibilitychange",()=>{e.document.visibilityState==="visible"?T(0):o()}),{start:()=>T(t.pollMs),setDirty:i=>{d=i},retarget:()=>{o(),l=`"${t.pageRevision}"`,k=t.stale,d=!1,m=!1,y=!1,T(t.pollMs)},pollNow:()=>s(),isStopped:()=>m}}function K(e){let{config:t,confirmer:r,navigator:u}=e,l=e.fetchImpl??fetch;function d(o,n){o.postMessage(n)}async function m(o){return(await l(t.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify(o)})).json().catch(()=>null)}function y(o){return!x(o)||o.kind!=="page"&&o.kind!=="host"&&o.kind!=="external"||typeof o.url!="string"||o.kind==="external"&&!/^https?:\\/\\//i.test(o.url)||o.kind!=="external"&&!o.url.startsWith("/")?null:{kind:o.kind,url:o.url}}function k(o,n,s){if(!x(s)||!N(s.response,n.id)){d(o,C(n.id,"invalid_response","The Thread Page bridge returned an invalid response"));return}let i=s.navigate===void 0?null:y(s.navigate);if(s.response.ok&&i){d(o,s.response),i.kind==="external"?u.external(i.url):u.inPlace(i.url);return}u.release(),d(o,s.response)}async function h(o,n){try{let s=await m({actionToken:t.actionToken,request:n});if(x(s)&&x(s.confirm)){let i=s.confirm;if(typeof i.challenge!="string"||typeof i.summary!="string"||i.requestId!==n.id){d(o,C(n.id,"invalid_response","The Thread Page bridge returned an invalid confirmation"));return}let f=n.method==="navigation.openExternal";if(!await r.confirm(i.summary,f?()=>u.reserveWindow():void 0)){d(o,C(n.id,"cancelled","You declined this action"));return}let v=await m({actionToken:t.actionToken,request:n,confirmation:i.challenge});k(o,n,v);return}k(o,n,s)}catch(s){u.release(),d(o,C(n.id,"unavailable",s instanceof Error?s.message:"The Thread Page bridge is unavailable"))}}async function S(o){let n=o.file;if(!n||typeof n.size!="number")throw new Error("Attachment is not a file");let s=n.name||"file";if(n.size<=0)throw new Error(`Attachment ${s} is empty`);if(n.size>t.maxUploadBytes)throw new Error(`Attachment ${s} is larger than ${Math.round(t.maxUploadBytes/(1024*1024))} MiB`);let i=await de(n),f=await l(t.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,pageRevision:t.pageRevision,name:s,content:i})}),c=await f.json().catch(()=>null);if(!f.ok||!c||c.ok!==!0||typeof c.name!="string"||typeof c.path!="string"||typeof c.sizeBytes!="number")throw new Error(c&&typeof c.message=="string"&&c.message||`Upload failed (${f.status})`);return{field:String(o.field||"file").slice(0,128),name:c.name,path:c.path,sizeBytes:c.sizeBytes}}async function T(o,n){let s=typeof n.submissionId=="string"?n.submissionId:"";try{let i=(Array.isArray(n.files)?n.files:[]).slice(0,t.maxUploads),f=[];for(let E=0;E<i.length;E+=1)d(o,{kind:"thread-page:submit-progress",submissionId:s,message:`Uploading ${E+1} of ${i.length}\\u2026`}),f.push(await S(i[E]));f.length>0&&d(o,{kind:"thread-page:submit-progress",submissionId:s,message:"Sending\\u2026"});let c=await l(t.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,submissionId:s,pageRevision:t.pageRevision,title:n.title,answers:n.answers,files:f})}),v=await c.json().catch(()=>({ok:!1,message:"Invalid server response"})),p=c.ok&&v.ok===!0;d(o,{kind:"thread-page:submit-result",submissionId:s,ok:p,message:typeof v.delivery=="string"?`Sent (${v.delivery})`:"Sent",error:typeof v.message=="string"?v.message:`Request failed (${c.status})`})}catch(i){d(o,{kind:"thread-page:submit-result",submissionId:s,ok:!1,error:i instanceof Error?i.message:"Request failed"})}}return{handle(o,n){if(x(n)){if(n.kind==="thread-page:dirty"){e.onDirty(!0);return}if(n.kind==="thread-page:clean"){e.onDirty(!1);return}if(n.kind==="thread-page:submit"){T(o,n);return}if(n.kind==="thread-page:open-document"){W(n.path)&&e.onOpenDocument?.(n.path);return}if(!q(n,t.pageRevision)){d(o,C(n.id,"invalid_request","Invalid Thread Page bridge request"));return}h(o,n)}}}}async function de(e){let t=new Uint8Array(await e.arrayBuffer()),r="",u=32768;for(let l=0;l<t.length;l+=u)r+=String.fromCharCode.apply(null,Array.from(t.subarray(l,l+u)));return btoa(r)}var B="threadPageDocument";function Y(e,t,r,u){let{status:l,work:d,reload:m,dialog:y,acts:k,pin:h,read:S,archive:T,title:o}=r,n=u??e.fetch.bind(e),s=r.frame,i=null,f=!0,c=t.stale,v={setStatus(a,g){l.textContent=a,l.dataset.tone=g?"warn":""},setWorking(a){d.dataset.visible=a&&t.workingLabel?"true":"false"},showReload(a){m.dataset.visible=a?"true":"false"},onStaleChanged(a){c=a,i?.postMessage({kind:"thread-page:source-state",stale:a})},reloadView(){e.location.reload()}},p=G(e,t,v,u),E=V(e),w=F(y),M=K({config:t,confirmer:w,navigator:E,onDirty:a=>p.setDirty(a),onOpenDocument:a=>{A(a,!0)},...u?{fetchImpl:u}:{}}),O=e.document.querySelector("a.home");k&&h&&S&&T&&z(t,{acts:k,pin:h,read:S,archive:T,title:o},{confirmer:w,view:{setStatus:(a,g)=>v.setStatus(a,g),navigateAway:()=>{O?.href?e.location.assign(O.href):e.location.reload()}},...u?{fetchImpl:u}:{}});function ne(){let a=new e.MessageChannel,g=a.port1;i=g,g.onmessage=R=>M.handle(g,R.data),g.start?.(),s.contentWindow?.postMessage({kind:"thread-page:connect",version:D},"*",[a.port2]),g.postMessage({kind:"thread-page:source-state",stale:c})}e.addEventListener("message",a=>{if(!f||a.origin!=="null"||a.source!==s.contentWindow)return;let g=a.data;!x(g)||g.kind!=="thread-page:ready"||g.version!==D||(f=!1,ne())});function re(a){let g=s.cloneNode(!1);g.setAttribute("src",a),s.replaceWith(g),s=g}function oe(a){let g=new URL(e.location.href);return a===j?g.searchParams.delete("path"):g.searchParams.set("path",a),`${g.pathname}${g.search}${g.hash}`}async function A(a,g=!0){if(!t.navigable||a===t.documentPath)return!1;try{let R=await n(t.documentSessionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,path:a})}),b=await R.json().catch(()=>null);return!R.ok||!x(b)||b.ok!==!0||typeof b.actionToken!="string"||typeof b.pageRevision!="string"||typeof b.expiresAt!="number"||typeof b.documentUrl!="string"||!b.documentUrl.startsWith("/")||typeof b.path!="string"?(v.setStatus(x(b)&&typeof b.message=="string"&&b.message||"That page could not be opened",!0),!1):(t.actionToken=b.actionToken,t.pageRevision=b.pageRevision,t.expiresAt=b.expiresAt,t.documentUrl=b.documentUrl,t.documentPath=b.path,t.stale=b.stale===!0,t.empty=b.empty===!0,c=t.stale,i=null,f=!0,re(t.documentUrl),p.retarget(),v.showReload(!1),v.setStatus(t.stale?"Offline copy \\u2014 read-only":t.empty?_:t.notice??"",t.stale),g&&e.history.pushState({[B]:t.documentPath},"",oe(t.documentPath)),!0)}catch{return v.setStatus("That page could not be opened",!0),!1}}if(t.navigable){try{e.history.replaceState({[B]:t.documentPath},"",e.location.href)}catch{}e.addEventListener("popstate",a=>{let g=a.state,R=x(g)&&typeof g[B]=="string"?g[B]:null;R&&A(R,!1)})}return m.addEventListener("click",()=>e.location.reload()),s.src=t.documentUrl,p.start(),{poller:p,openDocument:A}}var ce=$(document.currentScript),J=document.querySelector("iframe"),Z=document.querySelector("[data-shell-status]"),Q=document.querySelector("[data-shell-working]"),X=document.querySelector("[data-shell-reload]"),ee=document.querySelector("dialog"),te=document.querySelector(".title"),ue=document.querySelector("[data-shell-acts]"),pe=document.querySelector(\'[data-act="pin"]\'),ge=document.querySelector(\'[data-act="read"]\'),fe=document.querySelector(\'[data-act="archive"]\');if(!J||!Z||!Q||!X||!ee||!te)throw new Error("Thread Page shell: chrome is incomplete");Y(window,ce,{frame:J,status:Z,work:Q,reload:X,dialog:ee,title:te,acts:ue,pin:pe,read:ge,archive:fe});})();';
+var SHELL_RUNTIME = '"use strict";(()=>{var U=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,contributedPayloadMaxBytes:1048576,contributedCallMs:3e4,contributionsTtlMs:1e4,contributorInstructionBytes:2048,contributorGuideBytes:16384,contributorMethods:64,questionChars:1024,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var A=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],Se=new Set(A);var ke=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${U.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var D=1,H=1,P="Not written yet \\u2014 the page appears here as soon as the agent saves it",se=new Set(A),ie=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,ae=/^[a-z][a-zA-Z0-9-]*(?:\\.[a-z][a-zA-Z0-9]*)+$/,le=/^[a-z][a-z0-9_]{0,63}$/;function x(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function L(e,t){return Object.keys(e).length===t.length&&t.every(d=>Object.prototype.hasOwnProperty.call(e,d))}function I(e){return typeof e=="string"&&ie.test(e)}function q(e,t){return x(e)&&L(e,["v","id","method","params","pageRevision"])&&e.v===H&&I(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&ae.test(e.method)&&e.pageRevision===t}function N(e,t){if(!x(e)||e.v!==H||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return L(e,["v","id","ok","result"]);if(!L(e,["v","id","ok","error"])||!x(e.error))return!1;let n=e.error;return!Object.keys(n).every(i=>i==="code"||i==="message"||i==="reason"||i==="detail")||"reason"in n&&(typeof n.reason!="string"||!le.test(n.reason))||"detail"in n&&!("reason"in n)?!1:"code"in n&&"message"in n&&typeof n.code=="string"&&se.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function C(e,t,n){return{v:1,id:I(e)?e:"invalid",ok:!1,error:{code:t,message:n.slice(0,512)||"Request failed"}}}function $(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}var j="index.html",de="uploads/";function z(e){return typeof e!="string"||e.length===0||e.length>1024||e.includes("\\0")||e.includes("\\\\")||e.startsWith("/")||e.startsWith(de)||!e.split("/").every(t=>t.length>0&&t!=="."&&t!=="..")?!1:/\\.html?$/i.test(e)}function W(e,t,n){let{acts:d,pin:i,read:c,archive:m,title:y}=t,k=n.fetchImpl??fetch;if(e.stale){for(let p of[i,c,m])p.disabled=!0;return}let h=i.dataset.on==="true",S=c.dataset.on==="true",T=!1;function o(){i.textContent=h?"\\u2605":"\\u2606",i.dataset.on=String(h),i.setAttribute("aria-pressed",String(h)),i.title=h?"Pinned in bb":"Pin in bb"}function r(){c.textContent=S?"Read":"Unread",c.dataset.on=String(S),c.title=S?"Mark read":"Mark unread"}let s;function a(p){n.view.setStatus(p,!0),s!==void 0&&clearTimeout(s),s=setTimeout(()=>n.view.setStatus("",!1),6e3)}async function f(p){try{let E=await k(e.chromeActionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:e.actionToken,action:p})}),w=await E.json().catch(()=>null),M=w&&w.state;return!E.ok||!w||w.ok!==!0||!M?(a(w&&typeof w.message=="string"&&w.message||`Request failed (${E.status})`),null):{pinned:M.pinned===!0,unread:M.unread===!0,archived:M.archived===!0}}catch(E){return a(E instanceof Error?E.message:"Request failed"),null}}async function u(p){if(T)return null;T=!0,d.dataset.busy="true";try{return await f(p)}finally{T=!1,delete d.dataset.busy}}function b(p){h=p.pinned,S=p.unread,o(),r()}i.addEventListener("click",()=>{u(h?"unpin":"pin").then(p=>{p&&b(p)})}),c.addEventListener("click",()=>{u(S?"read":"unread").then(p=>{p&&b(p)})}),m.addEventListener("click",async()=>{if(T)return;let p=y.textContent?.trim()||"this session";if(!await n.confirmer.confirm(`Archive \\u201C${p}\\u201D? Its page stops being served.`))return;let w=await u("archive");w&&(w.archived?n.view.navigateAway():b(w))}),o(),r()}function F(e){let t=e.querySelector("p"),n=e.querySelector(\'button[value="cancel"]\'),d=e.querySelector(\'button[value="confirm"]\'),i=null,c;function m(y){let k=i;if(i=null,y&&c)try{c()}catch{}c=void 0,e.open&&e.close(),k?.(y)}return n?.addEventListener("click",y=>{y.preventDefault(),m(!1)}),d?.addEventListener("click",y=>{y.preventDefault(),m(!0)}),e.addEventListener("cancel",y=>{y.preventDefault(),m(!1)}),e.addEventListener("close",()=>{i&&m(!1)}),{confirm(y,k){return new Promise(h=>{if(i&&m(!1),t&&(t.textContent=y),i=h,c=k,typeof e.showModal=="function")try{e.showModal()}catch{m(!1)}else m(!1)})}}}function V(e){let t=null;return{inPlace(n){e.location.assign(n)},reserveWindow(){try{if(t=e.open("","_blank"),t)try{t.opener=null}catch{}}catch{t=null}},external(n){let d=t;if(t=null,d&&!d.closed)try{d.location.href=n;return}catch{try{d.close()}catch{}}e.location.assign(n)},release(){let n=t;t=null;try{n?.close()}catch{}}}}function G(e,t,n,d=e.fetch.bind(e)){let i=`"${t.pageRevision}"`,c=!1,m=!1,y=!1,k=t.stale,h=null,S=null;function T(a){h!==null&&clearTimeout(h),h=null,!(m||e.document.visibilityState!=="visible")&&(h=setTimeout(()=>{h=null,s()},a))}function o(){h!==null&&clearTimeout(h),h=null,S?.abort(),S=null}function r(){c?(n.setStatus("Page changed \\u2014 reload when ready",!0),n.showReload(!0)):n.reloadView()}async function s(){if(m||y||e.document.visibilityState!=="visible")return;if(Date.now()>=t.expiresAt-3e4){m=!0,c?(n.setStatus("Session expiring \\u2014 reload when ready",!0),n.showReload(!0)):n.reloadView();return}y=!0,S=new AbortController;let a=t.documentUrl;try{let f=await d(a,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":i},signal:S.signal});if(a!==t.documentUrl)return;if(f.status===401||f.status===403){m=!0,n.setStatus("Session expired \\u2014 reload this page",!0),n.showReload(!0);return}if(!f.ok&&f.status!==304){n.setStatus("Page unavailable",!0);return}let u=f.headers.get("x-thread-page-stale")==="true";n.setWorking(f.headers.get("x-thread-page-activity")==="working"),u!==k&&(k=u,n.onStaleChanged(u));let b=f.headers.get("x-thread-page-empty")==="true";n.setStatus(u?"Offline copy \\u2014 read-only":b?P:t.notice??"",u);let p=f.headers.get("etag");p&&p!==i&&(i=p,r())}catch(f){f instanceof DOMException&&f.name==="AbortError"||n.setStatus("Cannot check for updates",!0)}finally{S=null,y=!1,T(t.pollMs)}}return e.document.addEventListener("visibilitychange",()=>{e.document.visibilityState==="visible"?T(0):o()}),{start:()=>T(t.pollMs),setDirty:a=>{c=a},retarget:()=>{o(),i=`"${t.pageRevision}"`,k=t.stale,c=!1,m=!1,y=!1,T(t.pollMs)},pollNow:()=>s(),isStopped:()=>m}}function K(e){let{config:t,confirmer:n,navigator:d}=e,i=e.fetchImpl??fetch;function c(o,r){o.postMessage(r)}async function m(o){return(await i(t.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify(o)})).json().catch(()=>null)}function y(o){return!x(o)||o.kind!=="page"&&o.kind!=="host"&&o.kind!=="external"||typeof o.url!="string"||o.kind==="external"&&!/^https?:\\/\\//i.test(o.url)||o.kind!=="external"&&!o.url.startsWith("/")?null:{kind:o.kind,url:o.url}}function k(o,r,s){if(!x(s)||!N(s.response,r.id)){c(o,C(r.id,"invalid_response","The Thread Page bridge returned an invalid response"));return}let a=s.navigate===void 0?null:y(s.navigate);if(s.response.ok&&a){c(o,s.response),a.kind==="external"?d.external(a.url):d.inPlace(a.url);return}d.release(),c(o,s.response)}async function h(o,r){try{let s=await m({actionToken:t.actionToken,request:r});if(x(s)&&x(s.confirm)){let a=s.confirm;if(typeof a.challenge!="string"||typeof a.summary!="string"||a.requestId!==r.id){c(o,C(r.id,"invalid_response","The Thread Page bridge returned an invalid confirmation"));return}let f=r.method==="navigation.openExternal";if(!await n.confirm(a.summary,f?()=>d.reserveWindow():void 0)){c(o,C(r.id,"cancelled","You declined this action"));return}let b=await m({actionToken:t.actionToken,request:r,confirmation:a.challenge});k(o,r,b);return}k(o,r,s)}catch(s){d.release(),c(o,C(r.id,"unavailable",s instanceof Error?s.message:"The Thread Page bridge is unavailable"))}}async function S(o){let r=o.file;if(!r||typeof r.size!="number")throw new Error("Attachment is not a file");let s=r.name||"file";if(r.size<=0)throw new Error(`Attachment ${s} is empty`);if(r.size>t.maxUploadBytes)throw new Error(`Attachment ${s} is larger than ${Math.round(t.maxUploadBytes/(1024*1024))} MiB`);let a=await ce(r),f=await i(t.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,pageRevision:t.pageRevision,name:s,content:a})}),u=await f.json().catch(()=>null);if(!f.ok||!u||u.ok!==!0||typeof u.name!="string"||typeof u.path!="string"||typeof u.sizeBytes!="number")throw new Error(u&&typeof u.message=="string"&&u.message||`Upload failed (${f.status})`);return{field:String(o.field||"file").slice(0,128),name:u.name,path:u.path,sizeBytes:u.sizeBytes}}async function T(o,r){let s=typeof r.submissionId=="string"?r.submissionId:"";try{let a=(Array.isArray(r.files)?r.files:[]).slice(0,t.maxUploads),f=[];for(let E=0;E<a.length;E+=1)c(o,{kind:"thread-page:submit-progress",submissionId:s,message:`Uploading ${E+1} of ${a.length}\\u2026`}),f.push(await S(a[E]));f.length>0&&c(o,{kind:"thread-page:submit-progress",submissionId:s,message:"Sending\\u2026"});let u=await i(t.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,submissionId:s,pageRevision:t.pageRevision,title:r.title,answers:r.answers,files:f})}),b=await u.json().catch(()=>({ok:!1,message:"Invalid server response"})),p=u.ok&&b.ok===!0;c(o,{kind:"thread-page:submit-result",submissionId:s,ok:p,message:typeof b.delivery=="string"?`Sent (${b.delivery})`:"Sent",error:typeof b.message=="string"?b.message:`Request failed (${u.status})`})}catch(a){c(o,{kind:"thread-page:submit-result",submissionId:s,ok:!1,error:a instanceof Error?a.message:"Request failed"})}}return{handle(o,r){if(x(r)){if(r.kind==="thread-page:dirty"){e.onDirty(!0);return}if(r.kind==="thread-page:clean"){e.onDirty(!1);return}if(r.kind==="thread-page:submit"){T(o,r);return}if(r.kind==="thread-page:open-document"){z(r.path)&&e.onOpenDocument?.(r.path);return}if(!q(r,t.pageRevision)){c(o,C(r.id,"invalid_request","Invalid Thread Page bridge request"));return}h(o,r)}}}}async function ce(e){let t=new Uint8Array(await e.arrayBuffer()),n="",d=32768;for(let i=0;i<t.length;i+=d)n+=String.fromCharCode.apply(null,Array.from(t.subarray(i,i+d)));return btoa(n)}var _="threadPageDocument";function Y(e,t,n,d){let{status:i,work:c,reload:m,dialog:y,acts:k,pin:h,read:S,archive:T,title:o}=n,r=d??e.fetch.bind(e),s=n.frame,a=null,f=!0,u=t.stale,b={setStatus(l,g){i.textContent=l,i.dataset.tone=g?"warn":""},setWorking(l){c.dataset.visible=l&&t.workingLabel?"true":"false"},showReload(l){m.dataset.visible=l?"true":"false"},onStaleChanged(l){u=l,a?.postMessage({kind:"thread-page:source-state",stale:l})},reloadView(){e.location.reload()}},p=G(e,t,b,d),E=V(e),w=F(y),M=K({config:t,confirmer:w,navigator:E,onDirty:l=>p.setDirty(l),onOpenDocument:l=>{B(l,!0)},...d?{fetchImpl:d}:{}}),O=e.document.querySelector("a.home");k&&h&&S&&T&&W(t,{acts:k,pin:h,read:S,archive:T,title:o},{confirmer:w,view:{setStatus:(l,g)=>b.setStatus(l,g),navigateAway:()=>{O?.href?e.location.assign(O.href):e.location.reload()}},...d?{fetchImpl:d}:{}});function ne(){let l=new e.MessageChannel,g=l.port1;a=g,g.onmessage=R=>M.handle(g,R.data),g.start?.(),s.contentWindow?.postMessage({kind:"thread-page:connect",version:D},"*",[l.port2]),g.postMessage({kind:"thread-page:source-state",stale:u})}e.addEventListener("message",l=>{if(!f||l.origin!=="null"||l.source!==s.contentWindow)return;let g=l.data;!x(g)||g.kind!=="thread-page:ready"||g.version!==D||(f=!1,ne())});function re(l){let g=s.cloneNode(!1);g.setAttribute("src",l),s.replaceWith(g),s=g}function oe(l){let g=new URL(e.location.href);return l===j?g.searchParams.delete("path"):g.searchParams.set("path",l),`${g.pathname}${g.search}${g.hash}`}async function B(l,g=!0){if(!t.navigable||l===t.documentPath)return!1;try{let R=await r(t.documentSessionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,path:l})}),v=await R.json().catch(()=>null);return!R.ok||!x(v)||v.ok!==!0||typeof v.actionToken!="string"||typeof v.pageRevision!="string"||typeof v.expiresAt!="number"||typeof v.documentUrl!="string"||!v.documentUrl.startsWith("/")||typeof v.path!="string"?(b.setStatus(x(v)&&typeof v.message=="string"&&v.message||"That page could not be opened",!0),!1):(t.actionToken=v.actionToken,t.pageRevision=v.pageRevision,t.expiresAt=v.expiresAt,t.documentUrl=v.documentUrl,t.documentPath=v.path,t.stale=v.stale===!0,t.empty=v.empty===!0,u=t.stale,a=null,f=!0,re(t.documentUrl),p.retarget(),b.showReload(!1),b.setStatus(t.stale?"Offline copy \\u2014 read-only":t.empty?P:t.notice??"",t.stale),g&&e.history.pushState({[_]:t.documentPath},"",oe(t.documentPath)),!0)}catch{return b.setStatus("That page could not be opened",!0),!1}}if(t.navigable){try{e.history.replaceState({[_]:t.documentPath},"",e.location.href)}catch{}e.addEventListener("popstate",l=>{let g=l.state,R=x(g)&&typeof g[_]=="string"?g[_]:null;R&&B(R,!1)})}return m.addEventListener("click",()=>e.location.reload()),s.src=t.documentUrl,p.start(),{poller:p,openDocument:B}}var ue=$(document.currentScript),J=document.querySelector("iframe"),Z=document.querySelector("[data-shell-status]"),Q=document.querySelector("[data-shell-working]"),X=document.querySelector("[data-shell-reload]"),ee=document.querySelector("dialog"),te=document.querySelector(".title"),pe=document.querySelector("[data-shell-acts]"),ge=document.querySelector(\'[data-act="pin"]\'),fe=document.querySelector(\'[data-act="read"]\'),me=document.querySelector(\'[data-act="archive"]\');if(!J||!Z||!Q||!X||!ee||!te)throw new Error("Thread Page shell: chrome is incomplete");Y(window,ue,{frame:J,status:Z,work:Q,reload:X,dialog:ee,title:te,acts:pe,pin:ge,read:fe,archive:me});})();';
 
 // src/runtime/shared/protocol.ts
 var EMPTY_PAGE_STATUS = "Not written yet \u2014 the page appears here as soon as the agent saves it";
@@ -13063,8 +13712,11 @@ async function createPlugin(bb, options = {}) {
   const signingKey = await loadSigningKey(host);
   const routeBase = `/api/v1/plugins/${bb.pluginId}/http`;
   const site = options.site ? options.site(routeBase) : createCoreStorageSite(routeBase, (session) => `/api/v1/threads/${encodeURIComponent(session)}/thread-storage/files/`);
+  const now = options.now ?? (() => Date.now());
+  const contributions = createContributions(host.contributors, host.log, now);
   const serving = {
     host,
+    contributions,
     // Strategy A cannot serve a sandboxed document's own files on an
     // authenticated origin, so the document carries them. Delete this
     // argument, and pages/inline.ts, once the host can authorise them.
@@ -13089,19 +13741,28 @@ async function createPlugin(bb, options = {}) {
     replies: createOutcomeMemory(),
     selections: createSelectionStore(),
     hostSessionUrl: bbSessionUrl,
-    now: options.now ?? (() => Date.now())
+    now
   };
   const effectiveInstruction = () => {
     const current = settings.current();
-    return current.agentInstructions && current.agentInstructionText.trim() ? current.agentInstructionText : null;
+    if (!current.agentInstructions || !current.agentInstructionText.trim()) return null;
+    const fragments = instructionFragments(contributions.cached());
+    return fragments ? `${current.agentInstructionText}
+
+${fragments}` : current.agentInstructionText;
   };
+  void contributions.current();
   bb.agents.configure((context) => {
     const instruction = effectiveInstruction();
     const root = context.thread.parentThreadId === null && context.thread.sourceThreadId === null && context.origin.kind === null;
     return instruction && root ? { tools: [], skills: [], instructions: instruction } : { tools: [], skills: [] };
   });
   registerRoutes(bb, serving);
-  registerCli(bb, { serving, guide: buildGuide(capabilityRegistry, site), effectiveInstruction });
+  registerCli(bb, {
+    serving,
+    guide: async () => buildGuide(capabilityRegistry, site, (await contributions.current()).contributors),
+    effectiveInstruction
+  });
   return serving;
 }
 

@@ -2,6 +2,7 @@ import { createRegistry } from "./registry.ts";
 import { ALL_CAPABILITIES } from "./specs.ts";
 
 export * from "./contract.ts";
+export * from "./contributed.ts";
 export * from "./protocol.ts";
 export * from "./registry.ts";
 export * from "./specs.ts";

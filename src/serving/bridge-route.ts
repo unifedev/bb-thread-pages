@@ -11,7 +11,8 @@ export function bridgeRoute(dispatch: ReturnType<typeof createDispatcher>) {
   return async (context: Context): Promise<Response> => {
     let body: unknown;
     try {
-      body = await readJsonBody(context, LIMITS.capabilityPayloadBytes + 8_192);
+      // Contributed capabilities may declare up to 1 MiB; each method's own bound is checked in the dispatcher. spec R5.47
+      body = await readJsonBody(context, LIMITS.contributedPayloadMaxBytes + 16_384);
     } catch (error) {
       const failed = PageError.is(error) ? error : new PageError("invalid_json", "Invalid bridge body");
       const code = failed.code === "request_too_large" ? "request_too_large" : "invalid_json";

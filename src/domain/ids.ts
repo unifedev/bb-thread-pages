@@ -3,7 +3,8 @@
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
 const ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
-const METHOD_NAME = /^[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
+// A contributed method's namespace is its contributor's id, which may carry hyphens. R5.43
+const METHOD_NAME = /^[a-z][a-zA-Z0-9-]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
 const REVISION = /^[a-f0-9]{64}$/;
 const OPAQUE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._~:-]{0,511}$/;
 const STORAGE_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;

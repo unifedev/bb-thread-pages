@@ -41,7 +41,13 @@ describe("capability registry", () => {
   it("exposes exactly the spec 05 surface, with voice deferred", () => {
     expect(capabilityRegistry.list().map((entry) => entry.method)).toEqual(SPEC_NAMES);
     expect(capabilityRegistry.descriptors().map((entry) => entry.method)).not.toContain("voice.captureAndTranscribe");
-    expect(capabilityRegistry.descriptors().find((entry) => entry.method === "sessions.start")).toEqual({ method: "sessions.start", effect: "cross-session-write", confirmation: "required" });
+    expect(capabilityRegistry.descriptors().find((entry) => entry.method === "sessions.start")).toEqual({
+      method: "sessions.start",
+      effect: "cross-session-write",
+      confirmation: "required",
+      maxRequestBytes: LIMITS.capabilityPayloadBytes,
+      maxResponseBytes: LIMITS.capabilityPayloadBytes,
+    });
   });
 
   it("confirms every cross-session, destructive and device effect and no read", () => {
@@ -70,8 +76,11 @@ describe("bridge requests", () => {
     expect(() => decodeBridgeRequest(request("Context.Get", null))).toThrow(/method/i);
     expect(() => decodeBridgeRequest({ ...request("context.get", null), pageRevision: "nope" })).toThrow(/revision/i);
     expect(() => decodeBridgeRequest("not json object")).toThrow(PageError);
-    const huge = request("storage.set", { key: "k", value: "x".repeat(LIMITS.capabilityPayloadBytes) });
+    // The envelope allows the largest bound a contributed method may declare; a built-in's own bound applies once it is known. spec R5.47
+    const huge = request("storage.set", { key: "k", value: "x".repeat(LIMITS.contributedPayloadMaxBytes + 2048) });
     expect(() => decodeBridgeRequest(huge)).toThrow(/too large/i);
+    const overBuiltIn = decodeBridgeRequest(request("storage.set", { key: "k", value: "x".repeat(LIMITS.capabilityPayloadBytes) }));
+    expect(() => resolveInvocation(overBuiltIn, capabilityRegistry, REV)).toThrow(expect.objectContaining({ code: "request_too_large" }));
   });
 
   it("refuses stale revisions before looking at the method, and unknown or deferred methods", () => {

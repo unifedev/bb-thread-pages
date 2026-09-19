@@ -55,7 +55,14 @@ describe("reads", () => {
     const refused = await call("session.activity", { limit: 1, sessionId: "thr_b" });
     expect(refused.body.response?.error?.code).toBe("invalid_params");
     const { body } = await call("session.activity", { limit: 1 });
-    expect(body.response?.result).toEqual({ state: "idle", updatedAtMs: 1_700_000_000_000, items: fixture.state.activity });
+    expect(body.response?.result).toEqual({
+      state: "idle",
+      updatedAtMs: 1_700_000_000_000,
+      startedAtMs: 1_699_999_000_000,
+      turnEndedAtMs: 1_700_000_000_000,
+      question: null,
+      items: fixture.state.activity,
+    });
     expect(fixture.state.calls.find((entry) => entry.method === "sessions.activity")?.args[0]).toBe("thr_a");
   });
 
@@ -66,7 +73,7 @@ describe("reads", () => {
     const page1 = (await call("sessions.snapshot", { limit: 3 })).body.response!.result as { sessions: { id: string; page: { available: boolean } }[]; nextCursor: string | null };
     expect(page1.sessions).toHaveLength(3);
     expect(page1.nextCursor).not.toBeNull();
-    expect(Object.keys(page1.sessions[0]!).sort()).toEqual(["archived", "attentionAtMs", "id", "page", "parentSessionId", "projectId", "status", "title", "unread", "updatedAtMs"]);
+    expect(Object.keys(page1.sessions[0]!).sort()).toEqual(["archived", "attentionAtMs", "id", "page", "parentSessionId", "projectId", "question", "startedAtMs", "status", "title", "turnEndedAtMs", "unread", "updatedAtMs"]);
     expect(page1.sessions.find((entry) => entry.id === "thr_a")?.page.available).toBe(true);
     expect(page1.sessions.find((entry) => entry.id === "thr_b")?.page.available).toBe(false);
     const page2 = (await call("sessions.snapshot", { limit: 3, cursor: page1.nextCursor })).body.response!.result as { sessions: { id: string }[]; nextCursor: string | null };

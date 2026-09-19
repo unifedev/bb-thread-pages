@@ -1,6 +1,7 @@
 import { LIMITS } from "../../domain/limits.ts";
 import { BRIDGE_VERSION, isBridgeResponse, type BridgeRequestMessage, type BridgeResponseMessage } from "../shared/protocol.ts";
 import type { BridgeErrorCode } from "../../domain/errors.ts";
+import { RESERVED_NAMESPACES } from "../../domain/capabilities/contributed.ts";
 
 /**
  * `invoke` and `watch` as a page sees them. Calls made before the port is
@@ -18,12 +19,24 @@ export interface BridgeClient {
 
 export class ThreadPageError extends Error {
   readonly code: BridgeErrorCode;
-  constructor(code: BridgeErrorCode, message: string) {
+  /** A contributed capability's declared reason and its detail. spec R4.28a */
+  readonly reason?: string;
+  readonly detail?: unknown;
+  constructor(code: BridgeErrorCode, message: string, extra?: { reason?: string; detail?: unknown }) {
     super(message);
     this.name = "ThreadPageError";
     this.code = code;
     Object.defineProperty(this, "code", { value: code, enumerable: true, writable: false });
+    if (extra?.reason !== undefined) {
+      Object.defineProperty(this, "reason", { value: extra.reason, enumerable: true, writable: false });
+      if (extra.detail !== undefined) Object.defineProperty(this, "detail", { value: extra.detail, enumerable: true, writable: false });
+    }
   }
+}
+
+function isContributedMethod(method: string): boolean {
+  const dot = method.indexOf(".");
+  return dot > 0 && !RESERVED_NAMESPACES.has(method.slice(0, dot));
 }
 
 interface Pending {
@@ -37,6 +50,22 @@ export function createBridgeClient(pageRevision: string, doc: Document): BridgeC
   const queued: string[] = [];
   let post: ((message: BridgeRequestMessage) => void) | null = null;
   let sequence = 0;
+  let roster: Promise<Map<string, string>> | null = null;
+
+  /** Effects by method, read once from `context.get` when a page first watches a contributed method. */
+  function effects(): Promise<Map<string, string>> {
+    roster ??= invoke("context.get").then(
+      (value) => {
+        const list = (value as { capabilities?: { method?: unknown; effect?: unknown }[] } | null)?.capabilities ?? [];
+        return new Map(list.map((entry) => [String(entry.method), String(entry.effect)]));
+      },
+      (error: unknown) => {
+        roster = null;
+        throw error;
+      },
+    );
+    return roster;
+  }
 
   function nextId(): string {
     sequence += 1;
@@ -89,6 +118,16 @@ export function createBridgeClient(pageRevision: string, doc: Document): BridgeC
       if (stopped || running || doc.visibilityState === "hidden") return;
       running = true;
       try {
+        // A contributed method is polled only when it reads. spec R5.54
+        if (isContributedMethod(method)) {
+          const effect = (await effects()).get(method);
+          if (effect !== undefined && effect !== "read") {
+            stopped = true;
+            doc.removeEventListener("visibilitychange", onVisibility);
+            listener(undefined, new ThreadPageError("invalid_params", `watch polls read capabilities only; ${method} is ${effect}`));
+            return;
+          }
+        }
         const value = await invoke(method, params);
         if (!stopped) listener(value, null);
       } catch (error) {
@@ -141,7 +180,7 @@ export function createBridgeClient(pageRevision: string, doc: Document): BridgeC
       }
       const response = message as BridgeResponseMessage;
       if (response.ok) entry.resolve(response.result);
-      else entry.reject(new ThreadPageError(response.error.code, response.error.message));
+      else entry.reject(new ThreadPageError(response.error.code, response.error.message, response.error));
       return true;
     },
   };

@@ -5,6 +5,7 @@ import { LIMITS } from "../../../domain/limits.ts";
 import type { SessionRecord } from "../../../host/types.ts";
 import { ENTRY_FILE, joinPath } from "../../../pages/layout.ts";
 import { SESSIONLESS_CAPABILITIES, isBuiltinHome } from "../../builtin-home.ts";
+import { rosterOf } from "../../contributions.ts";
 import { handler, type HandlerContext } from "../handler.ts";
 
 /** Read capabilities. spec 05 §Reads */
@@ -13,8 +14,8 @@ export const contextGet = handler<null, unknown>({
   method: "context.get",
   async execute(_params, { serving, session, page }) {
     // The roster is honest per page: the built-in home has no session of its own. spec R5.9, R7.9a
-    const descriptors = serving.registry.descriptors();
-    const capabilities = isBuiltinHome(session.id) ? descriptors.filter((entry) => !SESSIONLESS_CAPABILITIES.has(entry.method)) : descriptors;
+    const descriptors = rosterOf(serving.registry, await serving.contributions.current());
+    const capabilities = isBuiltinHome(session.id) ? descriptors.filter((entry) => entry.contributor || !SESSIONLESS_CAPABILITIES.has(entry.method)) : descriptors;
     return {
       result: {
         protocolVersion: 1,
@@ -30,7 +31,16 @@ export const sessionActivity = handler<{ limit: number }, unknown>({
   method: "session.activity",
   async execute(params, { serving, session }) {
     const items = await serving.host.sessions.activity(session.id, params.limit);
-    return { result: { state: session.state, updatedAtMs: session.updatedAtMs, items } };
+    return {
+      result: {
+        state: session.state,
+        updatedAtMs: session.updatedAtMs,
+        startedAtMs: session.startedAtMs,
+        turnEndedAtMs: session.turnEndedAtMs,
+        question: session.state === "waiting" ? session.question : null,
+        items,
+      },
+    };
   },
 });
 
@@ -134,6 +144,9 @@ export const sessionsSnapshot = handler<SnapshotParams, unknown>({
       updatedAtMs: record.updatedAtMs,
       attentionAtMs: record.attentionAtMs,
       unread: record.unread,
+      startedAtMs: record.startedAtMs,
+      turnEndedAtMs: record.turnEndedAtMs,
+      question: record.state === "waiting" ? record.question : null,
     }));
     return { result: { sessions, nextCursor: next ? encodeCursor(next) : null, generatedAtMs: serving.now() } };
   },

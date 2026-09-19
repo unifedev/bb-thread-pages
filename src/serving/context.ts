@@ -7,6 +7,7 @@ import type { SessionRecord } from "../host/types.ts";
 import type { PageStore } from "../pages/page-store.ts";
 import type { SiteStrategy } from "../pages/site.ts";
 import type { SelectionStore } from "./bridge/selection-store.ts";
+import type { Contributions } from "./contributions.ts";
 
 /** Everything a route or handler may need, assembled once by the composition root. */
 export interface ServingContext {
@@ -17,6 +18,8 @@ export interface ServingContext {
   readonly site: SiteStrategy;
   readonly routeBase: string;
   readonly registry: CapabilityRegistry;
+  /** Capabilities other extensions contribute. spec 05 §Contributed capabilities */
+  readonly contributions: Contributions;
   readonly rate: RateLimiter;
   readonly submissions: OutcomeMemory<{ status: number; body: Record<string, unknown> }>;
   readonly replies: OutcomeMemory<{ delivery: "started" | "queued" | "steered" }>;

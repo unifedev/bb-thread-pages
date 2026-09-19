@@ -1,0 +1,20 @@
+{
+  "name": "tp-echo",
+  "version": "0.1.0",
+  "description": "A reference contributor for Thread Pages: two capabilities a page can call, with no dialog.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "bb": ">=0.42",
+    "bbPluginSdk": ">=0.4.47"
+  },
+  "bb": {
+    "name": "Thread Pages echo contributor",
+    "description": "Reference contributor for Thread Pages contributed capabilities.",
+    "server": "./server.ts",
+    "branding": {
+      "icon": "Radio"
+    }
+  }
+}

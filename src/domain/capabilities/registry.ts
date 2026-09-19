@@ -1,5 +1,25 @@
 import { isMethodName } from "../ids.ts";
+import { LIMITS } from "../limits.ts";
 import { CONFIRMED_EFFECTS, EFFECT_CLASSES, type AnyCapabilitySpec, type CapabilityDescriptor } from "./contract.ts";
+
+/** What `context.get` reports about one capability. spec R5.9, R5.9a */
+export function describe(spec: AnyCapabilitySpec): CapabilityDescriptor {
+  return {
+    method: spec.method,
+    effect: spec.effect,
+    confirmation: spec.confirmed ? "required" : "none",
+    maxRequestBytes: spec.maxRequestBytes ?? LIMITS.capabilityPayloadBytes,
+    maxResponseBytes: spec.maxResponseBytes ?? LIMITS.capabilityPayloadBytes,
+    ...(spec.contributor
+      ? { contributor: spec.contributor, description: spec.description, reasons: [...(spec.reasons?.keys() ?? [])] }
+      : {}),
+  };
+}
+
+/** Anything a capability can be looked up in: the built-in registry, or it and the contributed set together. */
+export interface CapabilityLookup {
+  get(method: string): AnyCapabilitySpec | undefined;
+}
 
 export interface CapabilityRegistry {
   get(method: string): AnyCapabilitySpec | undefined;
@@ -22,7 +42,10 @@ export function createRegistry(specs: readonly AnyCapabilitySpec[]): CapabilityR
     if (CONFIRMED_EFFECTS.has(spec.effect) && !spec.confirmed) {
       throw new TypeError(`${spec.method} has a ${spec.effect} effect and must be confirmed`);
     }
-    if ((spec.effect === "read" || spec.effect === "own-session-write" || spec.effect === "reader-state") && spec.confirmed) {
+    if (spec.effect === "contributed-write" && !spec.contributor) {
+      throw new TypeError(`${spec.method}: only a contributed capability may declare contributed-write`);
+    }
+    if ((spec.effect === "read" || spec.effect === "own-session-write" || spec.effect === "reader-state" || spec.effect === "contributed-write") && spec.confirmed) {
       throw new TypeError(`${spec.method} is a ${spec.effect} and must not be confirmed`);
     }
     if (typeof spec.description !== "string" || spec.description.trim().length === 0 || spec.description.length > 240) {
@@ -32,13 +55,7 @@ export function createRegistry(specs: readonly AnyCapabilitySpec[]): CapabilityR
   }
   const list = Object.freeze([...byMethod.values()]);
   const descriptors = Object.freeze(
-    list
-      .filter((spec) => spec.implemented)
-      .map((spec): CapabilityDescriptor => ({
-        method: spec.method,
-        effect: spec.effect,
-        confirmation: spec.confirmed ? "required" : "none",
-      })),
+    list.filter((spec) => spec.implemented).map(describe),
   );
   return Object.freeze({
     get: (method: string) => byMethod.get(method),

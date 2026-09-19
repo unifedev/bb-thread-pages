@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased — contributed capabilities
+
+Implements spec 1.2 (`bartsoj/bb-thread-pages`, DECISIONS D18–D27).
+
+### Other plugins can give pages capabilities
+
+- A plugin contributes by answering two plugin RPC methods:
+  `threadPagesContributions` (its declaration: `version`, `methods`, and
+  optionally `instruction` and `guide`) and `threadPagesInvoke` (one call:
+  `{ method, params, caller: { sessionId }, requestId }` → `{ ok, result }` or
+  `{ ok: false, error: { code, message, reason?, detail? } }`). Every enabled,
+  running plugin is asked; declarations are reused for 10 seconds.
+- Methods are named `<plugin-id>.<name>`; built-in namespaces are reserved and
+  a built-in can never be shadowed. Effects are `read` or the new
+  `contributed-write`, and neither is ever confirmed.
+- Parameters and results are declared in a JSON Schema subset. Parameter
+  objects must be closed; results are projected onto what is declared.
+- Bounds are declared per method up to 1 MiB (64 KiB when undeclared); a call
+  is bounded to 30 seconds; the per-page rate budget is shared.
+- The host passes the caller's session from the action token, and none from the
+  built-in home page.
+- Failures keep the fixed codes and may add a declared `reason` and a
+  `detail` checked against its schema. The page sees both on the rejected
+  Error. `watch` refuses a contributed write.
+- Each contributed write is logged (method, session, outcome).
+- `context.get` lists contributed methods with contributor, description,
+  reasons and bounds; every entry now states its bounds.
+- A contributor's instruction fragment (2 KiB) follows the standing
+  instruction; its guide text (16 KiB) and its methods appear in
+  `bb thread-page guide` under *Capabilities from other plugins*.
+  `bb thread-page status` lists what is registered.
+- `examples/echo-contributor/` is a reference contributor.
+
+### Session reads
+
+- `sessions.snapshot` rows and `session.activity` gain `startedAtMs`,
+  `turnEndedAtMs` and, while waiting, `question` (at most 1024 characters).
+  On bb, a turn's end is the thread's latest attention time, and the question
+  comes from its pending interactions.
+
 ## 1.3.2 — 2026-09-14
 
 - The documents under `docs/` moved to the public specification repository,

@@ -21,6 +21,12 @@ export interface SessionRecord {
   readonly unread: boolean;
   /** The host's own pin mark, the one its sidebar shows. */
   readonly pinned: boolean;
+  /** When the session was created. spec R5.11b */
+  readonly startedAtMs: number;
+  /** When its most recent turn ended; null while a turn runs or before the first ends. spec R5.11b */
+  readonly turnEndedAtMs: number | null;
+  /** While waiting, the question it waits on, bounded; null otherwise or when unknown. spec R5.11c */
+  readonly question: string | null;
   /** The host's environment identity for `sessions.start` reuse; never shown to a page. */
   readonly environmentId: string | null;
 }

@@ -11,7 +11,12 @@ import type { JsonValue, Validation } from "../json/strict-json.ts";
  * `reader-state` changes only what the reader sees about a session — its
  * read mark — never the session's work; it is not confirmed. spec R5.7a
  */
-export const EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state"] as const;
+/**
+ * `contributed-write` changes state a contributor holds, outside the host's
+ * sessions; only contributed capabilities declare it, and it is never
+ * confirmed. spec R5.7b, DECISIONS D19
+ */
+export const EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state", "contributed-write"] as const;
 export type EffectClass = (typeof EFFECT_CLASSES)[number];
 
 /** Effects that must be confirmed in trusted chrome. spec R5.7 */
@@ -26,6 +31,12 @@ export interface CapabilityDoc {
   readonly notes?: string;
 }
 
+/** Who contributed a capability, for capabilities the host did not define. spec R5.9a */
+export interface ContributorRef {
+  readonly id: string;
+  readonly version: string;
+}
+
 export interface CapabilitySpec<Params = unknown, Result = unknown> {
   readonly method: string;
   readonly description: string;
@@ -36,6 +47,13 @@ export interface CapabilitySpec<Params = unknown, Result = unknown> {
   readonly validateParams: (value: JsonValue | undefined) => Validation<Params>;
   readonly validateResult: (value: unknown) => Validation<Result>;
   readonly doc: CapabilityDoc;
+  /** Request and response bounds, serialised; built-ins use the capability payload limit. spec R5.47 */
+  readonly maxRequestBytes?: number;
+  readonly maxResponseBytes?: number;
+  /** Set only on contributed capabilities. spec R5.42–R5.55 */
+  readonly contributor?: ContributorRef;
+  /** Error reasons a contributed method declares, each with its detail validator (null: no detail). spec R5.41b */
+  readonly reasons?: ReadonlyMap<string, ((value: unknown) => Validation<JsonValue>) | null>;
 }
 
 export type AnyCapabilitySpec = CapabilitySpec<any, any>;
@@ -45,4 +63,10 @@ export interface CapabilityDescriptor {
   readonly method: string;
   readonly effect: EffectClass;
   readonly confirmation: "none" | "required";
+  readonly maxRequestBytes: number;
+  readonly maxResponseBytes: number;
+  /** Contributed capabilities only. spec R5.9a */
+  readonly contributor?: ContributorRef;
+  readonly description?: string;
+  readonly reasons?: readonly string[];
 }

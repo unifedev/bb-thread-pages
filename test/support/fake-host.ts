@@ -1,7 +1,7 @@
 import type { SessionState } from "../../src/domain/capabilities/specs.ts";
 import { PageError } from "../../src/domain/errors.ts";
 import type { JsonValue } from "../../src/domain/json/strict-json.ts";
-import type { SessionHost } from "../../src/host/contract.ts";
+import type { ContributorAnswer, ContributorCall, SessionHost } from "../../src/host/contract.ts";
 import type { ActivityItem, ProjectRecord, ProviderChoice, SessionRecord, StartSessionArgs } from "../../src/host/types.ts";
 import { revisionOf } from "../../src/domain/revision.ts";
 import { joinPath } from "../../src/pages/layout.ts";
@@ -24,6 +24,9 @@ export interface FakeHostState {
   logs: string[];
   publicOrigin: string | null;
   pickedFolder: string | null;
+  /** Installed contributors: a declaration and how each call is answered. */
+  contributors: { id: string; declaration: unknown; answer: (call: ContributorCall) => Promise<ContributorAnswer> }[];
+  contributorCalls: { id: string; call: ContributorCall }[];
 }
 
 export const HOST_ID = "host_test";
@@ -41,6 +44,9 @@ export function sessionRecord(overrides: Partial<SessionRecord> & { id: string }
     deleted: false,
     updatedAtMs: 1_700_000_000_000,
     attentionAtMs: 1_700_000_000_000,
+    startedAtMs: 1_699_999_000_000,
+    turnEndedAtMs: 1_700_000_000_000,
+    question: null,
     unread: false,
     pinned: false,
     environmentId: "env_a",
@@ -67,6 +73,8 @@ export function createFakeHost(): { host: SessionHost; state: FakeHostState } {
     logs: [],
     publicOrigin: null,
     pickedFolder: "/Users/bart/proj",
+    contributors: [],
+    contributorCalls: [],
   };
   const record = (method: string, ...args: unknown[]) => state.calls.push({ method, args });
   const location = (id: string) => ({ hostId: HOST_ID, rootPath: `${ROOT}/${id}` });
@@ -176,6 +184,17 @@ export function createFakeHost(): { host: SessionHost; state: FakeHostState } {
       },
     },
     origin: { public: async () => state.publicOrigin },
+    contributors: {
+      async list() {
+        return state.contributors.map((entry) => ({ id: entry.id, declaration: entry.declaration }));
+      },
+      async invoke(id, call) {
+        state.contributorCalls.push({ id, call });
+        const entry = state.contributors.find((candidate) => candidate.id === id);
+        if (!entry) throw new Error("no such plugin");
+        return entry.answer(call);
+      },
+    },
     log: {
       debug: (message) => state.logs.push(`debug ${message}`),
       info: (message) => state.logs.push(`info ${message}`),

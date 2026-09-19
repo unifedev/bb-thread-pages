@@ -223,6 +223,49 @@ describe("kernel bridge client", () => {
   });
 });
 
+describe("contributed capabilities in the kernel", () => {
+  it("carries a declared reason and detail on the rejected error, beside code (R4.28a)", async () => {
+    const { handle, posted } = install("<head></head><body></body>");
+    const failing = window.threadPage.invoke("syns.write", { path: "a.md" });
+    const request = posted.messages[0] as { id: string };
+    handle.deliver({ v: 1, id: request.id, ok: false, error: { code: "conflict", message: "moved", reason: "stale_head", detail: { current: "v9" } } });
+    await expect(failing).rejects.toMatchObject({ code: "conflict", reason: "stale_head", detail: { current: "v9" } });
+    // A detail without a reason is not a shape the host sends: invalid_response.
+    const odd = window.threadPage.invoke("syns.write", {});
+    handle.deliver({ v: 1, id: (posted.messages[1] as { id: string }).id, ok: false, error: { code: "conflict", message: "moved", detail: 1 } } as never);
+    await expect(odd).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
+  it("watches a contributed read, and refuses to poll a contributed write (R5.54)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { handle, posted } = install("<head></head><body></body>");
+      const roster = { capabilities: [{ method: "syns.head", effect: "read" }, { method: "syns.write", effect: "contributed-write" }] };
+      const errors: unknown[] = [];
+      window.threadPage.watch("syns.write", {}, (_value: unknown, error: unknown) => errors.push(error));
+      await vi.advanceTimersByTimeAsync(0);
+      const first = posted.messages[0] as { id: string; method: string };
+      expect(first.method).toBe("context.get");
+      handle.deliver({ v: 1, id: first.id, ok: true, result: roster });
+      await vi.advanceTimersByTimeAsync(LIMITS.watchMaxMs);
+      expect(posted.messages).toHaveLength(1);
+      expect(errors).toEqual([expect.objectContaining({ code: "invalid_params" })]);
+
+      const seen: unknown[] = [];
+      const stop = window.threadPage.watch("syns.head", {}, (value: unknown) => seen.push(value));
+      await vi.advanceTimersByTimeAsync(0);
+      const poll = posted.messages[1] as { id: string; method: string };
+      expect(poll.method).toBe("syns.head");
+      handle.deliver({ v: 1, id: poll.id, ok: true, result: { version: "v1" } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(seen).toEqual([{ version: "v1" }]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("kernel read-only mode", () => {
   it("disables only what it disabled, shows the banner, and restores on reconnection", () => {
     const { handle } = install(`<head></head><body><form><input name="a"><input name="b" disabled><button>Go</button></form></body>`, true);

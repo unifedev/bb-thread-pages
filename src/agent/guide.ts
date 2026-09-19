@@ -1,3 +1,4 @@
+import type { Contributor } from "../domain/capabilities/contributed.ts";
 import type { CapabilityRegistry } from "../domain/capabilities/registry.ts";
 import { LIMITS, kibibytes, mebibytes } from "../domain/limits.ts";
 import { ENTRY_FILE, UPLOAD_DIR } from "../pages/layout.ts";
@@ -10,7 +11,7 @@ import type { SiteStrategy } from "../pages/site.ts";
  * no example pages, page shapes or component snippets: code in it states a
  * mechanism and nothing more. spec R6.24–R6.27, DECISIONS D11
  */
-export function buildGuide(registry: CapabilityRegistry, site: SiteStrategy): string {
+export function buildGuide(registry: CapabilityRegistry, site: SiteStrategy, contributors: readonly Contributor[] = []): string {
   return [
     intro(),
     forms(),
@@ -20,6 +21,7 @@ export function buildGuide(registry: CapabilityRegistry, site: SiteStrategy): st
     keepingCurrent(),
     runtimeApi(),
     capabilities(registry),
+    contributed(contributors),
     startingSessions(),
     network(),
     unavailable(),
@@ -224,6 +226,77 @@ The complete page-facing API; it is frozen and cannot be replaced.
   outcome every page calling a confirmed capability must handle, not an error.
 
 Check what is enabled rather than assume: \`(await invoke("context.get")).capabilities\`.`;
+
+/**
+ * Capabilities other plugins contribute: how they behave, and what is
+ * registered right now, generated from the declarations so it cannot
+ * contradict them. spec R6.28, R6.29, DECISIONS D18–D24, D27
+ */
+export function contributed(contributors: readonly Contributor[]): string {
+  const perMinute = (seconds: number) => Math.round((60 / seconds) * 10) / 10;
+  const registered =
+    contributors.length === 0
+      ? "None is registered on this host now."
+      : contributors
+          .map((contributor) => {
+            const methods = contributor.methods.map((spec) => {
+              const reasons = [...(spec.reasons?.keys() ?? [])];
+              return `- \`${spec.method}\` — ${spec.effect}. ${spec.description} Request up to ${kibibytes(spec.maxRequestBytes)}, response up to ${kibibytes(spec.maxResponseBytes)}.${reasons.length ? ` Reasons: ${reasons.join(", ")}.` : ""}`;
+            });
+            return [`### ${contributor.id} ${contributor.version}`, "", ...(methods.length ? methods : ["- (no methods)"]), ...(contributor.guide ? ["", contributor.guide] : [])].join("\n");
+          })
+          .join("\n\n");
+  return `## Capabilities from other plugins
+
+Other plugins installed on this host may add capabilities to your page. Each
+lives in a namespace named after its plugin — \`syns.read\`, say — and means
+what that plugin says it means; Thread Pages only checks and delivers the call.
+The plugin's own section below, and its instruction, explain its methods.
+
+**Check, do not assume.** Call \`context.get\` when the page loads. A contributed
+method appears in \`capabilities\` with \`contributor: { id, version }\`, a
+\`description\`, its \`reasons\` and \`maxRequestBytes\`/\`maxResponseBytes\`. A method
+that is not there answers unknown_method.
+
+**When a method you need is missing,** keep the rest of the page working and
+tell the reader, in your own words, what is missing and what would supply it —
+usually installing or enabling the plugin its namespace names. Never show
+invented or example data in its place.
+
+**No dialog.** These calls run the moment you make them, writes included; the
+plugin answers for what it does. If a write is something the reader would not
+expect from the control they touched, make that plain on the page first.
+
+**Your session is passed for you.** The plugin learns which session's page is
+calling from the host; a session id in your parameters chooses nothing. From
+the built-in home page there is no session.
+
+**Failures.** The rejected Error carries \`code\` as usual, and may carry
+\`reason\` — a word the method declares, such as \`no_repo\` — and \`detail\`,
+data for that reason, such as the current version on a conflict. Branch on
+\`reason\` when you know the plugin, on \`code\` when any will do: conflict —
+what you based a write on has moved, so read again; unavailable — the method
+exists but cannot serve this page now (not answering, over ${LIMITS.contributedCallMs / 1000} s, or nothing this
+session can reach); unknown_method — no installed plugin provides it.
+
+**Sizes.** Each method's bounds are in the roster: ${kibibytes(LIMITS.capabilityPayloadBytes)} unless the plugin
+declares more, never more than ${mebibytes(LIMITS.contributedPayloadMaxBytes)}. Larger data comes in parts through
+the method's own offset and limit, or cursor. A response is never cut short;
+it fails with response_too_large.
+
+**The budget is shared.** Every call, built-in or contributed, counts against
+${LIMITS.ratePerMinute} a minute and ${LIMITS.rateConcurrent} at once. One watch at the default ${LIMITS.watchDefaultMs / 1000} s costs ${perMinute(LIMITS.watchDefaultMs / 1000)} calls a
+minute; at the ${LIMITS.watchMinMs / 1000} s floor, ${perMinute(LIMITS.watchMinMs / 1000)}. Reading 300 items one call each costs 300 —
+more than two minutes of budget. Load many items with the plugin's batched read
+when it has one, and poll one small thing, such as a version.
+
+**Changes arrive by polling.** \`watch\` a contributed read method and read more
+only when it changes. There is no push. \`watch\` refuses a method that writes.
+
+### Registered now
+
+${registered}`;
+}
 
 function capabilities(registry: CapabilityRegistry): string {
   const rows = registry.list().map((spec) => {
@@ -446,6 +519,8 @@ const limits = () => `## Limits
 | Uploads per form | ${LIMITS.uploadsPerForm} |
 | Submission body | ${kibibytes(LIMITS.submissionBodyBytes)} excluding uploaded bytes; ${LIMITS.answersPerSubmission} answers; ${LIMITS.answerValueChars} characters per answer |
 | Capability payload | ${kibibytes(LIMITS.capabilityPayloadBytes)} request and response, depth ${LIMITS.capabilityJsonDepth}, ${LIMITS.capabilityJsonNodes} nodes |
+| Contributed capability payload | as each method declares in the roster, at most ${mebibytes(LIMITS.contributedPayloadMaxBytes)}; ${kibibytes(LIMITS.capabilityPayloadBytes)} when it declares none |
+| Contributed call | ${LIMITS.contributedCallMs / 1000} s, then unavailable |
 | Prompt | ${kibibytes(LIMITS.promptChars)} characters (sessions.start, sessions.send) |
 | session.reply result | ${kibibytes(LIMITS.resultTextBytes)} |
 | Title | ${LIMITS.titleChars} characters |

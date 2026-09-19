@@ -1,7 +1,7 @@
 import { isEntityId, isOpaqueToken, isStorageKey } from "../ids.ts";
 import type { JsonValue } from "../json/strict-json.ts";
 import { LIMITS } from "../limits.ts";
-import type { CapabilitySpec } from "./contract.ts";
+import { EFFECT_CLASSES, type CapabilitySpec } from "./contract.ts";
 import * as s from "./schema.ts";
 
 /**
@@ -62,17 +62,22 @@ export const contextGet = spec({
       capabilities: s.array(
         s.object({
           method: s.string({ min: 3, max: LIMITS.methodNameChars, label: "Method" }),
-          effect: s.literal(["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state"]),
+          effect: s.literal(EFFECT_CLASSES),
           confirmation: s.literal(["none", "required"]),
+          maxRequestBytes: s.integer(1, LIMITS.contributedPayloadMaxBytes, "Bound"),
+          maxResponseBytes: s.integer(1, LIMITS.contributedPayloadMaxBytes, "Bound"),
+          contributor: s.optional(s.object({ id: s.string({ min: 1, max: 32, label: "Contributor" }), version: s.string({ min: 1, max: 64, label: "Version" }) })),
+          description: s.optional(s.string({ min: 1, max: 240, label: "Description" })),
+          reasons: s.optional(s.array(s.string({ min: 1, max: 64, label: "Reason" }), 64)),
         }),
-        64,
+        512,
       ),
     }),
   ),
   doc: {
     params: "None.",
-    result: "`{ protocolVersion: 1, session: { id, title, projectId }, page: { revision, readOnly }, capabilities: [{ method, effect, confirmation }] }`.",
-    notes: "The roster lists what is actually enabled; check it rather than assume.",
+    result: "`{ protocolVersion: 1, session: { id, title, projectId }, page: { revision, readOnly }, capabilities: [{ method, effect, confirmation, maxRequestBytes, maxResponseBytes, contributor?, description?, reasons? }] }`. `contributor: { id, version }`, `description` and `reasons` appear only on capabilities another plugin contributes.",
+    notes: "The roster lists what is actually enabled, contributed capabilities included; check it rather than assume.",
   },
 });
 
@@ -87,6 +92,9 @@ export const sessionActivity = spec({
     s.object({
       state: sessionState,
       updatedAtMs: timestamp,
+      startedAtMs: timestamp,
+      turnEndedAtMs: s.nullable(timestamp),
+      question: s.nullable(s.string({ min: 1, max: LIMITS.questionChars, label: "Question" })),
       items: s.array(
         s.object({
           kind: s.string({ min: 1, max: 80, label: "Kind" }),
@@ -101,7 +109,7 @@ export const sessionActivity = spec({
   ),
   doc: {
     params: `\`{ limit? }\` — 1 to ${LIMITS.activityMax}, default ${LIMITS.activityDefault}. It never takes a session id: it is always this page's own session.`,
-    result: "`{ state, updatedAtMs, items: [{ kind, done, atMs, label, text }] }` where `state` is one of `working`, `idle`, `waiting`, `failed`, `stopped`.",
+    result: `\`{ state, updatedAtMs, startedAtMs, turnEndedAtMs, question, items: [{ kind, done, atMs, label, text }] }\` where \`state\` is one of \`working\`, \`idle\`, \`waiting\`, \`failed\`, \`stopped\`. \`turnEndedAtMs\` is when the last turn ended (null while one runs); \`question\` is, while waiting, what the session waits on, at most ${LIMITS.questionChars} characters.`,
   },
 });
 
@@ -125,6 +133,9 @@ export const sessionSummary = s.object({
   updatedAtMs: timestamp,
   attentionAtMs: timestamp,
   unread: s.boolean(),
+  startedAtMs: timestamp,
+  turnEndedAtMs: s.nullable(timestamp),
+  question: s.nullable(s.string({ min: 1, max: LIMITS.questionChars, label: "Question" })),
 });
 export type SessionSummary = s.Infer<typeof sessionSummary>;
 
@@ -144,8 +155,8 @@ export const sessionsSnapshot = spec({
   ),
   doc: {
     params: `\`{ projectId?, includeArchived?, includeChildren?, limit?, cursor? }\` — \`limit\` 1 to ${LIMITS.snapshotMax}, default ${LIMITS.snapshotDefault}; pass the previous result's \`nextCursor\` to continue. By default only root sessions are listed, the way the host's own sidebar shows them; \`includeChildren: true\` adds sub-agent sessions (with \`parentSessionId\` set).`,
-    result: "`{ sessions: [{ id, title, projectId, parentSessionId, status, archived, unread, attentionAtMs, updatedAtMs, page: { available, revision } }], nextCursor, generatedAtMs }` where `status` is one of `working`, `idle`, `waiting`, `failed`, `stopped`. `unread` means the session asked for the reader's attention (a turn ended, a question) after they last looked at it — the same mark the host's sidebar shows; `attentionAtMs` is when. `page.revision` is known for pages this host has served recently and `null` otherwise.",
-    notes: "No message bodies or agent output are included.",
+    result: "`{ sessions: [{ id, title, projectId, parentSessionId, status, archived, unread, attentionAtMs, updatedAtMs, startedAtMs, turnEndedAtMs, question, page: { available, revision } }], nextCursor, generatedAtMs }` where `startedAtMs` is when the session was created, `turnEndedAtMs` when its last turn ended (null while one runs — with `status: idle` that is when it finished), and `question`, only while `waiting`, what it waits on as plain text of at most 1024 characters, or null when the host cannot tell. `status` is one of `working`, `idle`, `waiting`, `failed`, `stopped`. `unread` means the session asked for the reader's attention (a turn ended, a question) after they last looked at it — the same mark the host's sidebar shows; `attentionAtMs` is when. `page.revision` is known for pages this host has served recently and `null` otherwise.",
+    notes: "No message bodies are included. The one piece of agent output is `question`; a session's prompt and the files it changed are not.",
   },
 });
 

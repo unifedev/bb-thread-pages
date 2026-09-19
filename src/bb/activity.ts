@@ -9,6 +9,32 @@ import type { ActivityItem } from "../host/types.ts";
  *   a pending interaction                    → waiting
  *   everything else                          → idle
  */
+/**
+ * The question a waiting thread waits on, from its pending interactions:
+ * a question's prompts, or the title of a request or approval. Plain text,
+ * bounded, marked when cut; null when there is nothing to show. spec R5.11c
+ */
+export function questionOf(interactions: readonly unknown[], maxChars: number): string | null {
+  const parts: string[] = [];
+  for (const raw of interactions) {
+    const payload = asRecord(asRecord(raw)?.payload);
+    if (!payload) continue;
+    if (payload.kind === "user_question" && Array.isArray(payload.questions)) {
+      for (const question of payload.questions) {
+        const prompt = asRecord(question)?.prompt;
+        if (typeof prompt === "string" && prompt.trim()) parts.push(prompt.trim());
+      }
+    } else if (typeof payload.title === "string" && payload.title.trim()) {
+      parts.push(payload.title.trim());
+    } else if (payload.kind === "approval") {
+      parts.push(typeof payload.reason === "string" && payload.reason.trim() ? `Approval requested: ${payload.reason.trim()}` : "Approval requested");
+    }
+  }
+  const text = parts.join("\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+  if (!text) return null;
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}…`;
+}
+
 export function sessionStateOf(thread: { status?: unknown; runtime?: unknown }, hasPendingInteraction: boolean): SessionState {
   const runtime = asRecord(thread.runtime);
   const display = typeof runtime?.displayStatus === "string" ? runtime.displayStatus : typeof thread.status === "string" ? thread.status : "idle";

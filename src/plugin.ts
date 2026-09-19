@@ -13,6 +13,7 @@ import { resolveOwnFiles } from "./pages/inline.ts";
 import { createPageStore } from "./pages/page-store.ts";
 import { createCoreStorageSite, type SiteStrategy } from "./pages/site.ts";
 import { createSelectionStore } from "./serving/bridge/selection-store.ts";
+import { createContributions, instructionFragments } from "./serving/contributions.ts";
 import type { ServingContext } from "./serving/context.ts";
 import { registerRoutes } from "./serving/routes.ts";
 import { loadSigningKey } from "./serving/signing-key.ts";
@@ -39,8 +40,11 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
     ? options.site(routeBase)
     : createCoreStorageSite(routeBase, (session) => `/api/v1/threads/${encodeURIComponent(session)}/thread-storage/files/`);
 
+  const now = options.now ?? (() => Date.now());
+  const contributions = createContributions(host.contributors, host.log, now);
   const serving: ServingContext = {
     host,
+    contributions,
     // Strategy A cannot serve a sandboxed document's own files on an
     // authenticated origin, so the document carries them. Delete this
     // argument, and pages/inline.ts, once the host can authorise them.
@@ -65,13 +69,21 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
     replies: createOutcomeMemory(),
     selections: createSelectionStore(),
     hostSessionUrl: bbSessionUrl,
-    now: options.now ?? (() => Date.now()),
+    now,
   };
 
+  // The standing instruction, followed by each contributor's fragment so the
+  // agent reads one instruction. Fragments ride only with the instruction;
+  // bb builds instructions synchronously, so they come from the last set read.
+  // spec R6.29, D27
   const effectiveInstruction = (): string | null => {
     const current = settings.current();
-    return current.agentInstructions && current.agentInstructionText.trim() ? current.agentInstructionText : null;
+    if (!current.agentInstructions || !current.agentInstructionText.trim()) return null;
+    const fragments = instructionFragments(contributions.cached());
+    return fragments ? `${current.agentInstructionText}\n\n${fragments}` : current.agentInstructionText;
   };
+  // Read the contributors once at start, so the first session gets their fragments.
+  void contributions.current();
 
   // The standing instruction: only eligible sessions, only when enabled.
   // Visibility is not known here, so `init` rechecks eligibility at call time. spec R6.14
@@ -82,6 +94,10 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
   });
 
   registerRoutes(bb, serving);
-  registerCli(bb, { serving, guide: buildGuide(capabilityRegistry, site), effectiveInstruction });
+  registerCli(bb, {
+    serving,
+    guide: async () => buildGuide(capabilityRegistry, site, (await contributions.current()).contributors),
+    effectiveInstruction,
+  });
   return serving;
 }

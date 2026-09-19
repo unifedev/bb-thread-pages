@@ -1,7 +1,7 @@
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
 import { createBbHost } from "../../src/bb/bb-host.ts";
-import { activityItemsOf, sessionStateOf } from "../../src/bb/activity.ts";
+import { activityItemsOf, questionOf, sessionStateOf } from "../../src/bb/activity.ts";
 
 function hostWith(sdk: NonNullable<NonNullable<Parameters<typeof createFakePluginHost>[0]>["sdk"]>) {
   const fake = createFakePluginHost({ pluginId: "thread-pages", sdk });
@@ -13,11 +13,29 @@ describe("bb adapter", () => {
     const { host, fake } = hostWith({
       threads: {
         get: async () => makeThreadResponse({ id: "thr_a", title: null, titleFallback: "Fallback", projectId: "proj_a", environmentId: "env_1", visibility: "visible", parentThreadId: null, sourceThreadId: null, archivedAt: null, deletedAt: null, updatedAt: 42, lastReadAt: 40, latestAttentionAt: 41 }),
-        interactions: { list: async () => [{ id: "i1" }] as never },
+        interactions: { list: async () => [{ id: "i1", payload: { kind: "user_question", questions: [{ prompt: "Which branch?" }] } }] as never },
       },
     });
     const session = await host.sessions.get("thr_a");
-    expect(session).toEqual({ id: "thr_a", title: "Fallback", projectId: "proj_a", state: "waiting", visibility: "visible", parentId: null, forkOfId: null, archived: false, deleted: false, updatedAtMs: 42, attentionAtMs: 41, unread: true, pinned: false, environmentId: "env_1" });
+    expect(session).toEqual({
+      id: "thr_a",
+      title: "Fallback",
+      projectId: "proj_a",
+      state: "waiting",
+      visibility: "visible",
+      parentId: null,
+      forkOfId: null,
+      archived: false,
+      deleted: false,
+      updatedAtMs: 42,
+      attentionAtMs: 41,
+      startedAtMs: 0,
+      turnEndedAtMs: 41,
+      question: "Which branch?",
+      unread: true,
+      pinned: false,
+      environmentId: "env_1",
+    });
     expect(fake.harness.inspection.sdk.callsTo("threads.interactions.list")).toHaveLength(1);
   });
 
@@ -137,5 +155,42 @@ describe("activity mapping", () => {
     ]);
     expect(items[0]!.text.length).toBeLessThanOrEqual(200);
     expect(activityItemsOf(events, 1)).toHaveLength(1);
+  });
+
+  it("finds contributors among enabled, running plugins over plugin RPC, and skips the rest", async () => {
+    const calls: { pluginId: string; method: string; input?: unknown }[] = [];
+    const { host } = hostWith({
+      plugins: {
+        list: async () =>
+          ({
+            plugins: [
+              { id: "syns", enabled: true, status: "running" },
+              { id: "other", enabled: true, status: "running" },
+              { id: "off", enabled: false, status: "disabled" },
+              { id: "thread-pages", enabled: true, status: "running" },
+            ],
+          }) as never,
+        callRpc: (async (args: { pluginId: string; method: string; input?: unknown; outputSchema: { parse(value: unknown): unknown } }) => {
+          calls.push({ pluginId: args.pluginId, method: args.method, input: args.input });
+          if (args.pluginId !== "syns") throw new Error("unknown_method");
+          if (args.method === "threadPagesContributions") return args.outputSchema.parse({ version: "1", methods: [] });
+          return args.outputSchema.parse({ ok: false, error: { code: "conflict", reason: "stale_head", detail: { current: "v2" } } });
+        }) as never,
+      },
+    });
+    const listed = await host.contributors!.list();
+    expect(listed).toEqual([{ id: "syns", declaration: { version: "1", methods: [] } }]);
+    expect(calls.map((entry) => entry.pluginId).sort()).toEqual(["other", "syns"]);
+    const answer = await host.contributors!.invoke("syns", { method: "syns.write", params: { path: "a" }, caller: { sessionId: "thr_a" }, requestId: "tp-1" });
+    expect(answer).toEqual({ ok: false, error: { code: "conflict", reason: "stale_head", detail: { current: "v2" } } });
+    expect(calls.at(-1)).toEqual({ pluginId: "syns", method: "threadPagesInvoke", input: { method: "syns.write", params: { path: "a" }, caller: { sessionId: "thr_a" }, requestId: "tp-1" } });
+  });
+
+  it("words a waiting session's question from its interactions, bounded", () => {
+    expect(questionOf([{ payload: { kind: "user_question", questions: [{ prompt: "A?" }, { prompt: "B?" }] } }], 1024)).toBe("A?\nB?");
+    expect(questionOf([{ payload: { kind: "approval", reason: null } }], 1024)).toBe("Approval requested");
+    expect(questionOf([{ payload: { kind: "request_answer", title: "Pick a model" } }], 1024)).toBe("Pick a model");
+    expect(questionOf([{ payload: { kind: "user_question", questions: [{ prompt: "x".repeat(50) }] } }], 10)).toBe(`${"x".repeat(9)}…`);
+    expect(questionOf([], 1024)).toBeNull();
   });
 });

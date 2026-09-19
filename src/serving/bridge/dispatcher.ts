@@ -3,9 +3,11 @@ import { PageError, PUBLIC_MESSAGES, errorText, isBridgeErrorCode } from "../../
 import type { JsonValue } from "../../domain/json/strict-json.ts";
 import { LIMITS } from "../../domain/limits.ts";
 import { challengeMatches, mintChallenge, openChallenge } from "../../domain/tokens/confirmation.ts";
+import type { ContributedSpec } from "../../domain/capabilities/contributed.ts";
 import { acquireRate, requireActionToken } from "../action-request.ts";
 import { BUILTIN_HOME_PAGE, BUILTIN_HOME_REFUSAL, BUILTIN_HOME_SESSION, SESSIONLESS_CAPABILITIES, isBuiltinHome } from "../builtin-home.ts";
 import type { ServingContext } from "../context.ts";
+import { ContributedError, combinedLookup } from "../contributions.ts";
 import { eligibleSession } from "../session-access.ts";
 import type { CapabilityHandler, HandlerContext } from "./handler.ts";
 
@@ -18,6 +20,11 @@ import type { CapabilityHandler, HandlerContext } from "./handler.ts";
  *
  * The built-in home page takes the same path under its reserved identity; the
  * capabilities that need a session of its own are refused for it. spec R7.9a
+ *
+ * A contributed capability takes the same path too, and differs in three
+ * places only: it is looked up among the contributions when no built-in has
+ * its name, it is never confirmed, and its execution is a call to its
+ * contributor carrying the caller's session from the token. spec R5.48–R5.53
  */
 export interface DispatchResult {
   readonly status: number;
@@ -61,12 +68,14 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
       release = acquireRate(serving, token.session);
       const request = decodeBridgeRequest(envelope.request);
       requestId = request.id;
-      const invocation = resolveInvocation(request, serving.registry, token.revision);
-      const entry = byMethod.get(invocation.spec.method);
-      if (!entry) throw new PageError("unknown_method", `Unknown capability: ${invocation.spec.method}`);
+      const lookup = serving.registry.get(request.method) ? serving.registry : combinedLookup(serving.registry, await serving.contributions.current());
+      const invocation = resolveInvocation(request, lookup, token.revision);
+      const contributed = invocation.spec.contributor ? (invocation.spec as ContributedSpec) : null;
+      const entry = contributed ? null : byMethod.get(invocation.spec.method);
+      if (!contributed && !entry) throw new PageError("unknown_method", `Unknown capability: ${invocation.spec.method}`);
 
       const home = isBuiltinHome(token.session);
-      if (home && SESSIONLESS_CAPABILITIES.has(invocation.spec.method)) throw new PageError("unknown_method", BUILTIN_HOME_REFUSAL);
+      if (home && !contributed && SESSIONLESS_CAPABILITIES.has(invocation.spec.method)) throw new PageError("unknown_method", BUILTIN_HOME_REFUSAL);
       const session = home
         ? BUILTIN_HOME_SESSION
         : await eligibleSession(serving, token.session).catch((error: unknown) => {
@@ -76,9 +85,10 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
       if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
       const context: HandlerContext = { serving, session, page, requestId: request.id };
 
-      await entry.refuse?.(invocation.params, context);
+      await entry?.refuse?.(invocation.params, context);
 
-      if (invocation.spec.confirmed) {
+      // Contributed capabilities are never confirmed; their specs say so. spec R5.50
+      if (invocation.spec.confirmed && entry) {
         const binding = { session: token.session, revision: token.revision, requestId: request.id, method: request.method, params: invocation.params as JsonValue };
         if (envelope.confirmation === null) {
           const summary = (await entry.summarize?.(invocation.params, context)) ?? invocation.spec.description;
@@ -97,8 +107,22 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
 
       let outcome;
       try {
-        outcome = await entry.execute(invocation.params, context);
+        if (contributed) {
+          // The caller is the token's session, never anything the page sent. spec R5.49
+          const caller = { sessionId: home ? null : token.session };
+          const result = await serving.contributions.invoke(contributed, invocation.params as JsonValue, caller, request.id);
+          if (contributed.effect === "contributed-write") {
+            // Nothing else records a write no dialog saw. spec R5.55
+            serving.host.log.info(`contributed write ${contributed.method} for ${token.session}: ok`);
+          }
+          outcome = { result };
+        } else {
+          outcome = await entry!.execute(invocation.params, context);
+        }
       } catch (error) {
+        if (contributed?.effect === "contributed-write") {
+          serving.host.log.info(`contributed write ${contributed.method} for ${token.session}: ${PageError.is(error) ? error.code : "failed"}`);
+        }
         if (PageError.is(error) && isBridgeErrorCode(error.code)) throw error;
         serving.host.log.warn(`bridge ${request.method} for ${token.session}: ${errorText(error)}`);
         throw new PageError("handler_error", PUBLIC_MESSAGES.handler, { cause: error });
@@ -109,7 +133,8 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
       if (PageError.is(error)) {
         if (error.cause !== undefined) serving.host.log.warn(`bridge: ${error.code}: ${errorText(error.cause)}`);
         const code = isBridgeErrorCode(error.code) ? error.code : error.code === "ineligible" || error.code === "no_page" ? "not_found" : "handler_error";
-        return { status: error.status, body: { response: failure(requestId, code, error.message) } };
+        const extra = error instanceof ContributedError && error.reason ? { reason: error.reason, ...(error.detail !== undefined ? { detail: error.detail } : {}) } : undefined;
+        return { status: error.status, body: { response: failure(requestId, code, error.message, extra) } };
       }
       serving.host.log.warn(`bridge: ${errorText(error)}`);
       return { status: 500, body: { response: failureFromError(requestId, error) } };

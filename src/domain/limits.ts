@@ -22,6 +22,21 @@ export const LIMITS = Object.freeze({
   /** Capability request and response, serialised. R5.2 */
   capabilityPayloadBytes: 64 * 1024,
   capabilityJsonDepth: 16,
+  /**
+   * Contributed capabilities declare their own request and response bounds,
+   * each at most this; undeclared they get `capabilityPayloadBytes`. R5.47, D21
+   */
+  contributedPayloadMaxBytes: 1024 * 1024,
+  /** One contributed call, before it answers `unavailable`. R5.51, D22 */
+  contributedCallMs: 30_000,
+  /** How long a contributor's declarations are reused before they are read again. */
+  contributionsTtlMs: 10_000,
+  /** A contributor's instruction fragment and guide text. R6.29, D27 */
+  contributorInstructionBytes: 2 * 1024,
+  contributorGuideBytes: 16 * 1024,
+  contributorMethods: 64,
+  /** `question` in session reads, marked when cut. R5.11c, D25 */
+  questionChars: 1024,
   capabilityJsonNodes: 10_000,
   /** `sessions.start` and `sessions.send` prompts. */
   promptChars: 32 * 1024,

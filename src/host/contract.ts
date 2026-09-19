@@ -64,4 +64,32 @@ export interface SessionHost {
     public(): Promise<string | null>;
   };
   readonly log: HostLogger;
+  /**
+   * Other installed extensions that contribute capabilities. Optional: a host
+   * without an extension system conforms without it. spec R8.30–R8.32
+   */
+  readonly contributors?: ContributorHost;
+}
+
+/** A contributor's answer to one call, as it crosses from the contributor. spec R5.41b */
+export type ContributorAnswer =
+  | { readonly ok: true; readonly result: unknown }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message?: string; readonly reason?: string; readonly detail?: unknown } };
+
+export interface ContributorCall {
+  readonly method: string;
+  readonly params: JsonValue;
+  /** From the action token, never from the page; null for the built-in home page. spec R5.49 */
+  readonly caller: { readonly sessionId: string | null };
+  readonly requestId: string;
+}
+
+export interface ContributorHost {
+  /** Every enabled extension that declares contributions, with its raw declaration. */
+  list(): Promise<readonly { readonly id: string; readonly declaration: unknown }[]>;
+  /**
+   * Calls one contributor. Rejects when the contributor cannot be reached;
+   * a contributor's own failure is an answer, not a rejection.
+   */
+  invoke(contributorId: string, call: ContributorCall): Promise<ContributorAnswer>;
 }
