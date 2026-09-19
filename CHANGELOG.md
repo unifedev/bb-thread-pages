@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — contributed capabilities
+## 1.4.0 — 2026-09-19 — contributed capabilities
 
 Implements spec 1.2 (`bartsoj/bb-thread-pages`, DECISIONS D18–D27).
 
