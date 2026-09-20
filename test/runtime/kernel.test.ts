@@ -75,7 +75,7 @@ describe("window.threadPage", () => {
     expect(descriptor?.writable).toBe(false);
     expect(descriptor?.configurable).toBe(false);
     expect(Object.isFrozen(api)).toBe(true);
-    expect(Object.keys(api).sort()).toEqual(["invoke", "setDirty", "version", "watch"]);
+    expect(Object.keys(api).sort()).toEqual(["embed", "invoke", "setDirty", "version", "watch"]);
     expect(api.version).toBe(1);
   });
 });

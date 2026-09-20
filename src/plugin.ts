@@ -5,15 +5,15 @@ import { createBbHost } from "./bb/bb-host.ts";
 import { bbSessionUrl } from "./bb/host-urls.ts";
 import { defineSettings } from "./config/settings.ts";
 import { capabilityRegistry } from "./domain/capabilities/index.ts";
-import { directoryOf } from "./domain/document-path.ts";
 import { createRateLimiter } from "./domain/rate-limit.ts";
 import { createOutcomeMemory } from "./domain/submissions/idempotency.ts";
 import type { SessionHost } from "./host/contract.ts";
-import { resolveOwnFiles } from "./pages/inline.ts";
+import { createAssembler } from "./pages/assemble.ts";
 import { createPageStore } from "./pages/page-store.ts";
 import { createCoreStorageSite, type SiteStrategy } from "./pages/site.ts";
 import { createSelectionStore } from "./serving/bridge/selection-store.ts";
 import { createContributions, instructionFragments } from "./serving/contributions.ts";
+import { createGrantStore } from "./serving/grants.ts";
 import type { ServingContext } from "./serving/context.ts";
 import { registerRoutes } from "./serving/routes.ts";
 import { loadSigningKey } from "./serving/signing-key.ts";
@@ -45,20 +45,8 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
   const serving: ServingContext = {
     host,
     contributions,
-    // Strategy A cannot serve a sandboxed document's own files on an
-    // authenticated origin, so the document carries them. Delete this
-    // argument, and pages/inline.ts, once the host can authorise them.
-    pages: createPageStore(host, async (session, html, path) => {
-      const location = await host.sessions.storage(session);
-      return resolveOwnFiles(
-        html,
-        async (relativePath) => {
-          const file = await host.files.read(location, relativePath);
-          return file ? { bytes: file.bytes } : null;
-        },
-        directoryOf(path),
-      );
-    }),
+    // Every document goes through one pipeline: parts in, then own files carried. spec R5.56
+    pages: createPageStore(host, createAssembler(host)),
     settings,
     signingKey,
     site,
@@ -68,6 +56,7 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
     submissions: createOutcomeMemory(),
     replies: createOutcomeMemory(),
     selections: createSelectionStore(),
+    grants: createGrantStore(host),
     hostSessionUrl: bbSessionUrl,
     now,
   };

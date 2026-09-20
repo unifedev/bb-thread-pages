@@ -46,7 +46,8 @@ export interface ResolvedFile {
 
 export interface SkippedFile {
   readonly path: string;
-  readonly reason: "missing" | "too-large" | "budget" | "unsafe-path";
+  /** The last four are an include's (pages/include.ts). */
+  readonly reason: "missing" | "too-large" | "budget" | "unsafe-path" | "not-a-part" | "too-deep" | "too-many" | "no-listing";
 }
 
 export interface ResolveOutcome {
@@ -96,6 +97,10 @@ export function isOwnFileReference(value: string): boolean {
 }
 
 /** The reference's path, with any query or fragment removed and percent-escapes resolved. */
+export function pathOfReference(reference: string): string | null {
+  return pathOf(reference);
+}
+
 function pathOf(reference: string): string | null {
   const withoutHash = reference.trim().split("#")[0] ?? "";
   const withoutQuery = withoutHash.split("?")[0] ?? "";
@@ -271,6 +276,10 @@ async function resolveSrcset(srcset: string, urlFor: (path: string, depth: numbe
 }
 
 /** Collapses `a/./b` and `a/b/../c`; a path that climbs out fails `isSafeRelativePath` later. */
+export function normalisePath(path: string): string {
+  return normalise(path);
+}
+
 function normalise(path: string): string {
   const out: string[] = [];
   for (const segment of path.split("/")) {

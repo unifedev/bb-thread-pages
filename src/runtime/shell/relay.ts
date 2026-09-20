@@ -1,5 +1,5 @@
 import { isDocumentPath } from "../../domain/document-path.ts";
-import { isBridgeRequest, isBridgeResponse, isRecord, makeFailure, type BridgeRequestMessage, type ShellConfig, type ShellMessage, type SubmitFile } from "../shared/protocol.ts";
+import { isBridgeRequest, isBridgeResponse, isRecord, isScrollMessage, makeFailure, sentMessage, type BridgeRequestMessage, type ShellConfig, type ShellMessage, type SubmitFile } from "../shared/protocol.ts";
 import type { Confirmer } from "./confirm.ts";
 import type { Navigator } from "./navigate.ts";
 
@@ -17,8 +17,17 @@ export interface RelayDeps {
   onDirty(dirty: boolean): void;
   /** A link to another document of the page; the path is already validated. spec R1.12a */
   onOpenDocument?(path: string): void;
+  /** The reader answered from the page — a form, `session.reply`, or an answer inside an embed. spec R2.17a */
+  onAnswered?(): void;
+  /** Where the document is scrolled to. spec R2.18b */
+  onScroll?(x: number, y: number): void;
+  /** The reader granted this page answers into another session. spec R5.64 */
+  onGranted?(grant: { sessionId: string; title: string }): void;
   fetchImpl?: typeof fetch;
 }
+
+/** Capabilities whose success means the reader answered an agent. */
+const ANSWERS: ReadonlySet<string> = new Set(["session.reply", "pages.answer"]);
 
 export interface Relay {
   handle(port: MessagePort, data: unknown): void;
@@ -79,15 +88,26 @@ export function createRelay(deps: RelayDeps): Relay {
           return;
         }
         const external = request.method === "navigation.openExternal";
-        const approved = await confirmer.confirm(confirm.summary, external ? () => navigator.reserveWindow() : undefined);
+        // A grant is asked for once per pair, in the same chrome, under its own heading. spec R5.64
+        const grant = confirm.kind === "grant" && isRecord(confirm.grant) && typeof confirm.grant.sessionId === "string" && typeof confirm.grant.title === "string"
+          ? { sessionId: confirm.grant.sessionId, title: confirm.grant.title }
+          : null;
+        const approved = await confirmer.confirm(
+          confirm.summary,
+          external ? () => navigator.reserveWindow() : undefined,
+          grant ? { heading: "Allow answers from this page?", confirmLabel: "Allow", cancelLabel: "Don’t allow" } : undefined,
+        );
         if (!approved) {
-          reply(port, makeFailure(request.id, "cancelled", "You declined this action"));
+          reply(port, makeFailure(request.id, "cancelled", grant ? "You did not allow it, so the answer was not sent" : "You declined this action"));
           return;
         }
         const second = await postBridge({ actionToken: config.actionToken, request, confirmation: confirm.challenge });
+        if (grant && isRecord(second) && isRecord(second.response) && second.response.ok === true) deps.onGranted?.(grant);
+        if (ANSWERS.has(request.method) && isRecord(second) && isRecord(second.response) && second.response.ok === true) deps.onAnswered?.();
         deliver(port, request, second);
         return;
       }
+      if (ANSWERS.has(request.method) && isRecord(first) && isRecord(first.response) && first.response.ok === true) deps.onAnswered?.();
       deliver(port, request, first);
     } catch (error) {
       navigator.release();
@@ -142,11 +162,12 @@ export function createRelay(deps: RelayDeps): Relay {
       });
       const body = (await response.json().catch(() => ({ ok: false, message: "Invalid server response" }))) as Record<string, unknown>;
       const ok = response.ok && body.ok === true;
+      if (ok) deps.onAnswered?.();
       reply(port, {
         kind: "thread-page:submit-result",
         submissionId,
         ok,
-        message: typeof body.delivery === "string" ? `Sent (${body.delivery})` : "Sent",
+        message: sentMessage(body.delivery),
         error: typeof body.message === "string" ? body.message : `Request failed (${response.status})`,
       });
     } catch (error) {
@@ -169,6 +190,11 @@ export function createRelay(deps: RelayDeps): Relay {
         void relaySubmit(port, data);
         return;
       }
+      if (data.kind === "thread-page:scroll") {
+        if (isScrollMessage(data)) deps.onScroll?.(data.x, data.y);
+        return;
+      }
+      if (data.kind === "thread-page:apply-update") return;
       if (data.kind === "thread-page:open-document") {
         if (isDocumentPath(data.path)) deps.onOpenDocument?.(data.path);
         return;

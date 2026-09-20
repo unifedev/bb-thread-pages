@@ -4,6 +4,7 @@ import { ENTRY_DOCUMENT } from "../domain/document-path.ts";
 import { LIMITS } from "../domain/limits.ts";
 import { mintActionToken } from "../domain/tokens/action-token.ts";
 import type { ServingContext } from "./context.ts";
+import { describeGrants } from "./grants.ts";
 import { homeUrl } from "./context.ts";
 import { documentPathFrom } from "./document-access.ts";
 import { EMPTY_REVISION, loadUnlessUnwritten } from "./empty-page.ts";
@@ -53,6 +54,11 @@ export function shellRoute(serving: ServingContext) {
           empty: page === null,
           notice: null,
           pollMs: LIMITS.shellPollMs,
+          pollWorkingMs: LIMITS.shellPollWorkingMs,
+          pollAfterAnswerMs: LIMITS.shellPollAfterAnswerMs,
+          working: session.state === "working",
+          refreshSwapMs: LIMITS.refreshSwapMs,
+          grants: await describeGrants(serving.host, serving.grants, id),
           maxUploadBytes: LIMITS.uploadFileBytes,
           maxUploads: LIMITS.uploadsPerForm,
         },

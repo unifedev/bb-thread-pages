@@ -1,6 +1,7 @@
+import { ENTRY_DOCUMENT, isDocumentPath } from "../document-path.ts";
 import { isEntityId, isOpaqueToken, isStorageKey } from "../ids.ts";
 import type { JsonValue } from "../json/strict-json.ts";
-import { LIMITS } from "../limits.ts";
+import { LIMITS, mebibytes } from "../limits.ts";
 import { EFFECT_CLASSES, type CapabilitySpec } from "./contract.ts";
 import * as s from "./schema.ts";
 
@@ -63,9 +64,9 @@ export const contextGet = spec({
         s.object({
           method: s.string({ min: 3, max: LIMITS.methodNameChars, label: "Method" }),
           effect: s.literal(EFFECT_CLASSES),
-          confirmation: s.literal(["none", "required"]),
+          confirmation: s.literal(["none", "required", "grant"]),
           maxRequestBytes: s.integer(1, LIMITS.contributedPayloadMaxBytes, "Bound"),
-          maxResponseBytes: s.integer(1, LIMITS.contributedPayloadMaxBytes, "Bound"),
+          maxResponseBytes: s.integer(1, Math.max(LIMITS.contributedPayloadMaxBytes, LIMITS.pagesReadBytes), "Bound"),
           contributor: s.optional(s.object({ id: s.string({ min: 1, max: 32, label: "Contributor" }), version: s.string({ min: 1, max: 64, label: "Version" }) })),
           description: s.optional(s.string({ min: 1, max: 240, label: "Description" })),
           reasons: s.optional(s.array(s.string({ min: 1, max: 64, label: "Reason" }), 64)),
@@ -76,7 +77,7 @@ export const contextGet = spec({
   ),
   doc: {
     params: "None.",
-    result: "`{ protocolVersion: 1, session: { id, title, projectId }, page: { revision, readOnly }, capabilities: [{ method, effect, confirmation, maxRequestBytes, maxResponseBytes, contributor?, description?, reasons? }] }`. `contributor: { id, version }`, `description` and `reasons` appear only on capabilities another plugin contributes.",
+    result: "`{ protocolVersion: 1, session: { id, title, projectId }, page: { revision, readOnly }, capabilities: [{ method, effect, confirmation, maxRequestBytes, maxResponseBytes, contributor?, description?, reasons? }] }`. `confirmation` is `none`, `required`, or `grant` (asked once, then remembered). `contributor: { id, version }`, `description` and `reasons` appear only on capabilities another plugin contributes.",
     notes: "The roster lists what is actually enabled, contributed capabilities included; check it rather than assume.",
   },
 });
@@ -411,6 +412,111 @@ export const navigationOpenExternal = spec({
   },
 });
 
+// --- other sessions' pages ---------------------------------------------------------
+
+const revision = s.string({ min: 64, max: 64, pattern: /^[a-f0-9]{64}$/, label: "Revision" });
+const answerToken = s.string({ min: 1, max: LIMITS.tokenChars, pattern: /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, label: "Answer token" });
+/** A document of a page: `index.html` and an absent path are the entry document. */
+const documentPath = s.refine(s.string({ min: 1, max: 1024, label: "Path" }), (value) => (value === ENTRY_DOCUMENT || isDocumentPath(value) ? null : "is not a document of a page"));
+
+export type PagesReadParams = s.Infer<typeof pagesReadParams>;
+const pagesReadParams = s.object({
+  pages: s.refine(
+    s.array(s.object({ sessionId: entityId("Session id"), path: s.optional(documentPath), ifNoneMatch: s.optional(revision) }), LIMITS.pagesReadEntries, "Pages"),
+    (value) => (value.length === 0 ? "must name at least one page" : null),
+  ),
+});
+
+export const PAGE_READ_REASONS = ["no_session", "no_page", "too_large", "unreachable"] as const;
+
+export const pagesRead = spec({
+  method: "pages.read",
+  description: "Read other sessions' page documents as the host serves them, conditionally and in one call.",
+  effect: "read",
+  confirmed: false,
+  implemented: true,
+  maxResponseBytes: LIMITS.pagesReadBytes,
+  validateParams: params(pagesReadParams),
+  validateResult: result(
+    s.object({
+      pages: s.array(
+        s.object({
+          sessionId: entityId("Session id"),
+          path: s.string({ min: 1, max: 1024, label: "Path" }),
+          revision: s.optional(revision),
+          html: s.optional(s.string({ max: LIMITS.pagesReadBytes, label: "Document" })),
+          unchanged: s.optional(s.literal([true])),
+          deferred: s.optional(s.literal([true])),
+          title: s.optional(title()),
+          projectId: s.optional(s.nullable(entityId("Project id"))),
+          working: s.optional(s.boolean()),
+          readOnly: s.optional(s.boolean()),
+          answerToken: s.optional(answerToken),
+          error: s.optional(
+            s.object({
+              code: s.literal(["not_found", "unavailable", "response_too_large"]),
+              reason: s.literal(PAGE_READ_REASONS),
+              message: s.string({ min: 1, max: LIMITS.errorMessageChars, label: "Message" }),
+            }),
+          ),
+        }),
+        LIMITS.pagesReadEntries,
+      ),
+    }),
+  ),
+  doc: {
+    params: `\`{ pages: [{ sessionId, path?, ifNoneMatch? }] }\` — 1 to ${LIMITS.pagesReadEntries} entries. \`path\` is a document of that page (default its entry document); \`ifNoneMatch\` is the revision you already hold.`,
+    result: `\`{ pages: [entry] }\`, one per request entry, in order, each with \`sessionId\` and \`path\` and one of: the document \`{ revision, html, title, projectId, working, readOnly, answerToken }\`; \`{ unchanged: true, title, projectId, working, readOnly, answerToken }\` when \`ifNoneMatch\` is current; \`{ deferred: true }\` when it did not fit this response — ask again; \`{ error: { code, reason, message } }\` with reason \`no_session\`, \`no_page\`, \`too_large\` or \`unreachable\`. \`title\`, \`projectId\` and \`working\` are the owning session's; \`readOnly\` is true for an offline copy.`,
+    notes: `\`threadPage.embed\` calls this for you; call it yourself only to quote or summarise another page. \`html\` is the document as the host serves it for a sandboxed \`srcdoc\` frame: its parts and own files carried in, the kernel injected in embedded mode. One response holds at most ${mebibytes(LIMITS.pagesReadBytes)}: a larger single document is refused for that entry, never truncated, and the rest are deferred. A page may read a document of its own page.`,
+  },
+});
+
+const submissionAnswer = s.object({
+  name: s.string({ max: 128, label: "Name" }),
+  label: s.string({ max: 300, label: "Label" }),
+  value: s.union(s.union(s.boolean(), s.string({ max: LIMITS.answerValueChars, label: "Answer" })), s.array(s.string({ max: 2_000, label: "Answer" }), LIMITS.answerListItems)),
+});
+
+export type PagesAnswerParams = s.Infer<typeof pagesAnswerParams>;
+const pagesAnswerParams = s.refine(
+  s.object({
+    answerToken,
+    form: s.optional(
+      s.object({
+        submissionId: s.string({ min: 1, max: 128, pattern: /^[A-Za-z0-9._-]+$/, label: "Submission id" }),
+        title: s.string({ max: 300, label: "Title" }),
+        answers: s.array(submissionAnswer, LIMITS.answersPerSubmission, "Answers"),
+      }),
+    ),
+    reply: s.optional(
+      s.object({
+        title: s.optional(title()),
+        mode: s.withDefault(s.literal(["queue", "steer"], "Mode"), "queue"),
+        result: s.json({ maxBytes: LIMITS.resultTextBytes }, "Result"),
+        idempotencyKey: s.optional(s.string({ min: 1, max: LIMITS.requestIdChars, pattern: /^[A-Za-z0-9][A-Za-z0-9._:-]*$/, label: "Idempotency key" })),
+      }),
+    ),
+  }),
+  (value) => ((value.form === undefined) === (value.reply === undefined) ? "needs exactly one of form and reply" : null),
+);
+
+export const pagesAnswer = spec({
+  method: "pages.answer",
+  description: "Deliver an answer given inside an embedded page to the session that owns that page.",
+  effect: "granted-write",
+  confirmed: false,
+  implemented: true,
+  maxRequestBytes: LIMITS.pagesAnswerBytes,
+  validateParams: params(pagesAnswerParams),
+  validateResult: result(deliveryResult),
+  doc: {
+    params: "`{ answerToken, form }` or `{ answerToken, reply }` — `form: { submissionId, title, answers: [{ name, label, value }] }`, `reply: { title?, mode?, result, idempotencyKey? }`. The token comes with a `pages.read` of exactly that document.",
+    result: "`{ delivery: \"started\" | \"queued\" | \"steered\", duplicate }`.",
+    notes:
+      "You do not call this: the kernel does, for forms and `session.reply` inside an embed, and the message is worded by the host exactly as from that page's own URL. It takes no session id and no free text. The first answer from this page into another session asks the reader once, in host chrome, naming both pages; the grant is remembered until the reader revokes it, and a declined one is `cancelled`. `stale_page` means the embedded page changed — the embed refreshes; `not_found` that its session is gone.",
+  },
+});
+
 // --- device --------------------------------------------------------------------
 
 export const projectsBrowse = spec({
@@ -475,6 +581,8 @@ export const ALL_CAPABILITIES = Object.freeze([
   sessionReply,
   storageSet,
   pagesOpen,
+  pagesRead,
+  pagesAnswer,
   sessionsOpenHost,
   sessionsSend,
   sessionsStart,

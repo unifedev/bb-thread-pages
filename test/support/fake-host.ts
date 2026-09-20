@@ -159,6 +159,12 @@ export function createFakeHost(): { host: SessionHost; state: FakeHostState } {
         const bytes = state.files.get(joinPath(loc.rootPath, relativePath));
         return bytes ? { bytes, sha256: revisionOf(bytes), modifiedAtMs: 1_700_000_000_000 } : null;
       },
+      async list(loc, relativeDirectory) {
+        record("files.list", loc, relativeDirectory);
+        if (state.offline) throw new PageError("unavailable", "host offline");
+        const prefix = `${joinPath(loc.rootPath, ...(relativeDirectory ? [relativeDirectory.replace(/\/+$/, "")] : []))}/`;
+        return [...state.files.keys()].filter((key) => key.startsWith(prefix) && !key.slice(prefix.length).includes("/")).map((key) => key.slice(prefix.length));
+      },
       async write(loc, relativePath, bytes, options) {
         record("files.write", loc, relativePath, bytes.byteLength, options);
         if (state.offline) throw new PageError("unavailable", "host offline");

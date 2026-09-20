@@ -39,7 +39,14 @@ const SHELL_CSS = `
 .act:disabled{opacity:.5;cursor:default}
  .act-warn:hover{color:var(--warn);border-color:var(--warn)}
  @media(max-width:34rem){.work .word{display:none}.status{font-size:.8rem}.acts{order:9;margin-left:auto}}
-iframe{display:block;width:100%;height:100%;border:0;background:var(--bg)}
+/* Two frames can share the stage: a refreshed document loads behind the shown one. spec R2.18a */
+.stage{position:relative;min-height:0}
+iframe{position:absolute;inset:0;display:block;width:100%;height:100%;border:0;background:var(--bg)}
+iframe[data-incoming]{visibility:hidden}
+.grants{flex:none}
+dialog.grants-list ul{list-style:none;margin:0 0 1rem;padding:0;display:grid;gap:.4rem}
+dialog.grants-list li{display:flex;align-items:center;justify-content:space-between;gap:.75rem}
+dialog.grants-list li span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 dialog{margin:auto;max-width:min(30rem,calc(100vw - 2rem));padding:1.15rem 1.25rem;border:1px solid var(--line);border-radius:.75rem;color:var(--ink);background:var(--surface)}
 dialog::backdrop{background:rgb(0 0 0 / .45)}dialog h2{margin:0 0 .5rem;font-size:1rem}dialog p{margin:0 0 1rem;color:var(--muted);overflow-wrap:anywhere}
 dialog .row{display:flex;gap:.5rem;justify-content:flex-end}dialog button{padding:.4rem .8rem;border:1px solid var(--line);border-radius:.4rem;color:var(--ink);background:var(--bg);cursor:pointer}
@@ -82,10 +89,11 @@ export function renderShell(view: ShellView): string {
     <span class="title">${title}</span>
     <span class="work" role="status" data-shell-working data-visible="${working}"><span class="dot" aria-hidden="true"></span><span class="word">${escapeHtml(view.config.workingLabel)}</span></span>
     <span class="status" role="status" data-shell-status${warn ? ' data-tone="warn"' : ""}>${escapeHtml(initialStatus(view.config))}</span>
+    <button type="button" class="act grants" data-shell-grants hidden></button>
     ${acts}
     <button type="button" class="reload" data-shell-reload aria-label="Reload updated page">Reload</button>
   </header>
-  <iframe title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
+  <div class="stage"><iframe title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe></div>
 </div>
 <dialog aria-labelledby="tp-confirm-title">
   <form method="dialog">
@@ -96,6 +104,12 @@ export function renderShell(view: ShellView): string {
       <button type="button" value="confirm">Confirm</button>
     </div>
   </form>
+</dialog>
+<dialog class="grants-list" data-shell-grants-dialog aria-labelledby="tp-grants-title">
+  <h2 id="tp-grants-title">This page may send your answers to</h2>
+  <p>You allowed each of these once, when you first answered that session from inside this page. Revoke one and you are asked again next time.</p>
+  <ul></ul>
+  <div class="row"><button type="button" value="close">Close</button></div>
 </dialog>
 <script nonce="${nonce}" data-config="${config}">${SHELL_RUNTIME}</script>
 </body>

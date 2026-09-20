@@ -9,7 +9,7 @@ import { homeUrl, pageUrl, type ServingContext } from "../serving/context.ts";
 import { hasSeed, renderSeed } from "./seed/seed.ts";
 
 /**
- * `bb thread-page init | home [--clear] | guide | status`. spec 06 §The command, RW-11
+ * `bb thread-page init | home [--clear] | guide | status | grants`. spec 06 §The command, RW-11
  */
 export interface CliDeps {
   serving: ServingContext;
@@ -28,6 +28,7 @@ export function registerCli(bb: BbPluginApi, deps: CliDeps): void {
       { name: "guide", summary: "Print the authoring guide (forms, files, documents, other services, capabilities, limits)", usage: "bb thread-page guide" },
       { name: "home", summary: "Make this session's page the home page every page links back to", usage: "bb thread-page home [--clear]" },
       { name: "status", summary: "Show settings, the instruction new sessions get, and this session's page", usage: "bb thread-page status" },
+      { name: "grants", summary: "List or revoke what pages may answer other sessions from an embed", usage: "bb thread-page grants [--revoke <page-session> <target-session> | --revoke-all]" },
     ],
     async run(argv, context) {
       const [command, ...rest] = argv;
@@ -43,6 +44,11 @@ export function registerCli(bb: BbPluginApi, deps: CliDeps): void {
             return usage("bb thread-page home [--clear]");
           case "status":
             return rest.length === 0 ? await status(deps, context) : usage();
+          case "grants":
+            if (rest.length === 0) return await listGrants(deps);
+            if (rest.length === 3 && rest[0] === "--revoke" && isSessionId(rest[1]) && isSessionId(rest[2])) return await revokeGrants(deps, rest[1], rest[2]);
+            if (rest.length === 1 && rest[0] === "--revoke-all") return await revokeGrants(deps);
+            return usage("bb thread-page grants [--revoke <page-session> <target-session> | --revoke-all]");
           default:
             return usage();
         }
@@ -62,7 +68,7 @@ function contributedLine(set: { contributors: readonly { id: string; version: st
     .join("; ");
 }
 
-function usage(text = "bb thread-page <init|guide|home [--clear]|status>"): PluginCliResult {
+function usage(text = "bb thread-page <init|guide|home [--clear]|status|grants>"): PluginCliResult {
   return { exitCode: 2, stderr: `Usage: ${text}\n` };
 }
 
@@ -153,8 +159,8 @@ async function init(deps: CliDeps, context: PluginCliContext): Promise<PluginCli
     `page: ${absolutePath}`,
     `link: [Open the Thread Page](${url})`,
     STATE_LINES[state],
-    `site: files beside ${ENTRY_FILE} are served relatively (nested paths included), other .html files are documents of the page; ${UPLOAD_DIR}/ holds what the reader attaches.`,
-    "guide: bb thread-page guide  (controls anywhere on the page, your own files and documents, other services and servers, live session state, starting sessions, limits)",
+    `site: files beside ${ENTRY_FILE} are served relatively (nested paths included), other .html files are documents of the page — except parts (a path segment starting with _), which a document includes; ${UPLOAD_DIR}/ holds what the reader attaches.`,
+    "guide: bb thread-page guide  (controls anywhere on the page, your own files, documents and parts, showing other sessions' pages, other services and servers, live session state, starting sessions, limits)",
     await homeLine(deps, current.id),
   ];
   if (problem) lines.push(`warning: the existing page cannot be served — ${problem}`);
@@ -191,6 +197,30 @@ async function clearHome(deps: CliDeps): Promise<PluginCliResult> {
   return { exitCode: 0, stdout: "home: cleared — pages link to the built-in home page again.\n" };
 }
 
+/** The operator's view of what the reader sees in each page's shell bar. spec R5.65, R6.30 */
+async function listGrants(deps: CliDeps): Promise<PluginCliResult> {
+  const { serving } = deps;
+  const grants = await serving.grants.list();
+  const name = async (id: string): Promise<string> => {
+    const session = await serving.host.sessions.get(id).catch(() => null);
+    return session ? `${session.title} (${id})` : `(${id})`;
+  };
+  const lines = [
+    "# Pages that may send the reader's answers to another session",
+    `embedAnswerGrants: ${serving.settings.current().embedAnswerGrants ? "on — the reader is asked once per pair" : "off — nobody is asked; the grants below are kept but not consulted"}`,
+    "",
+  ];
+  if (grants.length === 0) lines.push("(none)");
+  for (const grant of grants) lines.push(`${await name(grant.from)} → ${await name(grant.to)}   since ${new Date(grant.grantedAtMs).toISOString()}`);
+  lines.push("", "Revoke one: bb thread-page grants --revoke <page-session> <target-session>. The reader can do the same from the page's header.");
+  return { exitCode: 0, stdout: `${lines.join("\n")}\n` };
+}
+
+async function revokeGrants(deps: CliDeps, from?: string, to?: string): Promise<PluginCliResult> {
+  const removed = await deps.serving.grants.revoke(from, to);
+  return { exitCode: 0, stdout: `revoked: ${removed}\n` };
+}
+
 async function status(deps: CliDeps, context: PluginCliContext): Promise<PluginCliResult> {
   const { serving } = deps;
   const settings = serving.settings.current();
@@ -202,6 +232,7 @@ async function status(deps: CliDeps, context: PluginCliContext): Promise<PluginC
     `pageSeedHtml: ${hasSeed(settings.pageSeedHtml) ? `set (${settings.pageSeedHtml.length} characters) — init starts new pages from it` : "(empty — init creates no file; the agent writes the whole page)"}`,
     `workingLabel: ${settings.workingLabel ? JSON.stringify(settings.workingLabel) : "(blank — indicator hidden)"}`,
     `homeSessionId: ${settings.homeSessionId || "(none — pages link to the built-in home page)"}`,
+    `embedAnswerGrants: ${settings.embedAnswerGrants ? "on — the reader is asked once before a page answers another session from an embed" : "off — never asked"}`,
     `site strategy: ${serving.site.name}`,
     `limits: entry ${LIMITS.entryDocumentBytes / (1024 * 1024)} MiB, upload ${LIMITS.uploadFileBytes / (1024 * 1024)} MiB × ${LIMITS.uploadsPerForm}, rate ${LIMITS.ratePerMinute}/min`,
     `contributed capabilities: ${contributedLine(await serving.contributions.current())}`,
@@ -220,6 +251,9 @@ async function status(deps: CliDeps, context: PluginCliContext): Promise<PluginC
     try {
       const page = await serving.pages.load(current.id);
       lines.push(`revision: ${page.revision}${page.stale ? " (offline copy)" : ""}`);
+      // Parts and own files that were left as written, where the agent can see them. spec R1.25
+      lines.push(`carried into the document: ${page.site.resolved} file${page.site.resolved === 1 ? "" : "s"} (parts and own files)`);
+      for (const file of page.site.skipped.slice(0, 20)) lines.push(`not carried: ${file.path} (${file.reason})`);
     } catch (error) {
       lines.push(`revision: ${PageError.is(error) ? error.message : errorText(error)}`);
     }

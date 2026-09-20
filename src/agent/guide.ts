@@ -18,7 +18,9 @@ export function buildGuide(registry: CapabilityRegistry, site: SiteStrategy, con
     uploads(),
     ownFiles(site),
     documents(),
+    parts(),
     keepingCurrent(),
+    embedding(),
     runtimeApi(),
     capabilities(registry),
     contributed(contributors),
@@ -71,8 +73,8 @@ own script owns; the host then leaves it entirely alone.
   is in flight its controls are disabled; afterwards the status line says
   "Sent (queued)" or why it failed.
 - Typing into a captured form marks the page dirty, so a new version of the
-  page does not reload under the reader. Custom state the host cannot see:
-  window.threadPage.setDirty(true|false).
+  page is not shown under the reader: they are offered it instead. Custom state
+  the host cannot see: window.threadPage.setDirty(true|false).
 
 ### Controls anywhere on the page
 
@@ -163,7 +165,7 @@ consequences worth knowing:
 - \`url()\` inside a stylesheet you reference is followed too, so backgrounds
   and \`@font-face\` survive. Absolute and remote URLs are never touched.
 - Changing a file beside ${ENTRY_FILE} changes the document, so an open page
-  reloads — see *Keeping a page's data current*. You do not have to touch
+  refreshes — see *Keeping a page current*. You do not have to touch
   ${ENTRY_FILE} to publish new data.
 ${
   site.name === "core-storage"
@@ -177,29 +179,162 @@ Remote fetches work (see Network).`
 Page script may also fetch its own files as data: \`await fetch("data.json")\`.`
 }`;
 
-const keepingCurrent = () => `## Keeping a page's data current
+const keepingCurrent = () => `## Keeping a page current
+
+Saving is publishing, and an open page follows. The shell re-checks your
+document with one conditional request — every **${LIMITS.shellPollWorkingMs / 1000} s while your session is
+working, and for ${LIMITS.shellPollAfterAnswerMs / 1000} s after the reader answers from the page**; every ${LIMITS.shellPollMs / 1000} s
+otherwise; never while the tab is hidden. When the document changed it is
+**swapped in place**: the new one loads behind the one on screen and takes its
+place when it is ready. The top bar stays, nothing flashes, the address and the
+history are untouched, and the reader's scroll position is kept. So a reader
+who answers and watches sees your rewritten page about ${LIMITS.shellPollWorkingMs / 1000} s after you save it.
+
+**Your page needs no code for any of this, and must not build its own.** There
+is no reload call in the API. Do not poll for your own revision, do not
+\`location.reload()\` (inside the frame it reloads the document without its
+connection to the host), and do not hop between twin documents to force a
+refresh — each of those is slower, costs the page's call budget, or litters the
+reader's history.
 
 The entry document is the only artifact guaranteed to reach every reader, on
-every origin. Rewriting it is therefore how you push new data to an open page:
-the shell notices the new revision within ${LIMITS.shellPollMs / 1000} s and reloads the page under
-the reader, preserving what they were typing. You do not need a poller, a
-sidecar or a socket for this — a page that follows a data source is a page
-something rewrites.
+every origin. Rewriting it — or any file or part it carries — is therefore how
+you push new data to an open page: a page that follows a data source is a page
+something rewrites, and while your session works the reader sees each rewrite
+within seconds.
 
 Three things to get right:
 
 - **Make the build deterministic.** An unchanged data set must produce a
   byte-identical document. This is the non-obvious half: a generated timestamp
-  in the payload turns every rebuild into a reload for every reader, and the
-  page will look like it is flickering for no reason.
-- **Set \`setDirty(true)\` while the reader is mid-edit** in state the host
-  cannot see. A captured form does this for you; your own widgets do not.
-- **Refresh on a slow watch, not a tight timer.** A page shares a budget of
-  ${LIMITS.ratePerMinute} requests a minute with its own forms.
+  in the payload turns every rebuild into a refresh for every reader.
+- **The dirty flag is what protects the reader.** While the page is dirty a new
+  version is *offered* in the top bar ("Page changed — reload when ready")
+  rather than shown. A captured form sets it when the reader types; for state
+  the host cannot see, call \`setDirty(true)\` — and \`setDirty(false)\` when
+  it is safe again, or the reader stops getting your updates.
+- **A refresh starts the document fresh.** Script state does not survive it.
+  Keep what must survive in \`storage\`, or in the document you write.
 
 \`window.threadPage.watch\` is the other half, for live host state — sessions,
 activity — that does not live in your file. Use the document rewrite for data
 you generate, and \`watch\` for data the host owns.`;
+
+const parts = () => `## A document made of parts
+
+A document can be assembled from several files when it is served, so a page
+made of pieces needs no build step: adding a piece is writing one file.
+
+    <main>
+      <link rel="thread-page-include" href="_cards/*.html">
+    </main>
+
+The \`<link>\` is replaced, in place, by the text of the file it names — or, with
+a \`*\`, of every matching file in **name order** (plain character order: number
+them \`01-…\`, \`02-…\`; \`10\` sorts before \`2\`). \`*\` matches within the last path
+segment only, and never a name starting with a dot. A pattern that matches
+nothing leaves nothing.
+
+- **A part is a file with a path segment starting with \`_\`** — \`_cards/a.html\`,
+  \`slides/_intro.html\`, \`_footer.html\`. Only a part can be included, and a
+  part is **never a document of the page**: no link or address opens it. Every
+  other \`.html\` file is a document (above) and cannot be included.
+- Replacement is textual. The reader's browser parses the assembled document
+  once, as if you had written one file, so a part may hold table rows, a
+  \`<script>\`, a \`<style>\`, or half of a list. A part is a fragment: no doctype,
+  no \`<html>\`, no \`<head>\`.
+- A part's relative \`src\`, \`href\`, \`poster\` and \`srcset\` resolve **from the
+  part's own directory**, and those files are carried into the document like
+  any other. URLs a script builds at run time resolve from the document.
+- A part may include parts, ${LIMITS.includeDepth} levels deep. At most ${LIMITS.includeParts} parts per document, each
+  at most ${mebibytes(LIMITS.includePartBytes)}, and the assembled document stays within the ${mebibytes(LIMITS.entryDocumentBytes)} entry limit.
+- Paths stay inside your page root: \`..\`, absolute paths and symbolic links are
+  refused, as for every file of the page.
+- The revision covers the assembled document. Change, add or delete a part and
+  an open reader gets the new document — you never touch ${ENTRY_FILE}.
+- An include that cannot be honoured — missing, not a part, outside the root,
+  over a limit — is **left as you wrote it**, and the document is still served.
+  \`bb thread-page status\` lists each one with its reason, and so does the
+  plugin log.
+
+Parts are one document once assembled: ids, form names and script globals share
+one namespace. Give each part what it needs to stand beside the others.`;
+
+const embedding = () => `## Showing another session's page
+
+A page can show another session's page inside it, live, and let the reader
+answer **that page's agent** from there. One call:
+
+    const stop = window.threadPage.embed(target, { sessionId, path, onState })
+
+\`target\` is an \`<iframe>\` you placed, or any container element — the host puts
+a frame filling it. \`sessionId\` is the session whose page to show; \`path\` is a
+document of that page (default its entry document). Call \`stop()\` to remove it.
+Size and position the frame or its container as you like; the host supplies no
+chrome around it.
+
+What the host does for you, with no further code:
+
+- loads the document exactly as the host serves it at its own address, into a
+  frame that is **always** \`sandbox="allow-scripts allow-forms"\` whatever you
+  set, on an origin of its own — it cannot reach your page, and you cannot reach
+  into it;
+- keeps it fresh: every ${LIMITS.embedPollWorkingMs / 1000} s while an embedded session is working or was
+  answered through its embed in the last ${LIMITS.embedPollAfterAnswerMs / 1000} s, every ${LIMITS.embedPollMs / 1000} s otherwise, never
+  while the tab is hidden. **All the embeds of a page are checked in one call
+  per tick** (up to ${LIMITS.pagesReadEntries} per call, more take turns), so twelve embeds cost your
+  call budget what one does. At most ${LIMITS.embedsPerPage} embeds on a page;
+- refreshes an embed without touching your page, and keeps its scroll position;
+- never refreshes it under a reader who is typing in it: the new version is
+  offered inside the embed, and your page counts as dirty meanwhile, so your own
+  refresh waits too;
+- follows its links: one to another document of that page opens in the embed,
+  an \`https:\` link goes through the usual confirmation;
+- shows a short line of its own when there is nothing to show — no such
+  session, archived, no page yet, too large, unreachable — and keeps checking.
+
+**Answers go to the session that owns the embedded page, never to yours.** Its
+forms and \`session.reply\` behave, validate and are worded exactly as on its own
+address, so that agent cannot tell the answer came through your page. The
+**first** time the reader answers a given session from inside your page, the
+host asks them once, in the top bar's own dialog: *Let ‘your page’ send your
+answers to ‘that session’?* It is remembered; the reader can revoke it from
+the top bar. Declined, the answer is not sent and the form says so. You cannot
+word, skip or pre-approve it, and there is nothing to handle. A document of
+your own page embedded in your page needs no grant.
+
+Inside an embed the page is itself, with less reach: \`context.get\` describes
+*its* session; \`pages.open\`, \`sessions.openHost\`, \`navigation.openExternal\`,
+\`sessions.snapshot\`, \`projects.list\` and \`providers.list\` work; everything else
+— \`storage.get\`/\`storage.set\`, \`session.activity\`, \`sessions.send\`/\`start\`/
+\`stop\`/\`archive\`/\`markRead\`, \`projects.browse\`/\`create\`, contributed
+capabilities — rejects with \`unavailable\`, and it may make ${LIMITS.embedCallsPerMinute} calls a minute.
+**A form with a file attached is not sent from inside an embed**; its status
+line tells the reader to open the page itself. **Embedding is one level deep:**
+\`embed\` called inside an embedded page shows a line saying so and loads nothing.
+So write your own page to degrade when \`storage\` answers \`unavailable\`: it may
+be shown inside someone else's.
+
+\`onState\`, if you pass it, is called with
+\`{ status, sessionId, path, title, revision, working, updateAvailable }\` when any
+of them changes — \`status\` is \`loading\`, \`shown\`, \`not_found\`, \`no_page\`,
+\`too_large\`, \`unavailable\` or \`nested\`; \`title\` and \`working\` are the owning
+session's. Use it to draw your own frame around an embed: a title, a working
+dot, a link made with \`pages.open\`. Without it, pass nothing.
+
+Feature-check on a page that may be read on an older host:
+\`typeof window.threadPage.embed === "function"\`.
+
+Underneath are two capabilities you rarely call yourself. \`pages.read\` returns
+other sessions' page documents (a whole document is agent output you can read
+and send anywhere — quote or summarise another page with it, parsing \`html\`
+with \`DOMParser\`). \`pages.answer\` delivers an embed's answer and only that: it
+takes the token a read returned, never a session id or a prompt. To *say*
+something to another session in your own words, use \`sessions.send\`, which the
+reader confirms each time.
+
+Embedding another **site** is still not possible: a frame with a URL is blocked.
+Link to it.`;
 
 const runtimeApi = () => `## window.threadPage
 
@@ -209,6 +344,7 @@ The complete page-facing API; it is frozen and cannot be replaced.
     await window.threadPage.invoke(method, params)
     const stop = window.threadPage.watch(method, params, (value, error) => {…}, { intervalMs })
     window.threadPage.setDirty(true | false)
+    const stopEmbed = window.threadPage.embed(target, { sessionId, path, onState })
 
 - \`invoke\` resolves with the capability's result and rejects with an Error
   whose \`code\` is one of: invalid_json, invalid_request, invalid_params,
@@ -221,8 +357,9 @@ The complete page-facing API; it is frozen and cannot be replaced.
   ${LIMITS.watchMinMs / 1000} s–${LIMITS.watchMaxMs / 60_000} min, paused while the tab is hidden. Errors go to the
   listener's second argument. Call the returned function to stop; a page that
   never calls watch causes no polling.
-- \`stale_page\` means the page changed under the call: the shell offers a
-  reload. \`cancelled\` means the reader declined a confirmation — a normal
+- \`embed\` shows another session's page — see *Showing another session's page*.
+- \`stale_page\` means the page changed under the call: the shell shows the new
+  version, or offers it while the page is dirty. \`cancelled\` means the reader declined a confirmation — a normal
   outcome every page calling a confirmed capability must handle, not an error.
 
 Check what is enabled rather than assume: \`(await invoke("context.get")).capabilities\`.`;
@@ -300,7 +437,13 @@ ${registered}`;
 
 function capabilities(registry: CapabilityRegistry): string {
   const rows = registry.list().map((spec) => {
-    const status = spec.implemented ? (spec.confirmed ? "confirmed in trusted chrome" : "no confirmation") : "not implemented on this host: unknown_method";
+    const status = !spec.implemented
+      ? "not implemented on this host: unknown_method"
+      : spec.effect === "granted-write"
+        ? "asked once per pair in trusted chrome, then remembered"
+        : spec.confirmed
+          ? "confirmed in trusted chrome"
+          : "no confirmation";
     const lines = [`### \`${spec.method}\` — ${spec.effect} · ${status}`, "", spec.description, "", `Parameters: ${spec.doc.params}`, "", `Result: ${spec.doc.result}`];
     if (spec.doc.notes) lines.push("", spec.doc.notes);
     return lines.join("\n");
@@ -309,8 +452,9 @@ function capabilities(registry: CapabilityRegistry): string {
 
 Every way a page can affect anything outside itself. Effects: read;
 own-session-write; cross-session-write, destructive and device (always
-confirmed); navigation (confirmed when it leaves this host). A confirmed
-capability shows a dialog in trusted chrome with the host's own wording; you
+confirmed); navigation (confirmed when it leaves this host); granted-write
+(\`pages.answer\` only: the reader is asked once per pair of pages, not per
+call). A confirmed capability shows a dialog in trusted chrome with the host's own wording; you
 do not build it and cannot word it. Every capability validates its
 parameters exactly — unknown keys are refused — and returns only the fields
 listed here.
@@ -435,8 +579,9 @@ nobody can be asked to change.`;
 const documents = () => `## Several documents in one page
 
 Your page may hold more than one HTML document. Any \`.html\` file in your page
-root other than ${ENTRY_FILE} — nested directories included, ${UPLOAD_DIR}/ excluded
-— is a document of the page. Link to it relatively, as a static site would:
+root other than ${ENTRY_FILE} — nested directories included, ${UPLOAD_DIR}/ excluded,
+and excluding *parts* (any path with a segment starting with \`_\`; see *A
+document made of parts*) — is a document of the page. Link to it relatively, as a static site would:
 
     <a href="details.html">Details</a>
 
@@ -444,7 +589,7 @@ A click on such a link opens that document **inside the page**: the top bar
 stays, the address changes so reload, back and forward return to it, and it
 runs with the same runtime — its forms answer your session and its
 capabilities act for it. Each document has its own revision, so saving one
-reloads only a reader who is looking at it. Its own relative references
+refreshes only a reader who is looking at it. Its own relative references
 resolve from its own directory.
 
 Every document is part of the same page and should look it: a document opened
@@ -532,7 +677,12 @@ const limits = () => `## Limits
 | Folder selection | ${LIMITS.selectionTokenMs / 60_000} minutes, single use |
 | Submission idempotency | ${LIMITS.idempotencyRecords} records, ${LIMITS.idempotencyMs / 60_000} minutes |
 | Rate limit | ${LIMITS.ratePerMinute} accepted requests a minute and ${LIMITS.rateConcurrent} in flight, per page; refused with rate_limited |
-| Shell revision poll | every ${LIMITS.shellPollMs / 1000} s while visible |
+| Shell revision poll | every ${LIMITS.shellPollWorkingMs / 1000} s while the session works and for ${LIMITS.shellPollAfterAnswerMs / 1000} s after the reader answers; every ${LIMITS.shellPollMs / 1000} s otherwise; paused while hidden |
+| Parts | ${LIMITS.includeParts} per document, ${mebibytes(LIMITS.includePartBytes)} each, ${LIMITS.includeDepth} levels deep; the assembled document within the entry limit |
+| Embeds | ${LIMITS.embedsPerPage} per page; checked every ${LIMITS.embedPollWorkingMs / 1000} s while an embedded session works or was just answered, every ${LIMITS.embedPollMs / 1000} s otherwise; one call per tick for every ${LIMITS.pagesReadEntries} |
+| pages.read | ${LIMITS.pagesReadEntries} documents per call, ${mebibytes(LIMITS.pagesReadBytes)} per response; a larger single document is refused, the rest deferred |
+| Calls from one embedded page | ${LIMITS.embedCallsPerMinute} a minute, then rate_limited |
+| Answer grant | asked once per (your page → embedded session), kept until revoked; ${LIMITS.grantsPerPage} per page |
 | watch interval | ${LIMITS.watchDefaultMs / 1000} s default, ${LIMITS.watchMinMs / 1000} s–${LIMITS.watchMaxMs / 60_000} min |
 | Offline copy | entry documents up to ${kibibytes(LIMITS.offlineCopyBytes)} are kept so the page opens read-only when its host is unreachable |`;
 
@@ -542,7 +692,10 @@ const limitations = (site: SiteStrategy) => `## Known limitations
   disabled and effectful capabilities answer unavailable.
 - A confirmed capability that fails on the host answers handler_error with a
   generic message; the cause is in the plugin log (\`bb plugin logs thread-pages\`).
-- Embedding another page or site in an <iframe> is blocked (frame-src 'none').
+- Embedding another **site** in an <iframe> is blocked (frame-src 'none'); only
+  \`threadPage.embed\` shows another session's page. Inside an embed, in Safari,
+  a relative reference that was *not* carried into the document (missing or over
+  the size limits) resolves against the embedding page.
 - \`voice.captureAndTranscribe\` is not implemented: unknown_method.${
   site.name === "core-storage"
     ? `\n- fetch() of your own files from page script is refused on this host (see Files you show the reader).` +

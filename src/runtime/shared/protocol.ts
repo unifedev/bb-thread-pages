@@ -37,10 +37,18 @@ export type KernelMessage =
   | { kind: "thread-page:submit"; submissionId: string; title: string; answers: SubmitAnswer[]; files: SubmitFile[] }
   /** A link to another document of the page: the shell opens it in place. spec R1.12a */
   | { kind: "thread-page:open-document"; path: string }
+  /** Where the document is scrolled to, so a refresh can return there. spec R2.18b, R4.45 */
+  | { kind: "thread-page:scroll"; x: number; y: number }
+  /** Inside an embed: the reader accepted the offered new version. spec R4.46 */
+  | { kind: "thread-page:apply-update" }
   | BridgeRequestMessage;
 
 export type ShellMessage =
   | { kind: "thread-page:source-state"; stale: boolean }
+  /** After a refresh: return to where the previous document was scrolled. spec R2.18b */
+  | { kind: "thread-page:restore-scroll"; x: number; y: number }
+  /** Inside an embed: a new version exists and the document is dirty. spec R4.46 */
+  | { kind: "thread-page:update-available" }
   | { kind: "thread-page:submit-progress"; submissionId: string; message: string }
   | { kind: "thread-page:submit-result"; submissionId: string; ok: boolean; message?: string; error?: string }
   | BridgeResponseMessage;
@@ -51,6 +59,8 @@ export interface KernelConfig {
   stale: boolean;
   /** The URL the page's own files sit under; links to its HTML documents below it open in place. */
   siteRoot?: string | null;
+  /** The document is shown inside another page: its channel leads to that page's kernel. spec R4.48 */
+  embedded?: boolean;
 }
 
 /** Carried in the shell script's `data-config` attribute. The document fields change when another document of the page opens. */
@@ -76,6 +86,15 @@ export interface ShellConfig {
   /** A standing line for the status area, such as a home pointer that no longer resolves. spec R7.4 */
   notice: string | null;
   pollMs: number;
+  /** The poll while the session is mid-turn, and for a window after the reader answers. spec R2.17a */
+  pollWorkingMs: number;
+  pollAfterAnswerMs: number;
+  /** Whether the session was mid-turn when the shell was served. */
+  working: boolean;
+  /** How long a refreshed document may load behind the shown one before it is shown anyway. spec R2.18a */
+  refreshSwapMs: number;
+  /** Pages this page may answer from an embed, for the bar's list. spec R5.65 */
+  grants: { sessionId: string; title: string }[];
   maxUploadBytes: number;
   maxUploads: number;
 }
@@ -137,6 +156,18 @@ export function isBridgeResponse(value: unknown, expectedId?: string): value is 
     error.message.length > 0 &&
     error.message.length <= 512
   );
+}
+
+/**
+ * What a form's status line says once a submission settles. One wording for the
+ * shell and for the kernel that relays an embed's answers. spec R4.8, R4.48
+ */
+export function sentMessage(delivery: unknown): string {
+  return typeof delivery === "string" ? `Sent (${delivery})` : "Sent";
+}
+
+export function isScrollMessage(value: Record<string, unknown>): value is { kind: "thread-page:scroll"; x: number; y: number } {
+  return value.kind === "thread-page:scroll" && typeof value.x === "number" && typeof value.y === "number" && Number.isFinite(value.x) && Number.isFinite(value.y) && value.x >= 0 && value.y >= 0;
 }
 
 export function makeFailure(id: unknown, code: BridgeErrorCode, message: string): BridgeResponseMessage {

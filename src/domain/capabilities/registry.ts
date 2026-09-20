@@ -7,7 +7,7 @@ export function describe(spec: AnyCapabilitySpec): CapabilityDescriptor {
   return {
     method: spec.method,
     effect: spec.effect,
-    confirmation: spec.confirmed ? "required" : "none",
+    confirmation: spec.effect === "granted-write" ? "grant" : spec.confirmed ? "required" : "none",
     maxRequestBytes: spec.maxRequestBytes ?? LIMITS.capabilityPayloadBytes,
     maxResponseBytes: spec.maxResponseBytes ?? LIMITS.capabilityPayloadBytes,
     ...(spec.contributor
@@ -44,6 +44,10 @@ export function createRegistry(specs: readonly AnyCapabilitySpec[]): CapabilityR
     }
     if (spec.effect === "contributed-write" && !spec.contributor) {
       throw new TypeError(`${spec.method}: only a contributed capability may declare contributed-write`);
+    }
+    // The grant is asked for by the dispatcher, once per pair; a dialog per call would contradict the class. spec R5.7c
+    if (spec.effect === "granted-write" && (spec.confirmed || spec.method !== "pages.answer")) {
+      throw new TypeError(`${spec.method}: granted-write is pages.answer's alone, and is not confirmed per call`);
     }
     if ((spec.effect === "read" || spec.effect === "own-session-write" || spec.effect === "reader-state" || spec.effect === "contributed-write") && spec.confirmed) {
       throw new TypeError(`${spec.method} is a ${spec.effect} and must not be confirmed`);

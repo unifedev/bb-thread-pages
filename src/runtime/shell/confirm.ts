@@ -6,12 +6,22 @@
  * Resolution is driven by button clicks rather than the dialog's `close`
  * event, which never fires in headless browsers (spec 09 §Testing note).
  */
-export interface Confirmer {
-  confirm(summary: string, onConfirmGesture?: () => void): Promise<boolean>;
+export interface ConfirmWording {
+  heading: string;
+  confirmLabel: string;
+  cancelLabel: string;
 }
+
+export interface Confirmer {
+  /** `wording` is the shell's own fixed text for a kind of question, never the page's. */
+  confirm(summary: string, onConfirmGesture?: () => void, wording?: ConfirmWording): Promise<boolean>;
+}
+
+const DEFAULT_WORDING: ConfirmWording = { heading: "Confirm this action", confirmLabel: "Confirm", cancelLabel: "Cancel" };
 
 export function createConfirmer(dialog: HTMLDialogElement): Confirmer {
   const text = dialog.querySelector("p");
+  const heading = dialog.querySelector("h2");
   const cancel = dialog.querySelector<HTMLButtonElement>('button[value="cancel"]');
   const confirm = dialog.querySelector<HTMLButtonElement>('button[value="confirm"]');
   let active: ((approved: boolean) => void) | null = null;
@@ -49,10 +59,13 @@ export function createConfirmer(dialog: HTMLDialogElement): Confirmer {
   });
 
   return {
-    confirm(summary, onConfirmGesture) {
+    confirm(summary, onConfirmGesture, wording = DEFAULT_WORDING) {
       return new Promise((resolve) => {
         if (active) settle(false);
         if (text) text.textContent = summary;
+        if (heading) heading.textContent = wording.heading;
+        if (confirm) confirm.textContent = wording.confirmLabel;
+        if (cancel) cancel.textContent = wording.cancelLabel;
         active = resolve;
         gesture = onConfirmGesture;
         if (typeof dialog.showModal === "function") {

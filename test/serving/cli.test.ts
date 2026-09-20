@@ -186,6 +186,6 @@ describe("settings", () => {
     expect(PAST_DEFAULTS.pageSeedHtml.has("b1da21f912d912ee3400d40fabc7a1a677679ae55d076b20b5cf0ee299c89593")).toBe(true);
     expect(PAST_DEFAULTS.agentInstructionText.has("88d9816fb6d27169b151db457df450f076de421cbf68f9b7b140a8483c0f7aef")).toBe(true);
     const kept = readSettings({ agentInstructions: true, agentInstructionText: "Mine", pageSeedHtml: "<p>mine</p>", workingLabel: " W ", homeSessionId: "" });
-    expect(kept).toEqual({ agentInstructions: true, agentInstructionText: "Mine", pageSeedHtml: "<p>mine</p>", workingLabel: "W", homeSessionId: "" });
+    expect(kept).toEqual({ agentInstructions: true, agentInstructionText: "Mine", pageSeedHtml: "<p>mine</p>", workingLabel: "W", homeSessionId: "", embedAnswerGrants: true });
   });
 });

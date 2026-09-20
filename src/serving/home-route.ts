@@ -10,6 +10,7 @@ import { KERNEL_RUNTIME } from "../generated/kernel-runtime.ts";
 import type { KernelConfig } from "../runtime/shared/protocol.ts";
 import { BUILTIN_HOME_ID, BUILTIN_HOME_PAGE, BUILTIN_HOME_TITLE } from "./builtin-home.ts";
 import type { ServingContext } from "./context.ts";
+import { describeGrants } from "./grants.ts";
 import { pageUrl } from "./context.ts";
 import { baseHeaders, documentCsp, failureResponse, shellCsp } from "./responses.ts";
 import { renderShell } from "./shell-html.ts";
@@ -60,6 +61,11 @@ export function homeRoute(serving: ServingContext) {
           empty: false,
           notice,
           pollMs: LIMITS.shellPollMs,
+          pollWorkingMs: LIMITS.shellPollWorkingMs,
+          pollAfterAnswerMs: LIMITS.shellPollAfterAnswerMs,
+          working: false,
+          refreshSwapMs: LIMITS.refreshSwapMs,
+          grants: await describeGrants(serving.host, serving.grants, BUILTIN_HOME_ID),
           maxUploadBytes: LIMITS.uploadFileBytes,
           maxUploads: LIMITS.uploadsPerForm,
         },

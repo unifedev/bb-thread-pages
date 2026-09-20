@@ -50,6 +50,45 @@ describe("the authoring guide", () => {
     expect(coreGuide).toContain("320px");
   });
 
+  // Spec 1.3: refresh, parts and embedded pages, each with its numbers, and
+  // nothing left that became false. A105, R6.24, R6.25
+  it("explains refresh, parts and embedding with their limits, and no longer says embedding is blocked", () => {
+    const refresh = section(coreGuide, "## Keeping a page current", "## Showing another session's page");
+    expect(refresh).toContain(`every **${LIMITS.shellPollWorkingMs / 1000} s while your session is\nworking, and for ${LIMITS.shellPollAfterAnswerMs / 1000} s after the reader answers from the page**; every ${LIMITS.shellPollMs / 1000} s`);
+    expect(refresh).toContain("swapped in place");
+    expect(refresh).toMatch(/There\s+is no reload call in the API/);
+    expect(refresh).toContain("a page that follows a data source is a page\nsomething rewrites, and while your session works the reader sees each rewrite\nwithin seconds");
+
+    const parts = section(coreGuide, "## A document made of parts", "## Keeping a page current");
+    expect(parts).toContain('<link rel="thread-page-include" href="_cards/*.html">');
+    expect(parts).toContain("name order");
+    expect(parts).toContain("A part is a file with a path segment starting with `_`");
+    expect(parts).toContain("never a document of the page");
+    expect(parts).toMatch(/from the\s+part's own directory/);
+    expect(parts).toContain(`At most ${LIMITS.includeParts} parts per document`);
+    expect(parts).toContain("`bb thread-page status` lists each one with its reason");
+    expect(parts).toMatch(/symbolic links are\s+refused/);
+
+    const embedding = section(coreGuide, "## Showing another session's page", "## window.threadPage");
+    expect(embedding).toContain("window.threadPage.embed(target, { sessionId, path, onState })");
+    expect(embedding).toContain('**always** `sandbox="allow-scripts allow-forms"`');
+    expect(embedding).toMatch(new RegExp(`every ${LIMITS.embedPollWorkingMs / 1000} s while an embedded session is working`));
+    expect(embedding).toMatch(/checked in one call\s+per tick/);
+    expect(embedding).toContain(`At most ${LIMITS.embedsPerPage} embeds on a page`);
+    expect(embedding).toContain("never to yours");
+    expect(embedding).toContain("asks them once");
+    expect(embedding).toContain("rejects with `unavailable`");
+    expect(embedding).toContain("A form with a file attached is not sent from inside an embed");
+    expect(embedding).toContain("one level deep");
+    expect(embedding).toContain(`${LIMITS.embedCallsPerMinute} calls a minute`);
+
+    expect(coreGuide).toContain("`pages.answer` — granted-write · asked once per pair in trusted chrome, then remembered");
+    expect(coreGuide).toContain(`| pages.read | ${LIMITS.pagesReadEntries} documents per call, 8 MiB per response`);
+    for (const stale of ["Embedding another page or site in an <iframe> is blocked", "within 10 s and reloads the page", "| Shell revision poll | every 10 s while visible |"]) {
+      expect(coreGuide, stale).not.toContain(stale);
+    }
+  });
+
   // The product ships nothing for a page to fill in, and the guide may not
   // smuggle a starting point back in as prose. spec R6.27, DECISIONS D11
   it("carries no starting design, template, starter page or page shapes", () => {

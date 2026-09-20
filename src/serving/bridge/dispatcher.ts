@@ -101,6 +101,22 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
         }
       }
 
+      // Confirmed once per pair: the same signed challenge, remembered on approval. spec R5.64
+      const grant = entry?.grant ? await entry.grant(invocation.params, context) : null;
+      if (grant) {
+        const binding = { session: token.session, revision: token.revision, requestId: request.id, method: request.method, params: invocation.params as JsonValue };
+        if (envelope.confirmation === null) {
+          const { challenge, payload } = mintChallenge(binding, grant.summary, serving.now(), serving.signingKey);
+          return { status: 401, body: { confirm: { requestId: request.id, summary: payload.summary, challenge, kind: "grant", grant: grant.target } } };
+        }
+        const challenge = openChallenge(envelope.confirmation, serving.signingKey, serving.now());
+        if (!challenge || !challengeMatches(challenge, binding)) {
+          throw new PageError("confirmation_invalid", "The confirmation is expired or does not match this request");
+        }
+        await grant.record();
+        serving.host.log.info(`grant given: ${token.session} → ${grant.target.sessionId}`);
+      }
+
       if (page.stale && invocation.spec.effect !== "read" && invocation.spec.effect !== "navigation") {
         throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);
       }

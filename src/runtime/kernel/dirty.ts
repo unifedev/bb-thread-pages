@@ -13,16 +13,19 @@ export interface DirtyTracker {
   /** Clears a form's dirt only if nothing touched it since `version`. */
   clearForm(form: HTMLFormElement, version: number | undefined): void;
   setCustom(dirty: boolean): void;
+  /** A page embedded in this one holds unsaved input. spec R4.47 */
+  setEmbedded(dirty: boolean): void;
 }
 
 export function createDirtyTracker(onChange: (dirty: boolean) => void): DirtyTracker {
   const versions = new Map<HTMLFormElement, number>();
   let sequence = 0;
   let custom = false;
+  let embedded = false;
   let last = false;
 
   function sync(): void {
-    const next = custom || versions.size > 0;
+    const next = custom || embedded || versions.size > 0;
     if (next === last) return;
     last = next;
     onChange(next);
@@ -45,6 +48,10 @@ export function createDirtyTracker(onChange: (dirty: boolean) => void): DirtyTra
     },
     setCustom(dirty) {
       custom = dirty === true;
+      sync();
+    },
+    setEmbedded(dirty) {
+      embedded = dirty === true;
       sync();
     },
   };

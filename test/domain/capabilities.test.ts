@@ -15,6 +15,8 @@ const SPEC_NAMES = [
   "session.reply",
   "storage.set",
   "pages.open",
+  "pages.read",
+  "pages.answer",
   "sessions.openHost",
   "sessions.send",
   "sessions.start",

@@ -3,7 +3,7 @@ import { DEFAULT_AGENT_INSTRUCTION } from "../agent/instruction.ts";
 import { isPastDefault } from "./past-defaults.ts";
 
 /**
- * The five settings and nothing more. spec 07
+ * The six settings and nothing more. spec 07
  *
  * Read live: a change applies to the next request without a restart (R7.5).
  * Neither the seed nor the instruction ever touches an existing page (R7.1).
@@ -15,6 +15,8 @@ export interface Settings {
   readonly pageSeedHtml: string;
   readonly workingLabel: string;
   readonly homeSessionId: string;
+  /** Ask the reader once before a page answers another session from an embed. spec R7.17, DECISIONS D31 */
+  readonly embedAnswerGrants: boolean;
 }
 
 export const DEFAULT_WORKING_LABEL = "Working — this is the last saved version";
@@ -59,6 +61,13 @@ export async function defineSettings(bb: BbPluginApi): Promise<LiveSettings> {
       description: "The session whose page is home; every other page links back to it. Set with `bb thread-page home`.",
       default: "",
     },
+    embedAnswerGrants: {
+      type: "boolean",
+      label: "Ask before a page answers another session",
+      description:
+        "A page can show another session's page inside it. On (the default): the first time you answer that session from inside the page, you are asked once, in the page header's own dialog, and can revoke it there. Off: never asked — sensible only where your agents already run without command approval, since an agent can then message another session from its shell anyway.",
+      default: true,
+    },
   });
   let current = readSettings(await handle.get());
   handle.onChange((next) => {
@@ -79,6 +88,7 @@ interface StoredSettings {
   pageSeedHtml: string;
   workingLabel: string;
   homeSessionId: string;
+  embedAnswerGrants?: boolean;
 }
 
 /** Normalises stored values; a stored past default reads as today's default. */
@@ -90,5 +100,7 @@ export function readSettings(values: StoredSettings): Settings {
     pageSeedHtml: isPastDefault("pageSeedHtml", values.pageSeedHtml) ? "" : values.pageSeedHtml,
     workingLabel: values.workingLabel.trim(),
     homeSessionId: values.homeSessionId.trim(),
+    // Required unless turned off. spec R7.17
+    embedAnswerGrants: values.embedAnswerGrants !== false,
   };
 }

@@ -12,7 +12,10 @@ export interface PollView {
   setWorking(working: boolean): void;
   showReload(visible: boolean): void;
   onStaleChanged(stale: boolean): void;
+  /** Reloads the whole shell: a token about to expire. */
   reloadView(): void;
+  /** Shows the document's new revision in place. spec R2.18a */
+  refreshDocument(): void;
 }
 
 export interface Poller {
@@ -20,6 +23,9 @@ export interface Poller {
   setDirty(dirty: boolean): void;
   /** Follows the config after the shell switched documents. */
   retarget(): void;
+  /** The reader just answered from the page: poll at the working cadence for a while. spec R2.17a */
+  expectChange(): void;
+  isDirty(): boolean;
   /** For tests: run one poll now. */
   pollNow(): Promise<void>;
   isStopped(): boolean;
@@ -32,12 +38,21 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
   let polling = false;
   let lastStale = config.stale;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let dueAt = 0;
   let controller: AbortController | null = null;
+  let working = config.working;
+  let answeredUntil = 0;
+
+  /** Two cadences on the one poll: fast while a change is likely. spec R2.17a, D28 */
+  function interval(): number {
+    return working || Date.now() < answeredUntil ? config.pollWorkingMs : config.pollMs;
+  }
 
   function schedule(delay: number): void {
     if (timer !== null) clearTimeout(timer);
     timer = null;
     if (stopped || win.document.visibilityState !== "visible") return;
+    dueAt = Date.now() + delay;
     timer = setTimeout(() => {
       timer = null;
       void poll();
@@ -56,7 +71,7 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
       view.setStatus("Page changed — reload when ready", true);
       view.showReload(true);
     } else {
-      view.reloadView();
+      view.refreshDocument();
     }
   }
 
@@ -96,7 +111,8 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
         return;
       }
       const stale = response.headers.get("x-thread-page-stale") === "true";
-      view.setWorking(response.headers.get("x-thread-page-activity") === "working");
+      working = response.headers.get("x-thread-page-activity") === "working";
+      view.setWorking(working);
       if (stale !== lastStale) {
         lastStale = stale;
         view.onStaleChanged(stale);
@@ -113,7 +129,7 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
     } finally {
       controller = null;
       polling = false;
-      schedule(config.pollMs);
+      schedule(interval());
     }
   }
 
@@ -123,9 +139,14 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
   });
 
   return {
-    start: () => schedule(config.pollMs),
+    start: () => schedule(interval()),
     setDirty: (next) => {
       dirty = next;
+    },
+    isDirty: () => dirty,
+    expectChange: () => {
+      answeredUntil = Date.now() + config.pollAfterAnswerMs;
+      if (!polling && (timer === null || dueAt - Date.now() > config.pollWorkingMs)) schedule(config.pollWorkingMs);
     },
     retarget: () => {
       pause();
@@ -134,7 +155,7 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
       dirty = false;
       stopped = false;
       polling = false;
-      schedule(config.pollMs);
+      schedule(interval());
     },
     pollNow: () => poll(),
     isStopped: () => stopped,

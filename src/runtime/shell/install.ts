@@ -2,6 +2,7 @@ import { ENTRY_DOCUMENT } from "../../domain/document-path.ts";
 import { EMPTY_PAGE_STATUS, HANDSHAKE_VERSION, isRecord, type ShellConfig } from "../shared/protocol.ts";
 import { createChromeActions } from "./actions.ts";
 import { createConfirmer } from "./confirm.ts";
+import { createGrantsChrome, type GrantElements, type GrantsChrome } from "./grants.ts";
 import { createNavigator } from "./navigate.ts";
 import { createPoller, type Poller } from "./poll.ts";
 import { createRelay } from "./relay.ts";
@@ -11,7 +12,9 @@ import { createRelay } from "./relay.ts";
  * MessagePort once it reports ready, relays its messages, polls for a new
  * revision, and owns the chrome. A link to another document of the page swaps
  * the frame's document in place: the shell stays, its address follows, and
- * back and forward return. spec 02 §The shell, R1.12a–R1.12d
+ * back and forward return. A new revision of the open document is swapped in
+ * the same way, behind the shown one, with no history entry and the address
+ * unchanged. spec 02 §The shell, R1.12a–R1.12d, R2.18a
  */
 export interface ShellElements {
   frame: HTMLIFrameElement;
@@ -25,12 +28,18 @@ export interface ShellElements {
   pin: HTMLButtonElement | null;
   read: HTMLButtonElement | null;
   archive: HTMLButtonElement | null;
+  /** The list of sessions this page may answer from an embed. spec R5.65 */
+  grants?: GrantElements | null;
 }
 
 export interface ShellHandle {
   poller: Poller;
   /** For tests: open another document of the page as a link would. */
   openDocument(path: string, push?: boolean): Promise<boolean>;
+  /** For tests: show the open document's current revision in place. */
+  refreshDocument(): Promise<boolean>;
+  /** For tests: the frame the reader sees. */
+  shownFrame(): HTMLIFrameElement;
 }
 
 const HISTORY_KEY = "threadPageDocument";
@@ -40,8 +49,14 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   const request = fetchImpl ?? win.fetch.bind(win);
   let frame = elements.frame;
   let framePort: MessagePort | null = null;
-  let awaitingReady = true;
   let lastStale = config.stale;
+  /** Frames whose kernel has not reported ready yet; each is connected once. */
+  const awaitingReady = new WeakSet<HTMLIFrameElement>([frame]);
+  /** Where the shown document is scrolled to, as its kernel reports it. spec R2.18b */
+  let scroll = { x: 0, y: 0 };
+  /** A refreshed document loading behind the shown one. spec R2.18a */
+  let incoming: { frame: HTMLIFrameElement; ready: boolean; loaded: boolean; apply: DocumentSession; timer: ReturnType<typeof setTimeout>; settle(shown: boolean): void } | null = null;
+  let grantsChrome: GrantsChrome | null = null;
 
   const view = {
     setStatus(text: string, warn: boolean) {
@@ -61,6 +76,9 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     reloadView() {
       win.location.reload();
     },
+    refreshDocument() {
+      void refreshDocument();
+    },
   };
 
   const poller = createPoller(win, config, view, fetchImpl);
@@ -70,8 +88,21 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     config,
     confirmer,
     navigator,
-    onDirty: (dirty) => poller.setDirty(dirty),
+    onDirty: (dirty) => {
+      poller.setDirty(dirty);
+      // The reader started typing while a new version was loading: keep what they see. spec R2.21
+      if (dirty && incoming) {
+        cancelIncoming();
+        view.setStatus("Page changed — reload when ready", true);
+        view.showReload(true);
+      }
+    },
     onOpenDocument: (path) => void openDocument(path, true),
+    onAnswered: () => poller.expectChange(),
+    onScroll: (x, y) => {
+      scroll = { x, y };
+    },
+    onGranted: (grant) => grantsChrome?.add(grant),
     ...(fetchImpl ? { fetchImpl } : {}),
   });
   const homeLink = win.document.querySelector<HTMLAnchorElement>("a.home");
@@ -89,23 +120,41 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     });
   }
 
-  function connectFrame(): void {
+  if (elements.grants) {
+    grantsChrome = createGrantsChrome(config, elements.grants, { setStatus: (text, warn) => view.setStatus(text, warn), ...(fetchImpl ? { fetchImpl } : {}) });
+  }
+
+  function connectFrame(target: HTMLIFrameElement, restore: { x: number; y: number } | null): void {
     const channel = new win.MessageChannel();
     const port = channel.port1;
     framePort = port;
-    port.onmessage = (event) => relay.handle(port, event.data);
+    port.onmessage = (event) => {
+      // A frame that was replaced may still be posting; only the shown one is heard.
+      if (framePort === port) relay.handle(port, event.data);
+    };
     port.start?.();
-    frame.contentWindow?.postMessage({ kind: "thread-page:connect", version: HANDSHAKE_VERSION }, "*", [channel.port2]);
+    target.contentWindow?.postMessage({ kind: "thread-page:connect", version: HANDSHAKE_VERSION }, "*", [channel.port2]);
     port.postMessage({ kind: "thread-page:source-state", stale: lastStale });
+    if (restore && (restore.x > 0 || restore.y > 0)) port.postMessage({ kind: "thread-page:restore-scroll", x: restore.x, y: restore.y });
   }
 
   win.addEventListener("message", (event) => {
-    // Only the current frame's opaque origin, only once per document, only the handshake.
-    if (!awaitingReady || event.origin !== "null" || event.source !== frame.contentWindow) return;
+    // Only a frame of ours, on its opaque origin, only once per document, only the handshake.
+    if (event.origin !== "null") return;
+    const from = event.source === frame.contentWindow ? frame : incoming && event.source === incoming.frame.contentWindow ? incoming.frame : null;
+    if (!from || !awaitingReady.has(from)) return;
     const data = event.data as unknown;
     if (!isRecord(data) || data.kind !== "thread-page:ready" || data.version !== HANDSHAKE_VERSION) return;
-    awaitingReady = false;
-    connectFrame();
+    awaitingReady.delete(from);
+    if (from === frame) {
+      connectFrame(frame, null);
+      return;
+    }
+    // A refreshed document is connected when it is shown, so the shown one keeps its channel until then.
+    if (incoming) {
+      incoming.ready = true;
+      if (incoming.loaded) showIncoming();
+    }
   });
 
   /**
@@ -116,9 +165,41 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
    */
   function loadFrame(url: string): void {
     const next = frame.cloneNode(false) as HTMLIFrameElement;
+    next.removeAttribute("data-incoming");
     next.setAttribute("src", url);
+    awaitingReady.add(next);
     frame.replaceWith(next);
     frame = next;
+  }
+
+  function cancelIncoming(): void {
+    const current = incoming;
+    if (!current) return;
+    incoming = null;
+    clearTimeout(current.timer);
+    current.frame.remove();
+    current.settle(false);
+  }
+
+  /** The refreshed document has loaded: it takes the shown one's place and its kernel is connected. */
+  function showIncoming(): void {
+    const current = incoming;
+    if (!current) return;
+    incoming = null;
+    clearTimeout(current.timer);
+    applySession(current.apply);
+    const previous = frame;
+    frame = current.frame;
+    framePort = null;
+    const restore = scroll;
+    scroll = { x: 0, y: 0 };
+    if (current.ready) connectFrame(frame, restore);
+    previous.remove();
+    frame.removeAttribute("data-incoming");
+    poller.retarget();
+    view.showReload(false);
+    view.setStatus(config.stale ? "Offline copy — read-only" : config.empty ? EMPTY_PAGE_STATUS : (config.notice ?? ""), config.stale);
+    current.settle(true);
   }
 
   function shellAddress(path: string): string {
@@ -128,42 +209,66 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     return `${url.pathname}${url.search}${url.hash}`;
   }
 
-  /** Exchanges the token for one bound to the other document, then swaps the frame. */
+  interface DocumentSession {
+    actionToken: string;
+    pageRevision: string;
+    expiresAt: number;
+    documentUrl: string;
+    path: string;
+    stale: boolean;
+    empty: boolean;
+  }
+
+  /** Exchanges the token for one bound to a document of the page at its current revision. */
+  async function documentSession(path: string): Promise<DocumentSession | string> {
+    const response = await request(config.documentSessionUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ actionToken: config.actionToken, path }),
+    });
+    const body = (await response.json().catch(() => null)) as unknown;
+    if (
+      !response.ok ||
+      !isRecord(body) ||
+      body.ok !== true ||
+      typeof body.actionToken !== "string" ||
+      typeof body.pageRevision !== "string" ||
+      typeof body.expiresAt !== "number" ||
+      typeof body.documentUrl !== "string" ||
+      !body.documentUrl.startsWith("/") ||
+      typeof body.path !== "string"
+    ) {
+      return (isRecord(body) && typeof body.message === "string" && body.message) || "That page could not be opened";
+    }
+    return { actionToken: body.actionToken, pageRevision: body.pageRevision, expiresAt: body.expiresAt, documentUrl: body.documentUrl, path: body.path, stale: body.stale === true, empty: body.empty === true };
+  }
+
+  function applySession(session: DocumentSession): void {
+    config.actionToken = session.actionToken;
+    config.pageRevision = session.pageRevision;
+    config.expiresAt = session.expiresAt;
+    config.documentUrl = session.documentUrl;
+    config.documentPath = session.path;
+    config.stale = session.stale;
+    config.empty = session.empty;
+    lastStale = config.stale;
+  }
+
+  /** A link to another document of the page: the frame is swapped and the address follows. */
   async function openDocument(path: string, push = true): Promise<boolean> {
     if (!config.navigable || path === config.documentPath) return false;
     try {
-      const response = await request(config.documentSessionUrl, {
-        method: "POST",
-        credentials: "same-origin",
-        cache: "no-store",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ actionToken: config.actionToken, path }),
-      });
-      const body = (await response.json().catch(() => null)) as unknown;
-      if (
-        !response.ok ||
-        !isRecord(body) ||
-        body.ok !== true ||
-        typeof body.actionToken !== "string" ||
-        typeof body.pageRevision !== "string" ||
-        typeof body.expiresAt !== "number" ||
-        typeof body.documentUrl !== "string" ||
-        !body.documentUrl.startsWith("/") ||
-        typeof body.path !== "string"
-      ) {
-        view.setStatus((isRecord(body) && typeof body.message === "string" && body.message) || "That page could not be opened", true);
+      const session = await documentSession(path);
+      if (typeof session === "string") {
+        view.setStatus(session, true);
         return false;
       }
-      config.actionToken = body.actionToken;
-      config.pageRevision = body.pageRevision;
-      config.expiresAt = body.expiresAt;
-      config.documentUrl = body.documentUrl;
-      config.documentPath = body.path;
-      config.stale = body.stale === true;
-      config.empty = body.empty === true;
-      lastStale = config.stale;
+      cancelIncoming();
+      applySession(session);
       framePort = null;
-      awaitingReady = true;
+      scroll = { x: 0, y: 0 };
       loadFrame(config.documentUrl);
       poller.retarget();
       view.showReload(false);
@@ -174,6 +279,60 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       view.setStatus("That page could not be opened", true);
       return false;
     }
+  }
+
+  /**
+   * Shows the open document's new revision in place: a fresh token, the
+   * document loaded in a second frame behind the shown one, and the two
+   * exchanged once it has loaded — no empty frame, no history entry, the
+   * address unchanged. Falls back to reloading the shell. spec R2.18a, D28
+   */
+  async function refreshDocument(): Promise<boolean> {
+    if (!config.navigable) {
+      win.location.reload();
+      return false;
+    }
+    cancelIncoming();
+    let session: DocumentSession | string;
+    try {
+      session = await documentSession(config.documentPath);
+    } catch {
+      session = "unavailable";
+    }
+    if (typeof session === "string") {
+      win.location.reload();
+      return false;
+    }
+    // The reader began typing while the token was exchanged.
+    if (poller.isDirty()) {
+      view.setStatus("Page changed — reload when ready", true);
+      view.showReload(true);
+      return false;
+    }
+    cancelIncoming();
+    const next = frame.cloneNode(false) as HTMLIFrameElement;
+    next.setAttribute("data-incoming", "");
+    next.setAttribute("src", session.documentUrl);
+    awaitingReady.add(next);
+    return new Promise<boolean>((resolve) => {
+      const entry = {
+        frame: next,
+        ready: false,
+        loaded: false,
+        apply: session as DocumentSession,
+        // A document that never finishes loading — a slow remote font — is shown anyway.
+        timer: setTimeout(() => {
+          if (incoming === entry) showIncoming();
+        }, config.refreshSwapMs),
+        settle: resolve,
+      };
+      incoming = entry;
+      next.addEventListener("load", () => {
+        entry.loaded = true;
+        if (incoming === entry && entry.ready) showIncoming();
+      });
+      frame.insertAdjacentElement("afterend", next);
+    });
   }
 
   if (config.navigable) {
@@ -189,9 +348,18 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     });
   }
 
-  reload.addEventListener("click", () => win.location.reload());
+  // A new version the reader chose to see is shown in place, discarding what they typed;
+  // a token that ran out needs the shell itself again.
+  reload.addEventListener("click", () => {
+    if (poller.isStopped()) {
+      win.location.reload();
+      return;
+    }
+    poller.setDirty(false);
+    void refreshDocument();
+  });
 
   frame.src = config.documentUrl;
   poller.start();
-  return { poller, openDocument };
+  return { poller, openDocument, refreshDocument, shownFrame: () => frame };
 }

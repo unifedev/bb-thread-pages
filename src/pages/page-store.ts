@@ -121,8 +121,27 @@ export function createPageStore(host: SessionHost, resolve?: PageResolver): Page
     return page;
   }
 
+  // A shell poll, an embed's read and a submission can ask for one document at
+  // the same moment; they share one load. Nothing is reused once it settles.
+  const loading = new Map<string, Promise<LoadedPage>>();
+
   return {
-    async load(session, requested) {
+    load(session, requested) {
+      const key = cacheKey(session, documentKey(requested));
+      const current = loading.get(key);
+      if (current) return current;
+      const started = loadNow(session, requested).finally(() => loading.delete(key));
+      loading.set(key, started);
+      return started;
+    },
+    remember,
+    knownRevision(session) {
+      return memory.get(session)?.revision ?? null;
+    },
+  };
+
+  async function loadNow(session: string, requested?: string | null): Promise<LoadedPage> {
+    {
       const path = documentKey(requested);
       const key = cacheKey(session, path);
       let content;
@@ -160,12 +179,8 @@ export function createPageStore(host: SessionHost, resolve?: PageResolver): Page
       retain(key, page);
       await persist(key, page, previous);
       return { ...page, stale: false, site };
-    },
-    remember,
-    knownRevision(session) {
-      return memory.get(session)?.revision ?? null;
-    },
-  };
+    }
+  }
 }
 
 function isCachedPage(value: unknown): value is CachedPage {

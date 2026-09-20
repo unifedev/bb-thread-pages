@@ -16,7 +16,12 @@ import type { JsonValue, Validation } from "../json/strict-json.ts";
  * sessions; only contributed capabilities declare it, and it is never
  * confirmed. spec R5.7b, DECISIONS D19
  */
-export const EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state", "contributed-write"] as const;
+/**
+ * `granted-write` delivers the reader's answer to the session whose page this
+ * page embeds. It is confirmed once per pair — a durable, revocable grant —
+ * not per call; only `pages.answer` declares it. spec R5.7c, DECISIONS D31
+ */
+export const EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state", "contributed-write", "granted-write"] as const;
 export type EffectClass = (typeof EFFECT_CLASSES)[number];
 
 /** Effects that must be confirmed in trusted chrome. spec R5.7 */
@@ -62,7 +67,8 @@ export type AnyCapabilitySpec = CapabilitySpec<any, any>;
 export interface CapabilityDescriptor {
   readonly method: string;
   readonly effect: EffectClass;
-  readonly confirmation: "none" | "required";
+  /** `grant`: asked once per pair, then remembered. spec R5.7c */
+  readonly confirmation: "none" | "required" | "grant";
   readonly maxRequestBytes: number;
   readonly maxResponseBytes: number;
   /** Contributed capabilities only. spec R5.9a */

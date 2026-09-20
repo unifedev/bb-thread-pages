@@ -72,6 +72,36 @@ export const LIMITS = Object.freeze({
   rateConcurrent: 8,
   /** Shell revision poll while the tab is visible. R2.17 */
   shellPollMs: 10_000,
+  /**
+   * The same poll while the session is mid-turn, and for a window after the
+   * reader answers from the page. R2.17a, D28
+   */
+  shellPollWorkingMs: 2_000,
+  shellPollAfterAnswerMs: 60_000,
+  /** How long the shell waits for a refreshed document to load before showing it anyway. R2.18a */
+  refreshSwapMs: 4_000,
+  /** Parts a document includes, all levels together; one part; how deep a part may include. R1.23, D32 */
+  includeParts: 200,
+  includePartBytes: 2 * 1024 * 1024,
+  includeDepth: 3,
+  /** `pages.read`: entries per call, and its own response bound. R5.56, R5.58, D29 */
+  pagesReadEntries: 16,
+  pagesReadBytes: 8 * 1024 * 1024,
+  /** `pages.answer` request: a submission body plus its token. */
+  pagesAnswerBytes: 96 * 1024,
+  /** Embeds on one page; further ones show a placeholder. */
+  embedsPerPage: 32,
+  /** Embed refresh: while an embedded session works or was just answered, and otherwise. R4.44 */
+  embedPollWorkingMs: 3_000,
+  embedPollMs: 10_000,
+  embedPollAfterAnswerMs: 60_000,
+  /** Calls one embedded page may make per minute. R4.49 */
+  embedCallsPerMinute: 30,
+  /** Answer token lifetime; every read renews it. R5.60a, R5.62 */
+  answerTokenMs: 2 * 60 * 60 * 1000,
+  /** Grants one page may hold, and pages that may hold any. R5.67 */
+  grantsPerPage: 64,
+  grantPages: 512,
   /** `watch` interval default and clamp. R4.30 */
   watchDefaultMs: 8_000,
   watchMinMs: 2_000,

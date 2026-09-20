@@ -227,6 +227,17 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
           throw hostUnavailable(error);
         }
       },
+      async list(location, relativeDirectory) {
+        const directory = relativeDirectory.replace(/\/+$/, "");
+        try {
+          // bb lists recursively and skips symbolic links; a part is a direct child.
+          const listed = await bb.sdk.files.list({ hostId: location.hostId, path: directory ? joinPath(location.rootPath, directory) : location.rootPath, limit: 5_000 });
+          return listed.files.filter((file) => !file.path.includes("/")).map((file) => file.name);
+        } catch (error) {
+          if (isNotFound(error)) return [];
+          throw hostUnavailable(error);
+        }
+      },
       async write(location, relativePath, bytes, options) {
         try {
           const written = await bb.sdk.files.write({

@@ -8,6 +8,7 @@ import type { PageStore } from "../pages/page-store.ts";
 import type { SiteStrategy } from "../pages/site.ts";
 import type { SelectionStore } from "./bridge/selection-store.ts";
 import type { Contributions } from "./contributions.ts";
+import type { GrantStore } from "./grants.ts";
 
 /** Everything a route or handler may need, assembled once by the composition root. */
 export interface ServingContext {
@@ -24,6 +25,8 @@ export interface ServingContext {
   readonly submissions: OutcomeMemory<{ status: number; body: Record<string, unknown> }>;
   readonly replies: OutcomeMemory<{ delivery: "started" | "queued" | "steered" }>;
   readonly selections: SelectionStore;
+  /** Grants to answer other sessions from an embed. spec R5.64 */
+  readonly grants: GrantStore;
   /** The host application's canonical URL for a session's conversation, origin-relative. spec R5.31a */
   readonly hostSessionUrl: (session: Pick<SessionRecord, "id" | "projectId">) => string;
   readonly now: () => number;

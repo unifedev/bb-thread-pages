@@ -39,7 +39,16 @@ export type BridgeResponse = BridgeSuccess | BridgeFailure;
 /** What the shell receives from `POST /bridge`. */
 export type BridgeTransport =
   | { readonly response: BridgeResponse; readonly navigate?: NavigationDirective }
-  | { readonly confirm: { readonly requestId: string; readonly summary: string; readonly challenge: string } };
+  | {
+      readonly confirm: {
+        readonly requestId: string;
+        readonly summary: string;
+        readonly challenge: string;
+        /** A grant asked once per pair rather than a confirmation of this call. spec R5.64 */
+        readonly kind?: "grant";
+        readonly grant?: { readonly sessionId: string; readonly title: string };
+      };
+    };
 
 /** A host-validated destination the trusted shell navigates to. spec R5.29–R5.34 */
 export type NavigationDirective =

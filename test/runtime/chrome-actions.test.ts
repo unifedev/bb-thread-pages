@@ -21,6 +21,11 @@ const config: ShellConfig = {
   documentSessionUrl: "/document-session",
   navigable: true,
   pollMs: 10_000,
+  pollWorkingMs: 2_000,
+  pollAfterAnswerMs: 60_000,
+  working: false,
+  refreshSwapMs: 4_000,
+  grants: [],
   maxUploadBytes: 1024,
   maxUploads: 2,
 };

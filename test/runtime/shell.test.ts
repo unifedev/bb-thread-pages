@@ -23,6 +23,11 @@ const config: ShellConfig = {
   documentSessionUrl: "/document-session",
   navigable: true,
   pollMs: 10_000,
+  pollWorkingMs: 2_000,
+  pollAfterAnswerMs: 60_000,
+  working: false,
+  refreshSwapMs: 4_000,
+  grants: [],
   maxUploadBytes: 1024,
   maxUploads: 2,
 };
@@ -190,27 +195,27 @@ describe("shell relay", () => {
 
 describe("shell poller", () => {
   function view() {
-    return { setStatus: vi.fn(), setWorking: vi.fn(), showReload: vi.fn(), onStaleChanged: vi.fn(), reloadView: vi.fn() };
+    return { setStatus: vi.fn(), setWorking: vi.fn(), showReload: vi.fn(), onStaleChanged: vi.fn(), reloadView: vi.fn(), refreshDocument: vi.fn() };
   }
 
-  it("reads activity and stale state off the poll and reloads on a new revision unless dirty", async () => {
+  it("reads activity and stale state off the poll and refreshes the document in place on a new revision unless dirty", async () => {
     const etag = { value: `"${REV}"` };
     const fetchImpl = vi.fn(async () => new Response(null, { status: 304, headers: { etag: etag.value, "x-thread-page-activity": "working", "x-thread-page-stale": "false" } }));
     const seen = view();
     const poller = createPoller(window, config, seen, fetchImpl as never);
     await poller.pollNow();
     expect(seen.setWorking).toHaveBeenCalledWith(true);
-    expect(seen.reloadView).not.toHaveBeenCalled();
+    expect(seen.refreshDocument).not.toHaveBeenCalled();
     etag.value = `"${"2".repeat(64)}"`;
     poller.setDirty(true);
     await poller.pollNow();
-    expect(seen.reloadView).not.toHaveBeenCalled();
+    expect(seen.refreshDocument).not.toHaveBeenCalled();
     expect(seen.showReload).toHaveBeenCalledWith(true);
     expect(seen.setStatus).toHaveBeenCalledWith("Page changed — reload when ready", true);
     poller.setDirty(false);
     etag.value = `"${"3".repeat(64)}"`;
     await poller.pollNow();
-    expect(seen.reloadView).toHaveBeenCalledTimes(1);
+    expect(seen.refreshDocument).toHaveBeenCalledTimes(1);
   });
 
   it("keeps saying a page is not written yet until the agent saves it, then reloads", async () => {
@@ -221,11 +226,11 @@ describe("shell poller", () => {
     const poller = createPoller(window, { ...config, empty: true }, seen, fetchImpl as never);
     await poller.pollNow();
     expect(seen.setStatus).toHaveBeenLastCalledWith("Not written yet — the page appears here as soon as the agent saves it", false);
-    expect(seen.reloadView).not.toHaveBeenCalled();
+    expect(seen.refreshDocument).not.toHaveBeenCalled();
     empty = "false";
     etag = `"${"4".repeat(64)}"`;
     await poller.pollNow();
-    expect(seen.reloadView).toHaveBeenCalledTimes(1);
+    expect(seen.refreshDocument).toHaveBeenCalledTimes(1);
   });
 
   it("announces stale transitions and stops on an expired session", async () => {
@@ -243,6 +248,77 @@ describe("shell poller", () => {
     await expiring.pollNow();
     expect(seen.reloadView).toHaveBeenCalled();
     expect(expiring.isStopped()).toBe(true);
+  });
+});
+
+// Two cadences on the one poll. spec R2.17, R2.17a, A86
+describe("shell poll cadence", () => {
+  function view() {
+    return { setStatus: vi.fn(), setWorking: vi.fn(), showReload: vi.fn(), onStaleChanged: vi.fn(), reloadView: vi.fn(), refreshDocument: vi.fn() };
+  }
+  function poll(activity: { value: string }) {
+    return vi.fn(async () => new Response(null, { status: 304, headers: { etag: `"${REV}"`, "x-thread-page-activity": activity.value, "x-thread-page-stale": "false" } }));
+  }
+
+  it("polls every 2 s while the session works, every 10 s when it does not, with one conditional request", async () => {
+    vi.useFakeTimers();
+    try {
+      const activity = { value: "working" };
+      const fetchImpl = poll(activity);
+      const poller = createPoller(window, { ...config, expiresAt: Date.now() + 3_600_000, working: true }, view(), fetchImpl as never);
+      poller.start();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].headers).toEqual({ "if-none-match": `"${REV}"` });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(fetchImpl).toHaveBeenCalledTimes(4);
+      activity.value = "idle";
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(fetchImpl).toHaveBeenCalledTimes(5);
+      // Idle now: the next check is ten seconds away.
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(fetchImpl).toHaveBeenCalledTimes(5);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fetchImpl).toHaveBeenCalledTimes(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("polls at the working cadence for 60 s after the reader answers, then falls back", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = poll({ value: "idle" });
+      const poller = createPoller(window, { ...config, expiresAt: Date.now() + 3_600_000 }, view(), fetchImpl as never);
+      poller.start();
+      await vi.advanceTimersByTimeAsync(1_000);
+      poller.expectChange();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(58_000);
+      expect(fetchImpl).toHaveBeenCalledTimes(30);
+      // The window is over: ten seconds to the next one.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(32);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not poll a hidden tab at either cadence", async () => {
+    vi.useFakeTimers();
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    try {
+      const fetchImpl = poll({ value: "working" });
+      const poller = createPoller(window, { ...config, expiresAt: Date.now() + 3_600_000, working: true }, view(), fetchImpl as never);
+      poller.start();
+      poller.expectChange();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      visibility.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -298,5 +374,88 @@ describe("shell documents", () => {
     const page = installShell(window, { ...config }, elements, fetchImpl as never);
     expect(await page.openDocument("missing.html")).toBe(false);
     expect(elements.status.textContent).toBe("That document of the page does not exist.");
+  });
+
+  // A new revision of the open document is shown in place. spec R2.18a, A87, A88
+  function refreshFetch(revision = "2".repeat(64)) {
+    return vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url === "/document-session") {
+        return jsonResponse({ ok: true, actionToken: "tok2", pageRevision: revision, expiresAt: Date.now() + 3_600_000, documentUrl: "/document?session=thr_a", path: "index.html", stale: false, empty: false });
+      }
+      return new Response(null, { status: 304, headers: { etag: `"${revision}"` } });
+    });
+  }
+
+  it("refreshes the open document behind the shown one and swaps when it has loaded: no history entry, same address", async () => {
+    const { installShell } = await import("../../src/runtime/shell/install.ts");
+    const elements = chrome();
+    const local: ShellConfig = { ...config };
+    const fetchImpl = refreshFetch();
+    const shell = installShell(window, local, elements, fetchImpl as never);
+    const historyLength = window.history.length;
+    const address = window.location.href;
+    const pushed = vi.spyOn(window.history, "pushState");
+    const refreshed = shell.refreshDocument();
+    await vi.waitFor(() => expect(document.querySelectorAll("iframe")).toHaveLength(2));
+    // The reader still sees the old document, and the token is still the old one.
+    expect(shell.shownFrame()).toBe(elements.frame);
+    expect(local.actionToken).toBe("tok");
+    const next = document.querySelector<HTMLIFrameElement>("iframe[data-incoming]")!;
+    expect(next.getAttribute("src")).toBe("/document?session=thr_a");
+    expect(next.getAttribute("sandbox")).toBe(elements.frame.getAttribute("sandbox"));
+    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "null", source: next.contentWindow }));
+    next.dispatchEvent(new Event("load"));
+    expect(await refreshed).toBe(true);
+    expect(document.querySelectorAll("iframe")).toHaveLength(1);
+    expect(shell.shownFrame()).toBe(next);
+    expect(next.hasAttribute("data-incoming")).toBe(false);
+    expect(local).toMatchObject({ actionToken: "tok2", pageRevision: "2".repeat(64), documentPath: "index.html" });
+    expect(pushed).not.toHaveBeenCalled();
+    expect(window.history.length).toBe(historyLength);
+    expect(window.location.href).toBe(address);
+    pushed.mockRestore();
+  });
+
+  it("shows a refreshed document anyway when it never finishes loading", async () => {
+    const { installShell } = await import("../../src/runtime/shell/install.ts");
+    const elements = chrome();
+    const shell = installShell(window, { ...config, refreshSwapMs: 20 }, elements, refreshFetch() as never);
+    expect(await shell.refreshDocument()).toBe(true);
+    expect(document.querySelectorAll("iframe")).toHaveLength(1);
+    expect(shell.shownFrame()).not.toBe(elements.frame);
+  });
+
+  it("drops a refresh when the reader starts typing while it loads, and offers it instead", async () => {
+    const { installShell } = await import("../../src/runtime/shell/install.ts");
+    const elements = chrome();
+    const local: ShellConfig = { ...config };
+    const shell = installShell(window, local, elements, refreshFetch() as never);
+    // Connect the shown frame so its kernel can report dirt.
+    const ports: MessagePort[] = [];
+    const post = vi.spyOn(elements.frame.contentWindow!, "postMessage").mockImplementation(((_message: unknown, _origin: unknown, transfer?: Transferable[]) => {
+      if (transfer?.[0]) ports.push(transfer[0] as MessagePort);
+    }) as never);
+    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "null", source: elements.frame.contentWindow }));
+    expect(ports).toHaveLength(1);
+    const refreshed = shell.refreshDocument();
+    await vi.waitFor(() => expect(document.querySelectorAll("iframe")).toHaveLength(2));
+    ports[0]!.postMessage({ kind: "thread-page:dirty" });
+    expect(await refreshed).toBe(false);
+    expect(document.querySelectorAll("iframe")).toHaveLength(1);
+    expect(shell.shownFrame()).toBe(elements.frame);
+    expect(local.actionToken).toBe("tok");
+    expect(elements.status.textContent).toBe("Page changed — reload when ready");
+    expect(elements.reload.dataset.visible).toBe("true");
+    post.mockRestore();
+  });
+
+  it("reloads the shell itself when a refresh in place is not possible", async () => {
+    const { installShell } = await import("../../src/runtime/shell/install.ts");
+    const reloaded = vi.fn();
+    const fake = Object.create(window, { location: { value: { href: window.location.href, reload: reloaded, assign: vi.fn() } } }) as Window & typeof globalThis;
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: false, code: "confirmation_invalid", message: "expired" }, 401));
+    const shell = installShell(fake, { ...config }, chrome(), fetchImpl as never);
+    expect(await shell.refreshDocument()).toBe(false);
+    expect(reloaded).toHaveBeenCalledTimes(1);
   });
 });

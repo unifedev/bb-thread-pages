@@ -3,8 +3,11 @@ import { installAnchorInterception } from "./anchors.ts";
 import { installApi } from "./api.ts";
 import { createBridgeClient } from "./bridge-client.ts";
 import { createDirtyTracker } from "./dirty.ts";
+import { createEmbedManager, EMBEDDED_FILES_REFUSAL } from "./embed.ts";
 import { buildIntent, formsReachedFrom, isManualForm, lockForm, ownerForm, prepareForm, statusLine, unlockForm, type PendingForm } from "./forms.ts";
 import { createReadOnlyController } from "./readonly.ts";
+import { installScroll } from "./scroll.ts";
+import { createUpdateOffer } from "./update-offer.ts";
 
 /**
  * Wires the kernel into a document. Exported separately from `main.ts` so
@@ -39,16 +42,31 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   const bridge = createBridgeClient(config.pageRevision, doc);
   const readOnly = createReadOnlyController(doc, config.stale);
 
+  const embeds = createEmbedManager(win, {
+    invoke: (method, params) => bridge.invoke(method, params),
+    setDirty: (value) => dirty.setEmbedded(value),
+    embedded: config.embedded === true,
+  });
+  const scroll = installScroll(win, (x, y) => {
+    post({ kind: "thread-page:scroll", x, y });
+  });
+  // Inside an embed a new version is offered here, since there is no shell bar to offer it. spec R4.46
+  const updateOffer = createUpdateOffer(doc, () => {
+    post({ kind: "thread-page:apply-update" });
+  });
+
   installApi(win, {
     version: 1,
     invoke: (method, params) => bridge.invoke(method, params),
     watch: (method, params, listener, options) => bridge.watch(method, params, listener, options),
     setDirty: (value) => dirty.setCustom(value !== false),
+    embed: (target, options) => embeds.embed(target, options),
   });
 
   function prepare(root: ParentNode): void {
     for (const form of formsReachedFrom(root)) prepareForm(form);
     readOnly.prepare(root);
+    updateOffer.prepare();
   }
 
   prepare(doc);
@@ -82,6 +100,11 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       const submissionId = `sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
       const target = form as HTMLFormElement;
       const intent = buildIntent(target, (event as SubmitEvent).submitter ?? null, submissionId);
+      // Uploads take the shell's token, which names the page this one is shown in. spec R4.51
+      if (config.embedded && intent.files.length > 0) {
+        statusLine(target).textContent = EMBEDDED_FILES_REFUSAL;
+        return;
+      }
       const pending: PendingForm = { form: target, disabled: [], dirtyVersion: dirty.versionOf(target) };
       pendingForms.set(submissionId, pending);
       pendingByForm.add(target);
@@ -115,6 +138,14 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     if (!isRecord(data)) return;
     if (data.kind === "thread-page:source-state") {
       readOnly.apply(data.stale === true);
+      return;
+    }
+    if (data.kind === "thread-page:restore-scroll") {
+      if (typeof data.x === "number" && typeof data.y === "number") scroll.restore(data.x, data.y);
+      return;
+    }
+    if (data.kind === "thread-page:update-available") {
+      if (config.embedded) updateOffer.show();
       return;
     }
     if (data.kind === "thread-page:submit-progress") {
