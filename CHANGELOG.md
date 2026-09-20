@@ -1,5 +1,103 @@
 # Changelog
 
+## 1.5.0 — 2026-09-20 — refresh in place, embedded pages, parts
+
+Implements spec 1.3 (`bartsoj/bb-thread-pages`, DECISIONS D28–D32). Existing
+pages keep working unchanged; `window.threadPage.version` and the bridge
+protocol stay `1`.
+
+### A rewritten page reaches the reader in about two seconds, in place
+
+- The shell re-checks the document every **2 s while the session is working,
+  and for 60 s after the reader answers** from the page (a form,
+  `session.reply`, an answer inside an embed); every 10 s otherwise; never
+  while hidden. Still one conditional request, `304` when nothing changed.
+- A changed document is **swapped in place** instead of reloading the shell: a
+  fresh token, the new document loaded in a second frame behind the shown one,
+  exchanged when it has loaded. No flash, no history entry, the address
+  unchanged, the document's scroll position kept. Measured 0.8–1.8 s from save
+  to visible, in Chromium, Firefox and WebKit.
+- A page needs no code, and there is no reload call. Pages that polled
+  `context.get` for their own revision, hopped between twin documents, or kept
+  drafts in `storage` to survive a reload should delete that.
+- The dirty rule is unchanged, and its offer no longer vanishes: "Page changed
+  — reload when ready" used to be wiped by the next poll. It now stays until
+  taken, and the new version is shown by itself once the page is clean again.
+  Reload shows it in place.
+- A document's files and parts that could not be carried are logged once per
+  change, not once per poll.
+
+### A page can show another session's page
+
+- `const stop = threadPage.embed(target, { sessionId, path?, onState? })` —
+  `target` is an `<iframe>` or a container. The kernel shows the document in a
+  `srcdoc` frame that is always `sandbox="allow-scripts allow-forms"`, keeps it
+  fresh (3 s while an embedded session works or was just answered, 10 s
+  otherwise, paused while hidden), keeps its scroll position, never refreshes it
+  under a reader who is typing (the update is offered inside the embed, and the
+  embedding page counts as dirty meanwhile), follows its links, and shows a
+  line of its own when there is nothing to show. **All embeds of a page are
+  checked in one call per tick.** At most 32 per page; one level deep.
+- The embedded document runs the **same kernel** in an embedded mode. Its forms
+  and `session.reply` are worded, validated and de-duplicated exactly as on its
+  own address and go to **its** session. Inside an embed `context.get`
+  describes the embedded session; navigation and the list reads pass through;
+  `storage.*`, `session.activity`, other `sessions.*`/`projects.*` methods and
+  contributed capabilities answer `unavailable`; a form with a file attached is
+  refused in its status line; 30 calls a minute.
+- New capability **`pages.read`** `{ pages: [{ sessionId, path?, ifNoneMatch? }] }`
+  (1–16): other sessions' documents exactly as the host serves them, or
+  `unchanged`; per entry `deferred` or an `error`; its own response bound, 8 MiB.
+- New capability **`pages.answer`** `{ answerToken, form | reply }`, effect
+  `granted-write`: delivers only with the answer token a read returned — bound
+  to the reading page's session, the target session, the document and its
+  revision — and only in the shape of that page's own form or reply, worded by
+  the host. It takes no session id and no prompt. `sessions.send` is unchanged.
+- **One grant per (page → session)**: the first answer asks the reader once, in
+  the shell's own dialog, naming both sessions; it is remembered, listed in the
+  page's top bar ("Answers → n") and revocable there, and from
+  `bb thread-page grants [--revoke <page> <target> | --revoke-all]`. A page's
+  own session needs none. New setting **`embedAnswerGrants`** (default on)
+  turns the question off.
+- The document CSP is unchanged: `frame-src 'none'` still blocks frames with a
+  URL; `srcdoc` was never subject to it (measured in three engines). Refreshing
+  an embed adds no history entry.
+
+### A document can be assembled from parts
+
+- `<link rel="thread-page-include" href="_parts/*.html">` is replaced at serve
+  time, in place, by the text of the file it names, or of every matching file in
+  name order. Textual, so a part may hold table rows or a script. A part's
+  relative `src`/`href`/`poster`/`srcset` resolve from the part's directory.
+  Parts may include parts, 3 deep; 200 per document, 2 MiB each.
+- **A part is any HTML path with a segment starting with `_`. Only parts can be
+  included, and a part is never a document of the page.** *Compatibility:* an
+  `.html` file under a `_` path could be opened as a document before and cannot
+  now. None is known to exist.
+- Same root confinement as every file of the page (no `..`, absolute paths or
+  symbolic links); what cannot be included is left as written, logged, and
+  listed by `bb thread-page status`. The revision covers the assembled
+  document, so adding a part file refreshes the reader.
+- Host contract: `files.list(location, directory)`.
+
+### Also
+
+- Concurrent loads of one document share one read.
+- The guide gains *A document made of parts*, *Keeping a page current* and
+  *Showing another session's page*, and no longer says embedding is blocked.
+- An independent hostile-page review found no hole in the token or grant
+  binding and eleven things to bound or tighten, all fixed before release: a
+  glob matcher that could be made to backtrack for minutes (now a linear scan,
+  at most 4 `*`), include expansion bounded in elements, listings and reports, a
+  250 ms poll loop with more than 16 embeds, one budget for everything an
+  embedded page can make its host spend, a cooldown after a declined grant,
+  navigation from an embed only on the reader's click, dirt from an embed only
+  once the reader has acted, `pages.read` loading each document once per call
+  and deferring without reading, a refresh overtaken by a document switch,
+  session titles unable to reword the grant dialog, and one confirmation at a
+  time with a 400 ms arming delay.
+- 285 tests (76 new), and a browser pass of 33 checks in three engines.
+
 ## 1.4.0 — 2026-09-19 — contributed capabilities
 
 Implements spec 1.2 (`bartsoj/bb-thread-pages`, DECISIONS D18–D27).

@@ -134,11 +134,29 @@ export function rebasePart(html: string, partDir: string, documentDir: string): 
   return splices.length === 0 ? html : applySplices(html, splices);
 }
 
-/** `*` within the last segment; everything else is literal. */
-function patternMatcher(pattern: string): (name: string) => boolean {
-  const source = pattern.split("*").map((piece) => piece.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*");
-  const expression = new RegExp(`^${source}$`);
-  return (name) => !name.startsWith(".") && expression.test(name);
+/** Stars a pattern may hold; more is refused rather than matched. */
+const MAX_STARS = 4;
+
+/**
+ * `*` within the last segment; everything else is literal. Matched by
+ * scanning, never by a regular expression: a pattern is page-authored, and a
+ * backtracking matcher can be made to take minutes on one file name.
+ */
+export function globMatches(pattern: string, name: string): boolean {
+  if (name.startsWith(".") || name.includes("/")) return false;
+  const pieces = pattern.split("*");
+  if (pieces.length === 1) return pattern === name;
+  const first = pieces[0] as string;
+  const last = pieces[pieces.length - 1] as string;
+  if (name.length < first.length + last.length || !name.startsWith(first) || !name.endsWith(last)) return false;
+  let at = first.length;
+  const end = name.length - last.length;
+  for (const piece of pieces.slice(1, -1)) {
+    const found = name.indexOf(piece, at);
+    if (found < 0 || found + piece.length > end) return false;
+    at = found + piece.length;
+  }
+  return true;
 }
 
 function byCodeUnit(a: string, b: string): number {
@@ -151,10 +169,28 @@ function byCodeUnit(a: string, b: string): number {
  */
 export async function expandIncludes(html: string, io: IncludeIo, documentDir = ""): Promise<IncludeOutcome> {
   const parts: { path: string; bytes: number }[] = [];
-  const skipped: { path: string; reason: IncludeSkipReason }[] = [];
+  const reported: { path: string; reason: IncludeSkipReason }[] = [];
+  // What is reported is bounded like everything else a page can make the host do.
+  const skipped = {
+    push(entry: { path: string; reason: IncludeSkipReason }): void {
+      if (reported.length < LIMITS.includeReports) reported.push(entry);
+    },
+  };
   // Cheap exit: most documents include nothing.
-  if (!html.includes(INCLUDE_REL)) return { html, parts, skipped };
+  if (!html.includes(INCLUDE_REL)) return { html, parts, skipped: reported };
   let budget = LIMITS.entryDocumentBytes - Buffer.byteLength(html, "utf8");
+  /** Include elements honoured so far, and directories already listed, in this one assembly. */
+  let elements = 0;
+  let full = false;
+  const listings = new Map<string, Promise<readonly string[] | null>>();
+  const listed = (directory: string): Promise<readonly string[] | null> => {
+    let known = listings.get(directory);
+    if (!known) {
+      known = io.list(directory).catch(() => null);
+      listings.set(directory, known);
+    }
+    return known;
+  };
 
   /** The files one `href` names, in order; null when it must be left as written. */
   async function resolveTargets(reference: string, fromDir: string): Promise<string[] | null> {
@@ -179,18 +215,23 @@ export async function expandIncludes(html: string, io: IncludeIo, documentDir = 
       skipped.push({ path, reason: "unsafe-path" });
       return null;
     }
-    const names = await io.list(directory).catch(() => null);
+    if (pattern.split("*").length - 1 > MAX_STARS) {
+      skipped.push({ path, reason: "unsafe-path" });
+      return null;
+    }
+    const names = await listed(directory);
     if (names === null) {
       skipped.push({ path, reason: "no-listing" });
       return null;
     }
-    const matches = patternMatcher(pattern);
-    return names.filter((name) => matches(name) && isPartPath(directory + name)).sort(byCodeUnit).map((name) => directory + name);
+    return names.filter((name) => globMatches(pattern, name) && isPartPath(directory + name)).sort(byCodeUnit).map((name) => directory + name);
   }
 
   async function loadPart(path: string, depth: number): Promise<string | null> {
     if (parts.length >= LIMITS.includeParts) {
-      skipped.push({ path, reason: "too-many" });
+      // Said once: past the cap nothing more is listed, read or reported.
+      if (!full) skipped.push({ path, reason: "too-many" });
+      full = true;
       return null;
     }
     const file = await io.read(path).catch(() => null);
@@ -222,6 +263,13 @@ export async function expandIncludes(html: string, io: IncludeIo, documentDir = 
       const href = attributeOf(element, "href");
       const at = element.sourceCodeLocation;
       if (!rel.includes(INCLUDE_REL) || href === null || !at) continue;
+      if (full) break;
+      elements += 1;
+      if (elements > LIMITS.includeElements) {
+        skipped.push({ path: href.slice(0, 200), reason: "too-many" });
+        full = true;
+        break;
+      }
       if (depth >= LIMITS.includeDepth) {
         skipped.push({ path: href.slice(0, 200), reason: "too-deep" });
         continue;
@@ -231,6 +279,10 @@ export async function expandIncludes(html: string, io: IncludeIo, documentDir = 
       const pieces: string[] = [];
       let complete = true;
       for (const target of targets) {
+        if (full) {
+          complete = false;
+          break;
+        }
         const part = await loadPart(target, depth + 1);
         if (part === null) {
           complete = false;
@@ -247,5 +299,5 @@ export async function expandIncludes(html: string, io: IncludeIo, documentDir = 
   }
 
   const assembled = await expand(html, documentDir, 0, false);
-  return { html: assembled, parts, skipped };
+  return { html: assembled, parts, skipped: reported };
 }

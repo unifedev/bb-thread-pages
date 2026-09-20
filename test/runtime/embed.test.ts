@@ -109,6 +109,10 @@ describe("threadPage.embed", () => {
     await vi.advanceTimersByTimeAsync(LIMITS.embedPollMs + 10);
     expect(own.srcdoc).toBe("<p>two</p>");
     expect(own.getAttribute("sandbox")).toBe("allow-scripts allow-forms");
+    // The same element, in the same place: it was only taken out while it changed,
+    // so the refresh is a first load of a new browsing context and adds no history entry.
+    expect(win.document.querySelector("#own")).toBe(own);
+    expect(own.previousElementSibling?.id).toBe("box");
   });
 
   it("follows a changed page without touching the embedding page, keeps its scroll, and makes one read per tick for twelve embeds (A94, A102)", async () => {
@@ -258,6 +262,97 @@ describe("threadPage.embed", () => {
     expect(frame.srcdoc).toBe("<p>two</p>");
     expect(h.dirty.at(-1)).toBe(false);
     expect(states.at(-1)).toMatchObject({ updateAvailable: false, revision: REV2 });
+  });
+
+  // Found by the independent review of 1.5.0, each confirmed before it was fixed.
+  it("with more than 16 embeds takes turns per tick instead of polling without pause", async () => {
+    vi.useFakeTimers();
+    const win = page(Array.from({ length: 17 }, (_, index) => `<div id="box${index}"></div>`).join(""));
+    const h = host();
+    for (let index = 0; index < 17; index += 1) h.pages.set(`thr_${index}#index.html`, { revision: REV1, html: `<p>${index}</p>` });
+    const manager = createEmbedManager(win, { invoke: h.invoke, setDirty: () => undefined, embedded: false });
+    for (let index = 0; index < 17; index += 1) manager.embed(win.document.getElementById(`box${index}`), { sessionId: `thr_${index}` });
+    await vi.advanceTimersByTimeAsync(1_000);
+    // Two calls show all seventeen.
+    expect(h.calls("pages.read")).toHaveLength(2);
+    expect(win.document.querySelector<HTMLIFrameElement>("#box16 iframe")!.srcdoc).toBe("<p>16</p>");
+    const before = h.calls("pages.read").length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    // Idle: two calls per ten-second round, not four a second.
+    expect(h.calls("pages.read").length - before).toBeLessThanOrEqual(14);
+  });
+
+  it("counts an embed's answers, followed links and accepted updates against its one budget, and never counts a refusal", async () => {
+    const win = page();
+    const h = host();
+    h.pages.set("thr_b#index.html", { revision: REV1, html: "<p>b</p>" });
+    const manager = createEmbedManager(win, { invoke: h.invoke, setDirty: () => undefined, embedded: false });
+    manager.embed(win.document.getElementById("box"), { sessionId: "thr_b" });
+    await settle();
+    const { port, received } = await connect(win, win.document.querySelector<HTMLIFrameElement>("#box iframe")!);
+    for (let index = 0; index < 200; index += 1) port.postMessage({ kind: "thread-page:submit", submissionId: `flood-${index}`, title: "T", answers: [], files: [] });
+    await settle();
+    expect(h.calls("pages.answer")).toHaveLength(LIMITS.embedCallsPerMinute);
+    expect((received as { ok?: boolean; error?: string }[]).filter((message) => message.ok === false && /Too many requests/.test(message.error ?? ""))).toHaveLength(200 - LIMITS.embedCallsPerMinute);
+    const reads = h.calls("pages.read").length;
+    for (let index = 0; index < 50; index += 1) port.postMessage({ kind: "thread-page:apply-update" });
+    await settle();
+    expect(h.calls("pages.read").length).toBe(reads);
+  });
+
+  it("does not put the grant question straight back up after the reader declined", async () => {
+    const win = page();
+    const h = host();
+    h.pages.set("thr_b#index.html", { revision: REV1, html: "<p>b</p>" });
+    let asked = 0;
+    const invoke = async (method: string, params?: unknown) => {
+      if (method === "pages.answer") {
+        asked += 1;
+        throw Object.assign(new Error("You did not allow it, so the answer was not sent"), { code: "cancelled" });
+      }
+      return h.invoke(method, params);
+    };
+    const manager = createEmbedManager(win, { invoke, setDirty: () => undefined, embedded: false });
+    manager.embed(win.document.getElementById("box"), { sessionId: "thr_b" });
+    await settle();
+    const { port, received } = await connect(win, win.document.querySelector<HTMLIFrameElement>("#box iframe")!);
+    for (let index = 0; index < 5; index += 1) port.postMessage({ kind: "thread-page:submit", submissionId: `again-${index}`, title: "T", answers: [], files: [] });
+    await settle();
+    expect(asked).toBe(1);
+    expect((received as { ok?: boolean }[]).filter((message) => message.ok === false)).toHaveLength(5);
+  });
+
+  it("lets an embedded page navigate the reader only on the reader's click, and count as dirty only once they have acted", async () => {
+    const win = page();
+    const activation = { isActive: false, hasBeenActive: false };
+    Object.defineProperty(win.navigator, "userActivation", { value: activation, configurable: true });
+    const h = host();
+    h.pages.set("thr_b#index.html", { revision: REV1, html: "<p>b</p>" });
+    const opened: unknown[] = [];
+    const invoke = async (method: string, params?: unknown) => {
+      if (method === "pages.open" || method === "sessions.openHost") {
+        opened.push(params);
+        return { opened: true };
+      }
+      return h.invoke(method, params);
+    };
+    const manager = createEmbedManager(win, { invoke, setDirty: (value) => h.dirty.push(value), embedded: false });
+    manager.embed(win.document.getElementById("box"), { sessionId: "thr_b" });
+    await settle();
+    const { port, received } = await connect(win, win.document.querySelector<HTMLIFrameElement>("#box iframe")!);
+    port.postMessage({ v: 1, id: "nav-1", method: "pages.open", params: { sessionId: "thr_b" }, pageRevision: REV1 });
+    port.postMessage({ kind: "thread-page:dirty" });
+    await settle();
+    expect(opened).toEqual([]);
+    expect(received).toContainEqual(expect.objectContaining({ id: "nav-1", ok: false, error: expect.objectContaining({ code: "unavailable" }) }));
+    expect(h.dirty.at(-1)).toBe(false);
+    activation.isActive = true;
+    activation.hasBeenActive = true;
+    port.postMessage({ v: 1, id: "nav-2", method: "pages.open", params: { sessionId: "thr_b" }, pageRevision: REV1 });
+    port.postMessage({ kind: "thread-page:dirty" });
+    await settle();
+    expect(opened).toEqual([{ sessionId: "thr_b" }]);
+    expect(h.dirty.at(-1)).toBe(true);
   });
 
   it("opens a link to another document of the embedded page inside the embed, and nothing that is not one (R4.50)", async () => {

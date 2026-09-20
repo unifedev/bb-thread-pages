@@ -29,12 +29,18 @@ const KV_KEY = "grants:v1";
 
 type Stored = Record<string, Record<string, number>>;
 
+/** Prototype-free, so a session id can never collide with `constructor` or `__proto__`. */
+function bare<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
 function readStored(value: JsonValue | undefined): Stored {
-  const out: Stored = {};
+  const out: Stored = bare();
   if (!value || typeof value !== "object" || Array.isArray(value)) return out;
   for (const [from, targets] of Object.entries(value)) {
     if (!targets || typeof targets !== "object" || Array.isArray(targets)) continue;
-    const kept: Record<string, number> = {};
+    if (!isSessionId(from)) continue;
+    const kept: Record<string, number> = bare();
     for (const [to, at] of Object.entries(targets)) {
       if (isSessionId(to) && typeof at === "number" && Number.isFinite(at)) kept[to] = at;
     }
@@ -70,13 +76,12 @@ export function createGrantStore(host: SessionHost): GrantStore {
       return serial(async () => {
         const stored = await load();
         const targets = { ...(stored[from] ?? {}), [to]: now };
-        // Bounded: the oldest grants of a page, and the pages longest without one, go first.
-        const kept = Object.entries(targets).sort((a, b) => b[1] - a[1]).slice(0, LIMITS.grantsPerPage);
-        delete stored[from];
-        stored[from] = Object.fromEntries(kept);
-        const pages = Object.keys(stored);
-        for (const page of pages.slice(0, Math.max(0, pages.length - LIMITS.grantPages))) delete stored[page];
-        await host.kv.set(KV_KEY, stored);
+        // Bounded: a page's oldest grants go first, then the pages whose newest grant is oldest.
+        stored[from] = Object.fromEntries(Object.entries(targets).sort((a, b) => b[1] - a[1]).slice(0, LIMITS.grantsPerPage));
+        const newest = (page: string) => Math.max(...Object.values(stored[page] ?? {}));
+        const pages = Object.keys(stored).sort((a, b) => newest(b) - newest(a));
+        for (const page of pages.slice(LIMITS.grantPages)) delete stored[page];
+        await host.kv.set(KV_KEY, { ...stored });
       });
     },
     revoke(from, to) {
@@ -92,7 +97,7 @@ export function createGrantStore(host: SessionHost): GrantStore {
           }
           if (Object.keys(stored[page] ?? {}).length === 0) delete stored[page];
         }
-        if (removed > 0) await host.kv.set(KV_KEY, stored);
+        if (removed > 0) await host.kv.set(KV_KEY, { ...stored });
         return removed;
       });
     },
@@ -112,7 +117,14 @@ export function createGrantStore(host: SessionHost): GrantStore {
 export async function describeGrants(host: SessionHost, grants: GrantStore, from: string): Promise<{ sessionId: string; title: string }[]> {
   const out: { sessionId: string; title: string }[] = [];
   for (const grant of await grants.list(from).catch(() => [])) {
-    const session = await host.sessions.get(grant.to).catch(() => null);
+    let session;
+    try {
+      session = await host.sessions.get(grant.to);
+    } catch {
+      // The host could not say; the grant stays, it is only not listed this time.
+      continue;
+    }
+    // A session that is gone for good takes its grants with it. spec R5.67
     if (!session || session.deleted) {
       await grants.revoke(from, grant.to).catch(() => 0);
       continue;

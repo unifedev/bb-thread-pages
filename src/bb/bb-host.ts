@@ -232,6 +232,7 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
         try {
           // bb lists recursively and skips symbolic links; a part is a direct child.
           const listed = await bb.sdk.files.list({ hostId: location.hostId, path: directory ? joinPath(location.rootPath, directory) : location.rootPath, limit: 5_000 });
+          if (listed.truncated) return null;
           return listed.files.filter((file) => !file.path.includes("/")).map((file) => file.name);
         } catch (error) {
           if (isNotFound(error)) return [];

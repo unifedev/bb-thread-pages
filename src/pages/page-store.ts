@@ -124,6 +124,8 @@ export function createPageStore(host: SessionHost, resolve?: PageResolver): Page
   // A shell poll, an embed's read and a submission can ask for one document at
   // the same moment; they share one load. Nothing is reused once it settles.
   const loading = new Map<string, Promise<LoadedPage>>();
+  /** What was last logged as not carried, per document. */
+  const reported = new Map<string, string>();
 
   return {
     load(session, requested) {
@@ -165,8 +167,15 @@ export function createPageStore(host: SessionHost, resolve?: PageResolver): Page
           const outcome = await resolve(session, authored, path);
           html = outcome.html;
           site = { resolved: outcome.resolved.length, skipped: outcome.skipped };
-          for (const file of outcome.skipped) {
-            host.log.warn(`page ${key}: ${file.path} is referenced but was not carried into the document (${file.reason})`);
+          // Once per change, not once per poll: the shell asks every two seconds while a session works.
+          const report = outcome.skipped.map((file) => `${file.path} (${file.reason})`).join(", ");
+          if (report !== (reported.get(key) ?? "")) {
+            for (const file of outcome.skipped) {
+              host.log.warn(`page ${key}: ${file.path} is referenced but was not carried into the document (${file.reason})`);
+            }
+            reported.delete(key);
+            if (report) reported.set(key, report);
+            while (reported.size > 256) reported.delete(reported.keys().next().value as string);
           }
         } catch (error) {
           // A page that renders without its own files beats a page that does

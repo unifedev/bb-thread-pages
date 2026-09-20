@@ -65,7 +65,7 @@ describe("the authoring guide", () => {
     expect(parts).toContain("A part is a file with a path segment starting with `_`");
     expect(parts).toContain("never a document of the page");
     expect(parts).toMatch(/from the\s+part's own directory/);
-    expect(parts).toContain(`At most ${LIMITS.includeParts} parts per document`);
+    expect(parts).toContain(`At most ${LIMITS.includeParts} parts and ${LIMITS.includeElements} include`);
     expect(parts).toContain("`bb thread-page status` lists each one with its reason");
     expect(parts).toMatch(/symbolic links are\s+refused/);
 

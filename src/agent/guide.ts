@@ -232,8 +232,8 @@ made of pieces needs no build step: adding a piece is writing one file.
 The \`<link>\` is replaced, in place, by the text of the file it names — or, with
 a \`*\`, of every matching file in **name order** (plain character order: number
 them \`01-…\`, \`02-…\`; \`10\` sorts before \`2\`). \`*\` matches within the last path
-segment only, and never a name starting with a dot. A pattern that matches
-nothing leaves nothing.
+segment only (at most 4 per pattern), and never a name starting with a dot. A
+pattern that matches nothing leaves nothing.
 
 - **A part is a file with a path segment starting with \`_\`** — \`_cards/a.html\`,
   \`slides/_intro.html\`, \`_footer.html\`. Only a part can be included, and a
@@ -246,8 +246,9 @@ nothing leaves nothing.
 - A part's relative \`src\`, \`href\`, \`poster\` and \`srcset\` resolve **from the
   part's own directory**, and those files are carried into the document like
   any other. URLs a script builds at run time resolve from the document.
-- A part may include parts, ${LIMITS.includeDepth} levels deep. At most ${LIMITS.includeParts} parts per document, each
-  at most ${mebibytes(LIMITS.includePartBytes)}, and the assembled document stays within the ${mebibytes(LIMITS.entryDocumentBytes)} entry limit.
+- A part may include parts, ${LIMITS.includeDepth} levels deep. At most ${LIMITS.includeParts} parts and ${LIMITS.includeElements} include
+  elements per document, each part at most ${mebibytes(LIMITS.includePartBytes)}, and the assembled document
+  stays within the ${mebibytes(LIMITS.entryDocumentBytes)} entry limit.
 - Paths stay inside your page root: \`..\`, absolute paths and symbolic links are
   refused, as for every file of the page.
 - The revision covers the assembled document. Change, add or delete a part and
@@ -308,7 +309,10 @@ Inside an embed the page is itself, with less reach: \`context.get\` describes
 \`sessions.snapshot\`, \`projects.list\` and \`providers.list\` work; everything else
 — \`storage.get\`/\`storage.set\`, \`session.activity\`, \`sessions.send\`/\`start\`/
 \`stop\`/\`archive\`/\`markRead\`, \`projects.browse\`/\`create\`, contributed
-capabilities — rejects with \`unavailable\`, and it may make ${LIMITS.embedCallsPerMinute} calls a minute.
+capabilities — rejects with \`unavailable\`, and it may make ${LIMITS.embedCallsPerMinute} calls a minute,
+answers and followed links included. \`pages.open\` and \`sessions.openHost\` work
+from inside an embed only on the reader's click, so a page cannot take the
+reader away by itself when it is shown somewhere.
 **A form with a file attached is not sent from inside an embed**; its status
 line tells the reader to open the page itself. **Embedding is one level deep:**
 \`embed\` called inside an embedded page shows a line saying so and loads nothing.

@@ -10,6 +10,7 @@ import { formatReplyMessage, formatSubmissionMessage } from "../../../domain/sub
 import { mintAnswerToken, verifyAnswerToken, type AnswerToken } from "../../../domain/tokens/answer-token.ts";
 import { KERNEL_RUNTIME } from "../../../generated/kernel-runtime.ts";
 import type { SessionRecord } from "../../../host/types.ts";
+import type { LoadedPage } from "../../../pages/page-store.ts";
 import type { KernelConfig } from "../../../runtime/shared/protocol.ts";
 import { loadUnlessUnwritten } from "../../empty-page.ts";
 import { eligibleSession } from "../../session-access.ts";
@@ -26,24 +27,51 @@ function failed(sessionId: string, path: string, code: "not_found" | "unavailabl
   return { sessionId, path, error: { code, reason, message } };
 }
 
-/** Room left for the envelope, the other entries' fields and JSON escaping of what is already counted. */
-const READ_OVERHEAD_BYTES = 64 * 1024;
+/** Room kept for the response envelope. Each entry's own fields are measured. */
+const READ_ENVELOPE_BYTES = 4 * 1024;
+
+function bytesOf(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
 
 export const pagesRead = handler<PagesReadParams, unknown>({
   method: "pages.read",
   async execute(params, { serving, session: caller }) {
-    let room = LIMITS.pagesReadBytes - READ_OVERHEAD_BYTES;
+    let room = LIMITS.pagesReadBytes - READ_ENVELOPE_BYTES;
     const pages: ReadEntry[] = [];
+    // One call loads each document once, however often it is named. spec R5.56
+    const loads = new Map<string, Promise<{ owner: SessionRecord; page: LoadedPage | null }>>();
+    const loaded = (sessionId: string, key: string | null) => {
+      const id = `${sessionId}#${key ?? ""}`;
+      let pending = loads.get(id);
+      if (!pending) {
+        pending = (async () => {
+          // The same steps the document route takes: eligibility, then the one loading pipeline.
+          const owner = await eligibleSession(serving, sessionId);
+          return { owner, page: key ? await serving.pages.load(sessionId, key) : await loadUnlessUnwritten(serving, sessionId) };
+        })();
+        loads.set(id, pending);
+      }
+      return pending;
+    };
+    const add = (entry: ReadEntry): void => {
+      room -= bytesOf(entry);
+      pages.push(entry);
+    };
+
     for (const [index, wanted] of params.pages.entries()) {
       const sessionId = wanted.sessionId;
       const key = documentKey(wanted.path);
       const path = key ?? ENTRY_DOCUMENT;
+      // Nothing more fits: say so without reading anything. Never the first entry, so every call makes progress. spec R5.58
+      if (index > 0 && room < READ_ENVELOPE_BYTES) {
+        add({ sessionId, path, deferred: true });
+        continue;
+      }
       try {
-        // The same steps the document route takes: eligibility, then the one loading pipeline. spec R5.56
-        const owner = await eligibleSession(serving, sessionId);
-        const page = key ? await serving.pages.load(sessionId, key) : await loadUnlessUnwritten(serving, sessionId);
+        const { owner, page } = await loaded(sessionId, key);
         if (!page) {
-          pages.push(failed(sessionId, path, "not_found", "no_page", "That session has not written its page yet."));
+          add(failed(sessionId, path, "not_found", "no_page", "That session has not written its page yet."));
           continue;
         }
         const shared = {
@@ -57,34 +85,52 @@ export const pagesRead = handler<PagesReadParams, unknown>({
           answerToken: mintAnswerToken({ host: caller.id, target: sessionId, path: key, revision: page.revision, now: serving.now() }, serving.signingKey),
         };
         if (wanted.ifNoneMatch === page.revision) {
-          pages.push({ ...shared, unchanged: true });
+          add({ ...shared, unchanged: true });
+          continue;
+        }
+        // The authored bytes are a floor for what the entry will weigh: decide before injecting and escaping.
+        const floor = Buffer.byteLength(page.html, "utf8");
+        if (floor > LIMITS.pagesReadBytes - READ_ENVELOPE_BYTES) {
+          add(failed(sessionId, path, "response_too_large", "too_large", "That page is too large to show inside another page."));
+          continue;
+        }
+        if (floor > room && index > 0) {
+          add({ sessionId, path, deferred: true });
           continue;
         }
         const config: KernelConfig = { pageRevision: page.revision, stale: page.stale, siteRoot: serving.site.siteRoot(sessionId), embedded: true };
         const html = injectKernel(page.html, { kernel: KERNEL_RUNTIME, config, baseHref: serving.site.baseHref(sessionId, key) });
-        const bytes = Buffer.byteLength(JSON.stringify(html), "utf8");
-        if (bytes > LIMITS.pagesReadBytes - READ_OVERHEAD_BYTES) {
-          pages.push(failed(sessionId, path, "response_too_large", "too_large", "That page is too large to show inside another page."));
+        const entry = { ...shared, revision: page.revision, html };
+        const bytes = bytesOf(entry);
+        if (bytes > LIMITS.pagesReadBytes - READ_ENVELOPE_BYTES) {
+          add(failed(sessionId, path, "response_too_large", "too_large", "That page is too large to show inside another page."));
           continue;
         }
-        // Never the first entry, so every call makes progress. spec R5.58
         if (bytes > room && index > 0) {
-          pages.push({ sessionId, path, deferred: true });
+          add({ sessionId, path, deferred: true });
           continue;
         }
-        room -= bytes;
-        pages.push({ ...shared, revision: page.revision, html });
+        add(entry);
       } catch (error) {
         if (!PageError.is(error)) serving.host.log.warn(`pages.read ${sessionId}: ${errorText(error)}`);
         const code = PageError.is(error) ? error.code : "unavailable";
-        if (code === "page_too_large") pages.push(failed(sessionId, path, "response_too_large", "too_large", PUBLIC_MESSAGES.pageTooLarge));
-        else if (code === "not_found" || code === "ineligible" || code === "no_page") pages.push(failed(sessionId, path, "not_found", code === "no_page" ? "no_page" : "no_session", code === "ineligible" || code === "no_page" ? (error as PageError).message : "That page is not available."));
-        else pages.push(failed(sessionId, path, "unavailable", "unreachable", PUBLIC_MESSAGES.unavailable));
+        if (code === "page_too_large") add(failed(sessionId, path, "response_too_large", "too_large", PUBLIC_MESSAGES.pageTooLarge));
+        else if (code === "not_found" || code === "ineligible" || code === "no_page") add(failed(sessionId, path, "not_found", code === "no_page" ? "no_page" : "no_session", code === "ineligible" || code === "no_page" ? (error as PageError).message : "That page is not available."));
+        else add(failed(sessionId, path, "unavailable", "unreachable", PUBLIC_MESSAGES.unavailable));
       }
     }
     return { result: { pages } };
   },
 });
+
+/**
+ * A session's title as the grant dialog quotes it. Titles are agent-chosen, so
+ * every kind of quotation mark is dropped: a title cannot close the quotes it
+ * sits in and continue the sentence in the host's voice. spec R3.18
+ */
+function quotable(title: string): string {
+  return excerpt(title.replace(/["'`\u00ab\u00bb\u2018-\u201f\u2039\u203a\u300c-\u300f]/g, ""), 70) || "(untitled)";
+}
 
 function openToken(params: PagesAnswerParams, context: HandlerContext): AnswerToken {
   const token = verifyAnswerToken(params.answerToken, context.serving.signingKey, context.serving.now());
@@ -113,10 +159,10 @@ export const pagesAnswer = handler<PagesAnswerParams, unknown>({
     if (token.target === context.session.id || !context.serving.settings.current().embedAnswerGrants) return null;
     if (await context.serving.grants.has(context.session.id, token.target)) return null;
     const target = await targetOf(token, context);
-    const from = excerpt(context.session.title, 80);
-    const to = excerpt(target.title, 80);
+    const from = quotable(context.session.title);
+    const to = quotable(target.title);
     return {
-      summary: `Let “${from}” send your answers to “${to}”? It shows that session's page inside it. You are asked once; the answers you give there then go to “${to}” as if you had answered on its own page.`,
+      summary: `Let “${from}” send your answers to “${to}” (${target.id})? It shows that session's page inside it. You are asked once; what is answered there then goes to “${to}” as if you had answered on its own page.`,
       target: { sessionId: target.id, title: target.title.slice(0, LIMITS.titleChars) },
       record: () => context.serving.grants.add(context.session.id, target.id, context.serving.now()),
     };

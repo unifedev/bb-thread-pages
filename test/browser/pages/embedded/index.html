@@ -1,0 +1,17 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Fixture B</title>
+<style>body{font:15px system-ui;margin:1rem} .tall{height:1400px;border-left:3px dotted GrayText}</style></head>
+<body><h1>Fixture B</h1><p id="marker">B v1</p>
+<form data-title="Fixture form"><label>Your note <textarea name="note"></textarea></label><button name="action" value="Send it">Send it</button></form>
+<p><a href="second.html">second document</a></p><button type="button" id="nav">open my page</button><span id="navres"></span><pre id="probe" style="height:7em;overflow:auto;white-space:pre-wrap"></pre><div class="tall"></div>
+<script>
+(async () => { const out = {}; 
+  try { const c = await threadPage.invoke('context.get'); out.session = c.session.id; out.caps = c.capabilities.map(x => x.method); } catch (e) { out.context = e.code; }
+  try { await threadPage.invoke('storage.get', {key:'k'}); out.storage = 'ok'; } catch (e) { out.storage = e.code; }
+  try { await threadPage.invoke('sessions.send', {sessionId:'HOST_SESSION_ID', prompt:'x'}); out.send = 'ok'; } catch (e) { out.send = e.code; }
+  try { let top='reached'; try { void parent.document.title; } catch (e) { top='blocked'; } out.parentDom = top; } catch (e) {}
+  out.origin = self.origin;
+  document.getElementById('probe').textContent = JSON.stringify(out);
+})();
+document.getElementById('nav').onclick = () => threadPage.invoke('pages.open', {sessionId: 'EMBEDDED_SESSION_ID'}).catch(e => document.getElementById('navres').textContent = e.code);
+window.__autoNav = threadPage.invoke('pages.open', {sessionId: 'EMBEDDED_SESSION_ID'}).then(() => 'navigated', e => e.code); window.__autoNav.then(v => document.getElementById('navres').textContent = 'auto:' + v);
+</script></body></html>

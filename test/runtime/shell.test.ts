@@ -212,10 +212,17 @@ describe("shell poller", () => {
     expect(seen.refreshDocument).not.toHaveBeenCalled();
     expect(seen.showReload).toHaveBeenCalledWith(true);
     expect(seen.setStatus).toHaveBeenCalledWith("Page changed — reload when ready", true);
+    // The offer stays up across later polls instead of being wiped by the next one. spec R2.21
+    await poller.pollNow();
+    expect(seen.setStatus).toHaveBeenLastCalledWith("Page changed — reload when ready", true);
+    expect(seen.refreshDocument).not.toHaveBeenCalled();
+    // Once nothing is left to protect, what was offered is shown.
     poller.setDirty(false);
+    expect(seen.refreshDocument).toHaveBeenCalledTimes(1);
+    poller.retarget();
     etag.value = `"${"3".repeat(64)}"`;
     await poller.pollNow();
-    expect(seen.refreshDocument).toHaveBeenCalledTimes(1);
+    expect(seen.refreshDocument).toHaveBeenCalledTimes(2);
   });
 
   it("keeps saying a page is not written yet until the agent saves it, then reloads", async () => {
@@ -447,6 +454,30 @@ describe("shell documents", () => {
     expect(elements.status.textContent).toBe("Page changed — reload when ready");
     expect(elements.reload.dataset.visible).toBe("true");
     post.mockRestore();
+  });
+
+  // Found by the independent review: a refresh that awaited its token while the reader opened another document.
+  it("abandons a refresh that a document switch overtook, so the address and the document agree", async () => {
+    const { installShell } = await import("../../src/runtime/shell/install.ts");
+    const elements = chrome();
+    const local: ShellConfig = { ...config };
+    let releaseRefresh: (() => void) | null = null;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url !== "/document-session") return new Response(null, { status: 304, headers: { etag: `"${REV}"` } });
+      const path = (JSON.parse(String(init!.body)) as { path: string }).path;
+      if (path === "index.html") await new Promise<void>((resolve) => (releaseRefresh = resolve));
+      return jsonResponse({ ok: true, actionToken: `tok-${path}`, pageRevision: "2".repeat(64), expiresAt: Date.now() + 3_600_000, documentUrl: `/document?session=thr_a&path=${path}`, path, stale: false, empty: false });
+    });
+    const shell = installShell(window, local, elements, fetchImpl as never);
+    const refreshed = shell.refreshDocument();
+    await vi.waitFor(() => expect(releaseRefresh).not.toBeNull());
+    expect(await shell.openDocument("other.html")).toBe(true);
+    releaseRefresh!();
+    expect(await refreshed).toBe(false);
+    expect(local.documentPath).toBe("other.html");
+    expect(local.actionToken).toBe("tok-other.html");
+    expect(document.querySelectorAll("iframe")).toHaveLength(1);
+    expect(shell.shownFrame().getAttribute("src")).toBe("/document?session=thr_a&path=other.html");
   });
 
   it("reloads the shell itself when a refresh in place is not possible", async () => {

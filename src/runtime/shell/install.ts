@@ -43,6 +43,8 @@ export interface ShellHandle {
 }
 
 const HISTORY_KEY = "threadPageDocument";
+/** A question's confirm button ignores clicks this long after it appears. */
+const CONFIRM_ARM_MS = 400;
 
 export function installShell(win: Window & typeof globalThis, config: ShellConfig, elements: ShellElements, fetchImpl?: typeof fetch): ShellHandle {
   const { status, work, reload, dialog, acts, pin, read, archive, title } = elements;
@@ -55,8 +57,12 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   /** Where the shown document is scrolled to, as its kernel reports it. spec R2.18b */
   let scroll = { x: 0, y: 0 };
   /** A refreshed document loading behind the shown one. spec R2.18a */
-  let incoming: { frame: HTMLIFrameElement; ready: boolean; loaded: boolean; apply: DocumentSession; timer: ReturnType<typeof setTimeout>; settle(shown: boolean): void } | null = null;
+  let incoming: { frame: HTMLIFrameElement; ready: boolean; revision: string | null; loaded: boolean; apply: DocumentSession; timer: ReturnType<typeof setTimeout>; settle(shown: boolean): void } | null = null;
   let grantsChrome: GrantsChrome | null = null;
+  /** Where to return the shown frame's document to, once its kernel connects. */
+  let pendingRestore: { x: number; y: number } | null = null;
+  /** Counts document switches, so work that awaited one can tell it was overtaken. */
+  let generation = 0;
 
   const view = {
     setStatus(text: string, warn: boolean) {
@@ -83,7 +89,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
 
   const poller = createPoller(win, config, view, fetchImpl);
   const navigator = createNavigator(win);
-  const confirmer = createConfirmer(dialog);
+  const confirmer = createConfirmer(dialog, CONFIRM_ARM_MS);
   const relay = createRelay({
     config,
     confirmer,
@@ -93,8 +99,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       // The reader started typing while a new version was loading: keep what they see. spec R2.21
       if (dirty && incoming) {
         cancelIncoming();
-        view.setStatus("Page changed — reload when ready", true);
-        view.showReload(true);
+        poller.offer();
       }
     },
     onOpenDocument: (path) => void openDocument(path, true),
@@ -147,15 +152,28 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     if (!isRecord(data) || data.kind !== "thread-page:ready" || data.version !== HANDSHAKE_VERSION) return;
     awaitingReady.delete(from);
     if (from === frame) {
-      connectFrame(frame, null);
+      const restore = pendingRestore;
+      pendingRestore = null;
+      connectFrame(frame, restore);
+      checkRevision(data.revision);
       return;
     }
     // A refreshed document is connected when it is shown, so the shown one keeps its channel until then.
     if (incoming) {
       incoming.ready = true;
+      incoming.revision = typeof data.revision === "string" ? data.revision : null;
       if (incoming.loaded) showIncoming();
     }
   });
+
+  /**
+   * The document is served at whatever revision is current when it loads, which
+   * can be newer than the one the token was exchanged for a moment earlier. Its
+   * calls would be refused until the next poll noticed, so look now.
+   */
+  function checkRevision(served: unknown): void {
+    if (typeof served === "string" && served !== config.pageRevision) void poller.pollNow();
+  }
 
   /**
    * Loads a document into a fresh frame. Navigating the existing frame would
@@ -193,12 +211,16 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     framePort = null;
     const restore = scroll;
     scroll = { x: 0, y: 0 };
+    generation += 1;
+    // A document still loading when its time ran out connects when its kernel reports, and returns there then.
     if (current.ready) connectFrame(frame, restore);
+    else pendingRestore = restore;
     previous.remove();
     frame.removeAttribute("data-incoming");
     poller.retarget();
     view.showReload(false);
     view.setStatus(config.stale ? "Offline copy — read-only" : config.empty ? EMPTY_PAGE_STATUS : (config.notice ?? ""), config.stale);
+    if (current.ready) checkRevision(current.revision);
     current.settle(true);
   }
 
@@ -269,6 +291,8 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       applySession(session);
       framePort = null;
       scroll = { x: 0, y: 0 };
+      pendingRestore = null;
+      generation += 1;
       loadFrame(config.documentUrl);
       poller.retarget();
       view.showReload(false);
@@ -293,20 +317,22 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       return false;
     }
     cancelIncoming();
+    const startedAt = generation;
     let session: DocumentSession | string;
     try {
       session = await documentSession(config.documentPath);
     } catch {
       session = "unavailable";
     }
+    // The reader opened another document, or another refresh finished, while the token was exchanged.
+    if (startedAt !== generation) return false;
     if (typeof session === "string") {
       win.location.reload();
       return false;
     }
     // The reader began typing while the token was exchanged.
     if (poller.isDirty()) {
-      view.setStatus("Page changed — reload when ready", true);
-      view.showReload(true);
+      poller.offer();
       return false;
     }
     cancelIncoming();
@@ -318,6 +344,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       const entry = {
         frame: next,
         ready: false,
+        revision: null as string | null,
         loaded: false,
         apply: session as DocumentSession,
         // A document that never finishes loading — a slow remote font — is shown anyway.
@@ -355,8 +382,10 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       win.location.reload();
       return;
     }
+    // Clearing the dirt shows an offered version; with none offered, refresh anyway.
+    const wasOffered = reload.dataset.visible === "true" && poller.isDirty();
     poller.setDirty(false);
-    void refreshDocument();
+    if (!wasOffered) void refreshDocument();
   });
 
   frame.src = config.documentUrl;

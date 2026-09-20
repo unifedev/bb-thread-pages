@@ -513,7 +513,7 @@ export const pagesAnswer = spec({
     params: "`{ answerToken, form }` or `{ answerToken, reply }` — `form: { submissionId, title, answers: [{ name, label, value }] }`, `reply: { title?, mode?, result, idempotencyKey? }`. The token comes with a `pages.read` of exactly that document.",
     result: "`{ delivery: \"started\" | \"queued\" | \"steered\", duplicate }`.",
     notes:
-      "You do not call this: the kernel does, for forms and `session.reply` inside an embed, and the message is worded by the host exactly as from that page's own URL. It takes no session id and no free text. The first answer from this page into another session asks the reader once, in host chrome, naming both pages; the grant is remembered until the reader revokes it, and a declined one is `cancelled`. `stale_page` means the embedded page changed — the embed refreshes; `not_found` that its session is gone.",
+      "You do not call this: the kernel does, for forms and `session.reply` inside an embed, and the message is worded by the host exactly as from that page's own URL. It takes no session id and no prompt: what arrives is always that page's form or reply, in the host's words. The first answer from this page into another session asks the reader once, in host chrome, naming both pages; the grant is remembered until the reader revokes it, and a declined one is `cancelled`. `stale_page` means the embedded page changed — the embed refreshes; `not_found` that its session is gone.",
   },
 });
 

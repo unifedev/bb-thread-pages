@@ -96,6 +96,39 @@ var LIMITS = Object.freeze({
   rateConcurrent: 8,
   /** Shell revision poll while the tab is visible. R2.17 */
   shellPollMs: 1e4,
+  /**
+   * The same poll while the session is mid-turn, and for a window after the
+   * reader answers from the page. R2.17a, D28
+   */
+  shellPollWorkingMs: 2e3,
+  shellPollAfterAnswerMs: 6e4,
+  /** How long the shell waits for a refreshed document to load before showing it anyway. R2.18a */
+  refreshSwapMs: 4e3,
+  /** Parts a document includes, all levels together; one part; how deep a part may include. R1.23, D32 */
+  includeParts: 200,
+  /** Include elements one document may hold, and unresolved ones it reports. */
+  includeElements: 400,
+  includeReports: 100,
+  includePartBytes: 2 * 1024 * 1024,
+  includeDepth: 3,
+  /** `pages.read`: entries per call, and its own response bound. R5.56, R5.58, D29 */
+  pagesReadEntries: 16,
+  pagesReadBytes: 8 * 1024 * 1024,
+  /** `pages.answer` request: a submission body plus its token. */
+  pagesAnswerBytes: 96 * 1024,
+  /** Embeds on one page; further ones show a placeholder. */
+  embedsPerPage: 32,
+  /** Embed refresh: while an embedded session works or was just answered, and otherwise. R4.44 */
+  embedPollWorkingMs: 3e3,
+  embedPollMs: 1e4,
+  embedPollAfterAnswerMs: 6e4,
+  /** Calls one embedded page may make per minute. R4.49 */
+  embedCallsPerMinute: 30,
+  /** Answer token lifetime; every read renews it. R5.60a, R5.62 */
+  answerTokenMs: 2 * 60 * 60 * 1e3,
+  /** Grants one page may hold, and pages that may hold any. R5.67 */
+  grantsPerPage: 64,
+  grantPages: 512,
   /** `watch` interval default and clamp. R4.30 */
   watchDefaultMs: 8e3,
   watchMinMs: 2e3,
@@ -308,7 +341,8 @@ function registerCli(bb, deps) {
       { name: "init", summary: "Print this session's page path and link, and whether the page exists yet", usage: "bb thread-page init" },
       { name: "guide", summary: "Print the authoring guide (forms, files, documents, other services, capabilities, limits)", usage: "bb thread-page guide" },
       { name: "home", summary: "Make this session's page the home page every page links back to", usage: "bb thread-page home [--clear]" },
-      { name: "status", summary: "Show settings, the instruction new sessions get, and this session's page", usage: "bb thread-page status" }
+      { name: "status", summary: "Show settings, the instruction new sessions get, and this session's page", usage: "bb thread-page status" },
+      { name: "grants", summary: "List or revoke what pages may answer other sessions from an embed", usage: "bb thread-page grants [--revoke <page-session> <target-session> | --revoke-all]" }
     ],
     async run(argv, context) {
       const [command, ...rest] = argv;
@@ -325,6 +359,11 @@ function registerCli(bb, deps) {
             return usage("bb thread-page home [--clear]");
           case "status":
             return rest.length === 0 ? await status(deps, context) : usage();
+          case "grants":
+            if (rest.length === 0) return await listGrants(deps);
+            if (rest.length === 3 && rest[0] === "--revoke" && isSessionId(rest[1]) && isSessionId(rest[2])) return await revokeGrants(deps, rest[1], rest[2]);
+            if (rest.length === 1 && rest[0] === "--revoke-all") return await revokeGrants(deps);
+            return usage("bb thread-page grants [--revoke <page-session> <target-session> | --revoke-all]");
           default:
             return usage();
         }
@@ -340,7 +379,7 @@ function contributedLine(set) {
   if (set.contributors.length === 0) return "(none registered)";
   return set.contributors.map((contributor) => `${contributor.id} ${contributor.version}: ${contributor.methods.map((method) => `${method.method} (${method.effect})`).join(", ") || "no methods"}`).join("; ");
 }
-function usage(text = "bb thread-page <init|guide|home [--clear]|status>") {
+function usage(text = "bb thread-page <init|guide|home [--clear]|status|grants>") {
   return { exitCode: 2, stderr: `Usage: ${text}
 ` };
 }
@@ -410,8 +449,8 @@ async function init(deps, context) {
     `page: ${absolutePath}`,
     `link: [Open the Thread Page](${url})`,
     STATE_LINES[state],
-    `site: files beside ${ENTRY_FILE} are served relatively (nested paths included), other .html files are documents of the page; ${UPLOAD_DIR}/ holds what the reader attaches.`,
-    "guide: bb thread-page guide  (controls anywhere on the page, your own files and documents, other services and servers, live session state, starting sessions, limits)",
+    `site: files beside ${ENTRY_FILE} are served relatively (nested paths included), other .html files are documents of the page \u2014 except parts (a path segment starting with _), which a document includes; ${UPLOAD_DIR}/ holds what the reader attaches.`,
+    "guide: bb thread-page guide  (controls anywhere on the page, your own files, documents and parts, showing other sessions' pages, other services and servers, live session state, starting sessions, limits)",
     await homeLine(deps, current.id)
   ];
   if (problem) lines.push(`warning: the existing page cannot be served \u2014 ${problem}`);
@@ -446,6 +485,29 @@ async function clearHome(deps) {
   await deps.serving.settings.set({ homeSessionId: null });
   return { exitCode: 0, stdout: "home: cleared \u2014 pages link to the built-in home page again.\n" };
 }
+async function listGrants(deps) {
+  const { serving } = deps;
+  const grants = await serving.grants.list();
+  const name = async (id) => {
+    const session = await serving.host.sessions.get(id).catch(() => null);
+    return session ? `${session.title} (${id})` : `(${id})`;
+  };
+  const lines = [
+    "# Pages that may send the reader's answers to another session",
+    `embedAnswerGrants: ${serving.settings.current().embedAnswerGrants ? "on \u2014 the reader is asked once per pair" : "off \u2014 nobody is asked; the grants below are kept but not consulted"}`,
+    ""
+  ];
+  if (grants.length === 0) lines.push("(none)");
+  for (const grant of grants) lines.push(`${await name(grant.from)} \u2192 ${await name(grant.to)}   since ${new Date(grant.grantedAtMs).toISOString()}`);
+  lines.push("", "Revoke one: bb thread-page grants --revoke <page-session> <target-session>. The reader can do the same from the page's header.");
+  return { exitCode: 0, stdout: `${lines.join("\n")}
+` };
+}
+async function revokeGrants(deps, from, to) {
+  const removed = await deps.serving.grants.revoke(from, to);
+  return { exitCode: 0, stdout: `revoked: ${removed}
+` };
+}
 async function status(deps, context) {
   const { serving } = deps;
   const settings = serving.settings.current();
@@ -457,6 +519,7 @@ async function status(deps, context) {
     `pageSeedHtml: ${hasSeed(settings.pageSeedHtml) ? `set (${settings.pageSeedHtml.length} characters) \u2014 init starts new pages from it` : "(empty \u2014 init creates no file; the agent writes the whole page)"}`,
     `workingLabel: ${settings.workingLabel ? JSON.stringify(settings.workingLabel) : "(blank \u2014 indicator hidden)"}`,
     `homeSessionId: ${settings.homeSessionId || "(none \u2014 pages link to the built-in home page)"}`,
+    `embedAnswerGrants: ${settings.embedAnswerGrants ? "on \u2014 the reader is asked once before a page answers another session from an embed" : "off \u2014 never asked"}`,
     `site strategy: ${serving.site.name}`,
     `limits: entry ${LIMITS.entryDocumentBytes / (1024 * 1024)} MiB, upload ${LIMITS.uploadFileBytes / (1024 * 1024)} MiB \xD7 ${LIMITS.uploadsPerForm}, rate ${LIMITS.ratePerMinute}/min`,
     `contributed capabilities: ${contributedLine(await serving.contributions.current())}`,
@@ -475,6 +538,8 @@ async function status(deps, context) {
     try {
       const page = await serving.pages.load(current.id);
       lines.push(`revision: ${page.revision}${page.stale ? " (offline copy)" : ""}`);
+      lines.push(`carried into the document: ${page.site.resolved} file${page.site.resolved === 1 ? "" : "s"} (parts and own files)`);
+      for (const file of page.site.skipped.slice(0, 20)) lines.push(`not carried: ${file.path} (${file.reason})`);
     } catch (error) {
       lines.push(`revision: ${PageError.is(error) ? error.message : errorText(error)}`);
     }
@@ -491,7 +556,9 @@ function buildGuide(registry, site, contributors = []) {
     uploads(),
     ownFiles(site),
     documents(),
+    parts(),
     keepingCurrent(),
+    embedding(),
     runtimeApi(),
     capabilities(registry),
     contributed(contributors),
@@ -542,8 +609,8 @@ own script owns; the host then leaves it entirely alone.
   is in flight its controls are disabled; afterwards the status line says
   "Sent (queued)" or why it failed.
 - Typing into a captured form marks the page dirty, so a new version of the
-  page does not reload under the reader. Custom state the host cannot see:
-  window.threadPage.setDirty(true|false).
+  page is not shown under the reader: they are offered it instead. Custom state
+  the host cannot see: window.threadPage.setDirty(true|false).
 
 ### Controls anywhere on the page
 
@@ -632,7 +699,7 @@ consequences worth knowing:
 - \`url()\` inside a stylesheet you reference is followed too, so backgrounds
   and \`@font-face\` survive. Absolute and remote URLs are never touched.
 - Changing a file beside ${ENTRY_FILE} changes the document, so an open page
-  reloads \u2014 see *Keeping a page's data current*. You do not have to touch
+  refreshes \u2014 see *Keeping a page current*. You do not have to touch
   ${ENTRY_FILE} to publish new data.
 ${site.name === "core-storage" ? `
 **One limitation left on this host:** \`fetch("data.json")\` of your own file
@@ -641,29 +708,164 @@ sandbox's \`Origin: null\`, and only subresource references are resolved for
 you. Load data with <script src="data.js"> or inline it in the document.
 Remote fetches work (see Network).` : `
 Page script may also fetch its own files as data: \`await fetch("data.json")\`.`}`;
-var keepingCurrent = () => `## Keeping a page's data current
+var keepingCurrent = () => `## Keeping a page current
+
+Saving is publishing, and an open page follows. The shell re-checks your
+document with one conditional request \u2014 every **${LIMITS.shellPollWorkingMs / 1e3} s while your session is
+working, and for ${LIMITS.shellPollAfterAnswerMs / 1e3} s after the reader answers from the page**; every ${LIMITS.shellPollMs / 1e3} s
+otherwise; never while the tab is hidden. When the document changed it is
+**swapped in place**: the new one loads behind the one on screen and takes its
+place when it is ready. The top bar stays, nothing flashes, the address and the
+history are untouched, and the reader's scroll position is kept. So a reader
+who answers and watches sees your rewritten page about ${LIMITS.shellPollWorkingMs / 1e3} s after you save it.
+
+**Your page needs no code for any of this, and must not build its own.** There
+is no reload call in the API. Do not poll for your own revision, do not
+\`location.reload()\` (inside the frame it reloads the document without its
+connection to the host), and do not hop between twin documents to force a
+refresh \u2014 each of those is slower, costs the page's call budget, or litters the
+reader's history.
 
 The entry document is the only artifact guaranteed to reach every reader, on
-every origin. Rewriting it is therefore how you push new data to an open page:
-the shell notices the new revision within ${LIMITS.shellPollMs / 1e3} s and reloads the page under
-the reader, preserving what they were typing. You do not need a poller, a
-sidecar or a socket for this \u2014 a page that follows a data source is a page
-something rewrites.
+every origin. Rewriting it \u2014 or any file or part it carries \u2014 is therefore how
+you push new data to an open page: a page that follows a data source is a page
+something rewrites, and while your session works the reader sees each rewrite
+within seconds.
 
 Three things to get right:
 
 - **Make the build deterministic.** An unchanged data set must produce a
   byte-identical document. This is the non-obvious half: a generated timestamp
-  in the payload turns every rebuild into a reload for every reader, and the
-  page will look like it is flickering for no reason.
-- **Set \`setDirty(true)\` while the reader is mid-edit** in state the host
-  cannot see. A captured form does this for you; your own widgets do not.
-- **Refresh on a slow watch, not a tight timer.** A page shares a budget of
-  ${LIMITS.ratePerMinute} requests a minute with its own forms.
+  in the payload turns every rebuild into a refresh for every reader.
+- **The dirty flag is what protects the reader.** While the page is dirty a new
+  version is *offered* in the top bar ("Page changed \u2014 reload when ready")
+  rather than shown. A captured form sets it when the reader types; for state
+  the host cannot see, call \`setDirty(true)\` \u2014 and \`setDirty(false)\` when
+  it is safe again, or the reader stops getting your updates.
+- **A refresh starts the document fresh.** Script state does not survive it.
+  Keep what must survive in \`storage\`, or in the document you write.
 
 \`window.threadPage.watch\` is the other half, for live host state \u2014 sessions,
 activity \u2014 that does not live in your file. Use the document rewrite for data
 you generate, and \`watch\` for data the host owns.`;
+var parts = () => `## A document made of parts
+
+A document can be assembled from several files when it is served, so a page
+made of pieces needs no build step: adding a piece is writing one file.
+
+    <main>
+      <link rel="thread-page-include" href="_cards/*.html">
+    </main>
+
+The \`<link>\` is replaced, in place, by the text of the file it names \u2014 or, with
+a \`*\`, of every matching file in **name order** (plain character order: number
+them \`01-\u2026\`, \`02-\u2026\`; \`10\` sorts before \`2\`). \`*\` matches within the last path
+segment only (at most 4 per pattern), and never a name starting with a dot. A
+pattern that matches nothing leaves nothing.
+
+- **A part is a file with a path segment starting with \`_\`** \u2014 \`_cards/a.html\`,
+  \`slides/_intro.html\`, \`_footer.html\`. Only a part can be included, and a
+  part is **never a document of the page**: no link or address opens it. Every
+  other \`.html\` file is a document (above) and cannot be included.
+- Replacement is textual. The reader's browser parses the assembled document
+  once, as if you had written one file, so a part may hold table rows, a
+  \`<script>\`, a \`<style>\`, or half of a list. A part is a fragment: no doctype,
+  no \`<html>\`, no \`<head>\`.
+- A part's relative \`src\`, \`href\`, \`poster\` and \`srcset\` resolve **from the
+  part's own directory**, and those files are carried into the document like
+  any other. URLs a script builds at run time resolve from the document.
+- A part may include parts, ${LIMITS.includeDepth} levels deep. At most ${LIMITS.includeParts} parts and ${LIMITS.includeElements} include
+  elements per document, each part at most ${mebibytes(LIMITS.includePartBytes)}, and the assembled document
+  stays within the ${mebibytes(LIMITS.entryDocumentBytes)} entry limit.
+- Paths stay inside your page root: \`..\`, absolute paths and symbolic links are
+  refused, as for every file of the page.
+- The revision covers the assembled document. Change, add or delete a part and
+  an open reader gets the new document \u2014 you never touch ${ENTRY_FILE}.
+- An include that cannot be honoured \u2014 missing, not a part, outside the root,
+  over a limit \u2014 is **left as you wrote it**, and the document is still served.
+  \`bb thread-page status\` lists each one with its reason, and so does the
+  plugin log.
+
+Parts are one document once assembled: ids, form names and script globals share
+one namespace. Give each part what it needs to stand beside the others.`;
+var embedding = () => `## Showing another session's page
+
+A page can show another session's page inside it, live, and let the reader
+answer **that page's agent** from there. One call:
+
+    const stop = window.threadPage.embed(target, { sessionId, path, onState })
+
+\`target\` is an \`<iframe>\` you placed, or any container element \u2014 the host puts
+a frame filling it. \`sessionId\` is the session whose page to show; \`path\` is a
+document of that page (default its entry document). Call \`stop()\` to remove it.
+Size and position the frame or its container as you like; the host supplies no
+chrome around it.
+
+What the host does for you, with no further code:
+
+- loads the document exactly as the host serves it at its own address, into a
+  frame that is **always** \`sandbox="allow-scripts allow-forms"\` whatever you
+  set, on an origin of its own \u2014 it cannot reach your page, and you cannot reach
+  into it;
+- keeps it fresh: every ${LIMITS.embedPollWorkingMs / 1e3} s while an embedded session is working or was
+  answered through its embed in the last ${LIMITS.embedPollAfterAnswerMs / 1e3} s, every ${LIMITS.embedPollMs / 1e3} s otherwise, never
+  while the tab is hidden. **All the embeds of a page are checked in one call
+  per tick** (up to ${LIMITS.pagesReadEntries} per call, more take turns), so twelve embeds cost your
+  call budget what one does. At most ${LIMITS.embedsPerPage} embeds on a page;
+- refreshes an embed without touching your page, and keeps its scroll position;
+- never refreshes it under a reader who is typing in it: the new version is
+  offered inside the embed, and your page counts as dirty meanwhile, so your own
+  refresh waits too;
+- follows its links: one to another document of that page opens in the embed,
+  an \`https:\` link goes through the usual confirmation;
+- shows a short line of its own when there is nothing to show \u2014 no such
+  session, archived, no page yet, too large, unreachable \u2014 and keeps checking.
+
+**Answers go to the session that owns the embedded page, never to yours.** Its
+forms and \`session.reply\` behave, validate and are worded exactly as on its own
+address, so that agent cannot tell the answer came through your page. The
+**first** time the reader answers a given session from inside your page, the
+host asks them once, in the top bar's own dialog: *Let \u2018your page\u2019 send your
+answers to \u2018that session\u2019?* It is remembered; the reader can revoke it from
+the top bar. Declined, the answer is not sent and the form says so. You cannot
+word, skip or pre-approve it, and there is nothing to handle. A document of
+your own page embedded in your page needs no grant.
+
+Inside an embed the page is itself, with less reach: \`context.get\` describes
+*its* session; \`pages.open\`, \`sessions.openHost\`, \`navigation.openExternal\`,
+\`sessions.snapshot\`, \`projects.list\` and \`providers.list\` work; everything else
+\u2014 \`storage.get\`/\`storage.set\`, \`session.activity\`, \`sessions.send\`/\`start\`/
+\`stop\`/\`archive\`/\`markRead\`, \`projects.browse\`/\`create\`, contributed
+capabilities \u2014 rejects with \`unavailable\`, and it may make ${LIMITS.embedCallsPerMinute} calls a minute,
+answers and followed links included. \`pages.open\` and \`sessions.openHost\` work
+from inside an embed only on the reader's click, so a page cannot take the
+reader away by itself when it is shown somewhere.
+**A form with a file attached is not sent from inside an embed**; its status
+line tells the reader to open the page itself. **Embedding is one level deep:**
+\`embed\` called inside an embedded page shows a line saying so and loads nothing.
+So write your own page to degrade when \`storage\` answers \`unavailable\`: it may
+be shown inside someone else's.
+
+\`onState\`, if you pass it, is called with
+\`{ status, sessionId, path, title, revision, working, updateAvailable }\` when any
+of them changes \u2014 \`status\` is \`loading\`, \`shown\`, \`not_found\`, \`no_page\`,
+\`too_large\`, \`unavailable\` or \`nested\`; \`title\` and \`working\` are the owning
+session's. Use it to draw your own frame around an embed: a title, a working
+dot, a link made with \`pages.open\`. Without it, pass nothing.
+
+Feature-check on a page that may be read on an older host:
+\`typeof window.threadPage.embed === "function"\`.
+
+Underneath are two capabilities you rarely call yourself. \`pages.read\` returns
+other sessions' page documents (a whole document is agent output you can read
+and send anywhere \u2014 quote or summarise another page with it, parsing \`html\`
+with \`DOMParser\`). \`pages.answer\` delivers an embed's answer and only that: it
+takes the token a read returned, never a session id or a prompt. To *say*
+something to another session in your own words, use \`sessions.send\`, which the
+reader confirms each time.
+
+Embedding another **site** is still not possible: a frame with a URL is blocked.
+Link to it.`;
 var runtimeApi = () => `## window.threadPage
 
 The complete page-facing API; it is frozen and cannot be replaced.
@@ -672,6 +874,7 @@ The complete page-facing API; it is frozen and cannot be replaced.
     await window.threadPage.invoke(method, params)
     const stop = window.threadPage.watch(method, params, (value, error) => {\u2026}, { intervalMs })
     window.threadPage.setDirty(true | false)
+    const stopEmbed = window.threadPage.embed(target, { sessionId, path, onState })
 
 - \`invoke\` resolves with the capability's result and rejects with an Error
   whose \`code\` is one of: invalid_json, invalid_request, invalid_params,
@@ -684,8 +887,9 @@ The complete page-facing API; it is frozen and cannot be replaced.
   ${LIMITS.watchMinMs / 1e3} s\u2013${LIMITS.watchMaxMs / 6e4} min, paused while the tab is hidden. Errors go to the
   listener's second argument. Call the returned function to stop; a page that
   never calls watch causes no polling.
-- \`stale_page\` means the page changed under the call: the shell offers a
-  reload. \`cancelled\` means the reader declined a confirmation \u2014 a normal
+- \`embed\` shows another session's page \u2014 see *Showing another session's page*.
+- \`stale_page\` means the page changed under the call: the shell shows the new
+  version, or offers it while the page is dirty. \`cancelled\` means the reader declined a confirmation \u2014 a normal
   outcome every page calling a confirmed capability must handle, not an error.
 
 Check what is enabled rather than assume: \`(await invoke("context.get")).capabilities\`.`;
@@ -751,7 +955,7 @@ ${registered}`;
 }
 function capabilities(registry) {
   const rows = registry.list().map((spec2) => {
-    const status2 = spec2.implemented ? spec2.confirmed ? "confirmed in trusted chrome" : "no confirmation" : "not implemented on this host: unknown_method";
+    const status2 = !spec2.implemented ? "not implemented on this host: unknown_method" : spec2.effect === "granted-write" ? "asked once per pair in trusted chrome, then remembered" : spec2.confirmed ? "confirmed in trusted chrome" : "no confirmation";
     const lines = [`### \`${spec2.method}\` \u2014 ${spec2.effect} \xB7 ${status2}`, "", spec2.description, "", `Parameters: ${spec2.doc.params}`, "", `Result: ${spec2.doc.result}`];
     if (spec2.doc.notes) lines.push("", spec2.doc.notes);
     return lines.join("\n");
@@ -760,8 +964,9 @@ function capabilities(registry) {
 
 Every way a page can affect anything outside itself. Effects: read;
 own-session-write; cross-session-write, destructive and device (always
-confirmed); navigation (confirmed when it leaves this host). A confirmed
-capability shows a dialog in trusted chrome with the host's own wording; you
+confirmed); navigation (confirmed when it leaves this host); granted-write
+(\`pages.answer\` only: the reader is asked once per pair of pages, not per
+call). A confirmed capability shows a dialog in trusted chrome with the host's own wording; you
 do not build it and cannot word it. Every capability validates its
 parameters exactly \u2014 unknown keys are refused \u2014 and returns only the fields
 listed here.
@@ -881,8 +1086,9 @@ nobody can be asked to change.`;
 var documents = () => `## Several documents in one page
 
 Your page may hold more than one HTML document. Any \`.html\` file in your page
-root other than ${ENTRY_FILE} \u2014 nested directories included, ${UPLOAD_DIR}/ excluded
-\u2014 is a document of the page. Link to it relatively, as a static site would:
+root other than ${ENTRY_FILE} \u2014 nested directories included, ${UPLOAD_DIR}/ excluded,
+and excluding *parts* (any path with a segment starting with \`_\`; see *A
+document made of parts*) \u2014 is a document of the page. Link to it relatively, as a static site would:
 
     <a href="details.html">Details</a>
 
@@ -890,7 +1096,7 @@ A click on such a link opens that document **inside the page**: the top bar
 stays, the address changes so reload, back and forward return to it, and it
 runs with the same runtime \u2014 its forms answer your session and its
 capabilities act for it. Each document has its own revision, so saving one
-reloads only a reader who is looking at it. Its own relative references
+refreshes only a reader who is looking at it. Its own relative references
 resolve from its own directory.
 
 Every document is part of the same page and should look it: a document opened
@@ -974,7 +1180,12 @@ var limits = () => `## Limits
 | Folder selection | ${LIMITS.selectionTokenMs / 6e4} minutes, single use |
 | Submission idempotency | ${LIMITS.idempotencyRecords} records, ${LIMITS.idempotencyMs / 6e4} minutes |
 | Rate limit | ${LIMITS.ratePerMinute} accepted requests a minute and ${LIMITS.rateConcurrent} in flight, per page; refused with rate_limited |
-| Shell revision poll | every ${LIMITS.shellPollMs / 1e3} s while visible |
+| Shell revision poll | every ${LIMITS.shellPollWorkingMs / 1e3} s while the session works and for ${LIMITS.shellPollAfterAnswerMs / 1e3} s after the reader answers; every ${LIMITS.shellPollMs / 1e3} s otherwise; paused while hidden |
+| Parts | ${LIMITS.includeParts} per document, ${mebibytes(LIMITS.includePartBytes)} each, ${LIMITS.includeDepth} levels deep; the assembled document within the entry limit |
+| Embeds | ${LIMITS.embedsPerPage} per page; checked every ${LIMITS.embedPollWorkingMs / 1e3} s while an embedded session works or was just answered, every ${LIMITS.embedPollMs / 1e3} s otherwise; one call per tick for every ${LIMITS.pagesReadEntries} |
+| pages.read | ${LIMITS.pagesReadEntries} documents per call, ${mebibytes(LIMITS.pagesReadBytes)} per response; a larger single document is refused, the rest deferred |
+| Calls from one embedded page | ${LIMITS.embedCallsPerMinute} a minute, then rate_limited |
+| Answer grant | asked once per (your page \u2192 embedded session), kept until revoked; ${LIMITS.grantsPerPage} per page |
 | watch interval | ${LIMITS.watchDefaultMs / 1e3} s default, ${LIMITS.watchMinMs / 1e3} s\u2013${LIMITS.watchMaxMs / 6e4} min |
 | Offline copy | entry documents up to ${kibibytes(LIMITS.offlineCopyBytes)} are kept so the page opens read-only when its host is unreachable |`;
 var limitations = (site) => `## Known limitations
@@ -983,29 +1194,32 @@ var limitations = (site) => `## Known limitations
   disabled and effectful capabilities answer unavailable.
 - A confirmed capability that fails on the host answers handler_error with a
   generic message; the cause is in the plugin log (\`bb plugin logs thread-pages\`).
-- Embedding another page or site in an <iframe> is blocked (frame-src 'none').
+- Embedding another **site** in an <iframe> is blocked (frame-src 'none'); only
+  \`threadPage.embed\` shows another session's page. Inside an embed, in Safari,
+  a relative reference that was *not* carried into the document (missing or over
+  the size limits) resolves against the embedding page.
 - \`voice.captureAndTranscribe\` is not implemented: unknown_method.${site.name === "core-storage" ? `
 - fetch() of your own files from page script is refused on this host (see Files you show the reader).
 - Your own files are carried inside the entry document rather than served as files, because this host cannot authorise a sandboxed document's own requests. That is why they count against the document's size limits.` : ""}`;
 
 // src/bb/activity.ts
 function questionOf(interactions, maxChars) {
-  const parts = [];
+  const parts2 = [];
   for (const raw of interactions) {
     const payload = asRecord(asRecord(raw)?.payload);
     if (!payload) continue;
     if (payload.kind === "user_question" && Array.isArray(payload.questions)) {
       for (const question of payload.questions) {
         const prompt2 = asRecord(question)?.prompt;
-        if (typeof prompt2 === "string" && prompt2.trim()) parts.push(prompt2.trim());
+        if (typeof prompt2 === "string" && prompt2.trim()) parts2.push(prompt2.trim());
       }
     } else if (typeof payload.title === "string" && payload.title.trim()) {
-      parts.push(payload.title.trim());
+      parts2.push(payload.title.trim());
     } else if (payload.kind === "approval") {
-      parts.push(typeof payload.reason === "string" && payload.reason.trim() ? `Approval requested: ${payload.reason.trim()}` : "Approval requested");
+      parts2.push(typeof payload.reason === "string" && payload.reason.trim() ? `Approval requested: ${payload.reason.trim()}` : "Approval requested");
     }
   }
-  const text = parts.join("\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+  const text = parts2.join("\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
   if (!text) return null;
   return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}\u2026`;
 }
@@ -1288,6 +1502,17 @@ function createBbHost(bb) {
           throw hostUnavailable(error);
         }
       },
+      async list(location, relativeDirectory) {
+        const directory = relativeDirectory.replace(/\/+$/, "");
+        try {
+          const listed = await bb.sdk.files.list({ hostId: location.hostId, path: directory ? joinPath(location.rootPath, directory) : location.rootPath, limit: 5e3 });
+          if (listed.truncated) return null;
+          return listed.files.filter((file) => !file.path.includes("/")).map((file) => file.name);
+        } catch (error) {
+          if (isNotFound(error)) return [];
+          throw hostUnavailable(error);
+        }
+      },
       async write(location, relativePath, bytes, options) {
         try {
           const written = await bb.sdk.files.write({
@@ -1534,6 +1759,12 @@ async function defineSettings(bb) {
       label: "Home page session",
       description: "The session whose page is home; every other page links back to it. Set with `bb thread-page home`.",
       default: ""
+    },
+    embedAnswerGrants: {
+      type: "boolean",
+      label: "Ask before a page answers another session",
+      description: "A page can show another session's page inside it. On (the default): the first time you answer that session from inside the page, you are asked once, in the page header's own dialog, and can revoke it there. Off: never asked \u2014 sensible only where your agents already run without command approval, since an agent can then message another session from its shell anyway.",
+      default: true
     }
   });
   let current = readSettings(await handle.get());
@@ -1555,12 +1786,14 @@ function readSettings(values) {
     agentInstructionText: isPastDefault("agentInstructionText", values.agentInstructionText) ? DEFAULT_AGENT_INSTRUCTION : values.agentInstructionText,
     pageSeedHtml: isPastDefault("pageSeedHtml", values.pageSeedHtml) ? "" : values.pageSeedHtml,
     workingLabel: values.workingLabel.trim(),
-    homeSessionId: values.homeSessionId.trim()
+    homeSessionId: values.homeSessionId.trim(),
+    // Required unless turned off. spec R7.17
+    embedAnswerGrants: values.embedAnswerGrants !== false
   };
 }
 
 // src/domain/capabilities/contract.ts
-var EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state", "contributed-write"];
+var EFFECT_CLASSES = ["read", "own-session-write", "cross-session-write", "destructive", "navigation", "device", "reader-state", "contributed-write", "granted-write"];
 var CONFIRMED_EFFECTS = /* @__PURE__ */ new Set(["cross-session-write", "destructive", "device"]);
 
 // src/domain/capabilities/registry.ts
@@ -1568,7 +1801,7 @@ function describe(spec2) {
   return {
     method: spec2.method,
     effect: spec2.effect,
-    confirmation: spec2.confirmed ? "required" : "none",
+    confirmation: spec2.effect === "granted-write" ? "grant" : spec2.confirmed ? "required" : "none",
     maxRequestBytes: spec2.maxRequestBytes ?? LIMITS.capabilityPayloadBytes,
     maxResponseBytes: spec2.maxResponseBytes ?? LIMITS.capabilityPayloadBytes,
     ...spec2.contributor ? { contributor: spec2.contributor, description: spec2.description, reasons: [...spec2.reasons?.keys() ?? []] } : {}
@@ -1585,6 +1818,9 @@ function createRegistry(specs) {
     }
     if (spec2.effect === "contributed-write" && !spec2.contributor) {
       throw new TypeError(`${spec2.method}: only a contributed capability may declare contributed-write`);
+    }
+    if (spec2.effect === "granted-write" && (spec2.confirmed || spec2.method !== "pages.answer")) {
+      throw new TypeError(`${spec2.method}: granted-write is pages.answer's alone, and is not confirmed per call`);
     }
     if ((spec2.effect === "read" || spec2.effect === "own-session-write" || spec2.effect === "reader-state" || spec2.effect === "contributed-write") && spec2.confirmed) {
       throw new TypeError(`${spec2.method} is a ${spec2.effect} and must not be confirmed`);
@@ -1603,6 +1839,30 @@ function createRegistry(specs) {
     list: () => list,
     descriptors: () => descriptors
   });
+}
+
+// src/domain/document-path.ts
+var ENTRY_DOCUMENT = "index.html";
+var UPLOADS = "uploads/";
+function isHtmlPath(path) {
+  if (typeof path !== "string" || path.length === 0 || path.length > 1024) return false;
+  if (path.includes("\0") || path.includes("\\") || path.startsWith("/") || path.startsWith(UPLOADS)) return false;
+  if (!path.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..")) return false;
+  return /\.html?$/i.test(path);
+}
+function isPartPath(path) {
+  return isHtmlPath(path) && path.split("/").some((segment) => segment.startsWith("_"));
+}
+function isDocumentPath(path) {
+  return isHtmlPath(path) && !isPartPath(path);
+}
+function directoryOf(path) {
+  if (!path) return "";
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? "" : path.slice(0, slash + 1);
+}
+function documentKey(path) {
+  return !path || path === ENTRY_DOCUMENT ? null : path;
 }
 
 // src/domain/json/strict-json.ts
@@ -1891,9 +2151,9 @@ var contextGet = spec({
         object({
           method: string({ min: 3, max: LIMITS.methodNameChars, label: "Method" }),
           effect: literal(EFFECT_CLASSES),
-          confirmation: literal(["none", "required"]),
+          confirmation: literal(["none", "required", "grant"]),
           maxRequestBytes: integer(1, LIMITS.contributedPayloadMaxBytes, "Bound"),
-          maxResponseBytes: integer(1, LIMITS.contributedPayloadMaxBytes, "Bound"),
+          maxResponseBytes: integer(1, Math.max(LIMITS.contributedPayloadMaxBytes, LIMITS.pagesReadBytes), "Bound"),
           contributor: optional(object({ id: string({ min: 1, max: 32, label: "Contributor" }), version: string({ min: 1, max: 64, label: "Version" }) })),
           description: optional(string({ min: 1, max: 240, label: "Description" })),
           reasons: optional(array(string({ min: 1, max: 64, label: "Reason" }), 64))
@@ -1904,7 +2164,7 @@ var contextGet = spec({
   ),
   doc: {
     params: "None.",
-    result: "`{ protocolVersion: 1, session: { id, title, projectId }, page: { revision, readOnly }, capabilities: [{ method, effect, confirmation, maxRequestBytes, maxResponseBytes, contributor?, description?, reasons? }] }`. `contributor: { id, version }`, `description` and `reasons` appear only on capabilities another plugin contributes.",
+    result: "`{ protocolVersion: 1, session: { id, title, projectId }, page: { revision, readOnly }, capabilities: [{ method, effect, confirmation, maxRequestBytes, maxResponseBytes, contributor?, description?, reasons? }] }`. `confirmation` is `none`, `required`, or `grant` (asked once, then remembered). `contributor: { id, version }`, `description` and `reasons` appear only on capabilities another plugin contributes.",
     notes: "The roster lists what is actually enabled, contributed capabilities included; check it rather than assume."
   }
 });
@@ -2203,6 +2463,98 @@ var navigationOpenExternal = spec({
     result: '`{ opened: true }`. The confirmation names the destination origin. An ordinary `<a href="https://\u2026">` in your page goes through this automatically.'
   }
 });
+var revision = string({ min: 64, max: 64, pattern: /^[a-f0-9]{64}$/, label: "Revision" });
+var answerToken = string({ min: 1, max: LIMITS.tokenChars, pattern: /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, label: "Answer token" });
+var documentPath = refine(string({ min: 1, max: 1024, label: "Path" }), (value) => value === ENTRY_DOCUMENT || isDocumentPath(value) ? null : "is not a document of a page");
+var pagesReadParams = object({
+  pages: refine(
+    array(object({ sessionId: entityId("Session id"), path: optional(documentPath), ifNoneMatch: optional(revision) }), LIMITS.pagesReadEntries, "Pages"),
+    (value) => value.length === 0 ? "must name at least one page" : null
+  )
+});
+var PAGE_READ_REASONS = ["no_session", "no_page", "too_large", "unreachable"];
+var pagesRead = spec({
+  method: "pages.read",
+  description: "Read other sessions' page documents as the host serves them, conditionally and in one call.",
+  effect: "read",
+  confirmed: false,
+  implemented: true,
+  maxResponseBytes: LIMITS.pagesReadBytes,
+  validateParams: params(pagesReadParams),
+  validateResult: result(
+    object({
+      pages: array(
+        object({
+          sessionId: entityId("Session id"),
+          path: string({ min: 1, max: 1024, label: "Path" }),
+          revision: optional(revision),
+          html: optional(string({ max: LIMITS.pagesReadBytes, label: "Document" })),
+          unchanged: optional(literal([true])),
+          deferred: optional(literal([true])),
+          title: optional(title()),
+          projectId: optional(nullable(entityId("Project id"))),
+          working: optional(boolean()),
+          readOnly: optional(boolean()),
+          answerToken: optional(answerToken),
+          error: optional(
+            object({
+              code: literal(["not_found", "unavailable", "response_too_large"]),
+              reason: literal(PAGE_READ_REASONS),
+              message: string({ min: 1, max: LIMITS.errorMessageChars, label: "Message" })
+            })
+          )
+        }),
+        LIMITS.pagesReadEntries
+      )
+    })
+  ),
+  doc: {
+    params: `\`{ pages: [{ sessionId, path?, ifNoneMatch? }] }\` \u2014 1 to ${LIMITS.pagesReadEntries} entries. \`path\` is a document of that page (default its entry document); \`ifNoneMatch\` is the revision you already hold.`,
+    result: `\`{ pages: [entry] }\`, one per request entry, in order, each with \`sessionId\` and \`path\` and one of: the document \`{ revision, html, title, projectId, working, readOnly, answerToken }\`; \`{ unchanged: true, title, projectId, working, readOnly, answerToken }\` when \`ifNoneMatch\` is current; \`{ deferred: true }\` when it did not fit this response \u2014 ask again; \`{ error: { code, reason, message } }\` with reason \`no_session\`, \`no_page\`, \`too_large\` or \`unreachable\`. \`title\`, \`projectId\` and \`working\` are the owning session's; \`readOnly\` is true for an offline copy.`,
+    notes: `\`threadPage.embed\` calls this for you; call it yourself only to quote or summarise another page. \`html\` is the document as the host serves it for a sandboxed \`srcdoc\` frame: its parts and own files carried in, the kernel injected in embedded mode. One response holds at most ${mebibytes(LIMITS.pagesReadBytes)}: a larger single document is refused for that entry, never truncated, and the rest are deferred. A page may read a document of its own page.`
+  }
+});
+var submissionAnswer = object({
+  name: string({ max: 128, label: "Name" }),
+  label: string({ max: 300, label: "Label" }),
+  value: union(union(boolean(), string({ max: LIMITS.answerValueChars, label: "Answer" })), array(string({ max: 2e3, label: "Answer" }), LIMITS.answerListItems))
+});
+var pagesAnswerParams = refine(
+  object({
+    answerToken,
+    form: optional(
+      object({
+        submissionId: string({ min: 1, max: 128, pattern: /^[A-Za-z0-9._-]+$/, label: "Submission id" }),
+        title: string({ max: 300, label: "Title" }),
+        answers: array(submissionAnswer, LIMITS.answersPerSubmission, "Answers")
+      })
+    ),
+    reply: optional(
+      object({
+        title: optional(title()),
+        mode: withDefault(literal(["queue", "steer"], "Mode"), "queue"),
+        result: json({ maxBytes: LIMITS.resultTextBytes }, "Result"),
+        idempotencyKey: optional(string({ min: 1, max: LIMITS.requestIdChars, pattern: /^[A-Za-z0-9][A-Za-z0-9._:-]*$/, label: "Idempotency key" }))
+      })
+    )
+  }),
+  (value) => value.form === void 0 === (value.reply === void 0) ? "needs exactly one of form and reply" : null
+);
+var pagesAnswer = spec({
+  method: "pages.answer",
+  description: "Deliver an answer given inside an embedded page to the session that owns that page.",
+  effect: "granted-write",
+  confirmed: false,
+  implemented: true,
+  maxRequestBytes: LIMITS.pagesAnswerBytes,
+  validateParams: params(pagesAnswerParams),
+  validateResult: result(deliveryResult),
+  doc: {
+    params: "`{ answerToken, form }` or `{ answerToken, reply }` \u2014 `form: { submissionId, title, answers: [{ name, label, value }] }`, `reply: { title?, mode?, result, idempotencyKey? }`. The token comes with a `pages.read` of exactly that document.",
+    result: '`{ delivery: "started" | "queued" | "steered", duplicate }`.',
+    notes: "You do not call this: the kernel does, for forms and `session.reply` inside an embed, and the message is worded by the host exactly as from that page's own URL. It takes no session id and no prompt: what arrives is always that page's form or reply, in the host's words. The first answer from this page into another session asks the reader once, in host chrome, naming both pages; the grant is remembered until the reader revokes it, and a declined one is `cancelled`. `stale_page` means the embedded page changed \u2014 the embed refreshes; `not_found` that its session is gone."
+  }
+});
 var projectsBrowse = spec({
   method: "projects.browse",
   description: "Open the host's folder picker and return an opaque selection token.",
@@ -2262,6 +2614,8 @@ var ALL_CAPABILITIES = Object.freeze([
   sessionReply,
   storageSet,
   pagesOpen,
+  pagesRead,
+  pagesAnswer,
   sessionsOpenHost,
   sessionsSend,
   sessionsStart,
@@ -2654,24 +3008,6 @@ function completeInvocation(invocation, result2) {
 
 // src/domain/capabilities/index.ts
 var capabilityRegistry = createRegistry(ALL_CAPABILITIES);
-
-// src/domain/document-path.ts
-var ENTRY_DOCUMENT = "index.html";
-var UPLOADS = "uploads/";
-function isDocumentPath(path) {
-  if (typeof path !== "string" || path.length === 0 || path.length > 1024) return false;
-  if (path.includes("\0") || path.includes("\\") || path.startsWith("/") || path.startsWith(UPLOADS)) return false;
-  if (!path.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..")) return false;
-  return /\.html?$/i.test(path);
-}
-function directoryOf(path) {
-  if (!path) return "";
-  const slash = path.lastIndexOf("/");
-  return slash < 0 ? "" : path.slice(0, slash + 1);
-}
-function documentKey(path) {
-  return !path || path === ENTRY_DOCUMENT ? null : path;
-}
 
 // src/domain/rate-limit.ts
 function createRateLimiter(budget = { perMinute: LIMITS.ratePerMinute, concurrent: LIMITS.rateConcurrent }) {
@@ -10960,6 +11296,16 @@ function serializeDocumentTypeNode(node, { treeAdapter }) {
 function parse(html, options) {
   return Parser.parse(html, options);
 }
+function parseFragment(fragmentContext, html, options) {
+  if (typeof fragmentContext === "string") {
+    options = html;
+    html = fragmentContext;
+    fragmentContext = null;
+  }
+  const parser = Parser.getFragmentParser(fragmentContext, options);
+  parser.tokenizer.write(html, true);
+  return parser.getFragment();
+}
 
 // src/pages/inline.ts
 var CARRIERS = [
@@ -10990,6 +11336,9 @@ function isOwnFileReference(value) {
   if (trimmed.startsWith("#") || trimmed.startsWith("/") || trimmed.startsWith("//")) return false;
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) return false;
   return true;
+}
+function pathOfReference(reference) {
+  return pathOf(reference);
 }
 function pathOf(reference) {
   const withoutHash = reference.trim().split("#")[0] ?? "";
@@ -11141,6 +11490,9 @@ async function resolveSrcset(srcset, urlFor, base) {
   }
   return changed ? rewritten.join(", ") : null;
 }
+function normalisePath(path) {
+  return normalise(path);
+}
 function normalise(path) {
   const out = [];
   for (const segment of path.split("/")) {
@@ -11149,6 +11501,239 @@ function normalise(path) {
     else out.push(segment);
   }
   return out.join("/");
+}
+
+// src/pages/include.ts
+var INCLUDE_REL = "thread-page-include";
+function elementsOf(tree) {
+  const found = [];
+  const walk = (node) => {
+    for (const child of node.childNodes ?? []) {
+      if (!defaultTreeAdapter.isElementNode(child)) continue;
+      found.push(child);
+      walk(child);
+      if (child.tagName === "template") walk(defaultTreeAdapter.getTemplateContent(child));
+    }
+  };
+  walk(tree);
+  return found;
+}
+function attributeOf2(element, name) {
+  return element.attrs.find((attr) => attr.name === name)?.value ?? null;
+}
+function applySplices(text, splices) {
+  let out = text;
+  for (const splice of [...splices].sort((a, b) => b.start - a.start)) out = out.slice(0, splice.start) + splice.text + out.slice(splice.end);
+  return out;
+}
+function escapeAttribute2(value) {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+function relativeFrom(fromDir, target) {
+  const from = fromDir.split("/").filter(Boolean);
+  const to = target.split("/").filter(Boolean);
+  let common = 0;
+  while (common < from.length && common < to.length - 1 && from[common] === to[common]) common += 1;
+  return [...from.slice(common).map(() => ".."), ...to.slice(common)].map((segment) => segment === ".." ? segment : encodeURIComponent(segment)).join("/");
+}
+var REBASED_ATTRIBUTES = ["src", "href", "poster"];
+function rebasePart(html, partDir, documentDir) {
+  if (partDir === documentDir) return html;
+  const fragment = parseFragment(html, { sourceCodeLocationInfo: true });
+  const splices = [];
+  function rebased(reference) {
+    if (!isOwnFileReference(reference)) return null;
+    const path = pathOfReference(reference);
+    if (!path) return null;
+    const target = normalisePath(partDir + path);
+    if (!isSafeRelativePath(target)) return null;
+    const trimmed = reference.trim();
+    const suffixAt = trimmed.search(/[?#]/);
+    return relativeFrom(documentDir, target) + (suffixAt >= 0 ? trimmed.slice(suffixAt) : "");
+  }
+  for (const element of elementsOf(fragment)) {
+    const locations = element.sourceCodeLocation?.attrs;
+    if (!locations) continue;
+    for (const name of REBASED_ATTRIBUTES) {
+      const value = attributeOf2(element, name);
+      const at2 = locations[name];
+      if (value === null || !at2) continue;
+      const next = rebased(value);
+      if (next !== null && next !== value.trim()) splices.push({ start: at2.startOffset, end: at2.endOffset, text: `${name}="${escapeAttribute2(next)}"` });
+    }
+    const srcset = attributeOf2(element, "srcset");
+    const at = locations.srcset;
+    if (srcset !== null && at) {
+      let changed = false;
+      const candidates = srcset.split(",").map((entry) => entry.trim()).filter(Boolean).map((candidate) => {
+        const [reference, ...descriptor] = candidate.split(/\s+/);
+        const next = reference ? rebased(reference) : null;
+        if (next === null) return candidate;
+        changed = true;
+        return [next, ...descriptor].join(" ");
+      });
+      if (changed) splices.push({ start: at.startOffset, end: at.endOffset, text: `srcset="${escapeAttribute2(candidates.join(", "))}"` });
+    }
+  }
+  return splices.length === 0 ? html : applySplices(html, splices);
+}
+var MAX_STARS = 4;
+function globMatches(pattern, name) {
+  if (name.startsWith(".") || name.includes("/")) return false;
+  const pieces = pattern.split("*");
+  if (pieces.length === 1) return pattern === name;
+  const first = pieces[0];
+  const last = pieces[pieces.length - 1];
+  if (name.length < first.length + last.length || !name.startsWith(first) || !name.endsWith(last)) return false;
+  let at = first.length;
+  const end = name.length - last.length;
+  for (const piece of pieces.slice(1, -1)) {
+    const found = name.indexOf(piece, at);
+    if (found < 0 || found + piece.length > end) return false;
+    at = found + piece.length;
+  }
+  return true;
+}
+function byCodeUnit(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+async function expandIncludes(html, io, documentDir = "") {
+  const parts2 = [];
+  const reported = [];
+  const skipped = {
+    push(entry) {
+      if (reported.length < LIMITS.includeReports) reported.push(entry);
+    }
+  };
+  if (!html.includes(INCLUDE_REL)) return { html, parts: parts2, skipped: reported };
+  let budget = LIMITS.entryDocumentBytes - Buffer.byteLength(html, "utf8");
+  let elements = 0;
+  let full = false;
+  const listings = /* @__PURE__ */ new Map();
+  const listed = (directory) => {
+    let known = listings.get(directory);
+    if (!known) {
+      known = io.list(directory).catch(() => null);
+      listings.set(directory, known);
+    }
+    return known;
+  };
+  async function resolveTargets(reference, fromDir) {
+    if (!isOwnFileReference(reference)) {
+      skipped.push({ path: reference.slice(0, 200), reason: "unsafe-path" });
+      return null;
+    }
+    const raw = pathOfReference(reference);
+    const path = raw ? normalisePath(fromDir + raw) : "";
+    if (!isSafeRelativePath(path)) {
+      skipped.push({ path: (raw ?? reference).slice(0, 200), reason: "unsafe-path" });
+      return null;
+    }
+    if (!path.includes("*")) {
+      if (isPartPath(path)) return [path];
+      skipped.push({ path, reason: "not-a-part" });
+      return null;
+    }
+    const directory = directoryOf(path);
+    const pattern = path.slice(directory.length);
+    if (directory.includes("*")) {
+      skipped.push({ path, reason: "unsafe-path" });
+      return null;
+    }
+    if (pattern.split("*").length - 1 > MAX_STARS) {
+      skipped.push({ path, reason: "unsafe-path" });
+      return null;
+    }
+    const names = await listed(directory);
+    if (names === null) {
+      skipped.push({ path, reason: "no-listing" });
+      return null;
+    }
+    return names.filter((name) => globMatches(pattern, name) && isPartPath(directory + name)).sort(byCodeUnit).map((name) => directory + name);
+  }
+  async function loadPart(path, depth) {
+    if (parts2.length >= LIMITS.includeParts) {
+      if (!full) skipped.push({ path, reason: "too-many" });
+      full = true;
+      return null;
+    }
+    const file = await io.read(path).catch(() => null);
+    if (!file) {
+      skipped.push({ path, reason: "missing" });
+      return null;
+    }
+    if (file.bytes.byteLength > LIMITS.includePartBytes) {
+      skipped.push({ path, reason: "too-large" });
+      return null;
+    }
+    if (file.bytes.byteLength > budget) {
+      skipped.push({ path, reason: "budget" });
+      return null;
+    }
+    budget -= file.bytes.byteLength;
+    parts2.push({ path, bytes: file.bytes.byteLength });
+    const text = Buffer.from(file.bytes).toString("utf8");
+    return expand(text.charCodeAt(0) === 65279 ? text.slice(1) : text, directoryOf(path), depth, true);
+  }
+  async function expand(text, dir, depth, fragment) {
+    if (!text.includes(INCLUDE_REL)) return text;
+    const tree = fragment ? parseFragment(text, { sourceCodeLocationInfo: true }) : parse(text, { sourceCodeLocationInfo: true });
+    const splices = [];
+    for (const element of elementsOf(tree)) {
+      if (element.tagName !== "link") continue;
+      const rel = (attributeOf2(element, "rel") ?? "").toLowerCase().split(/\s+/);
+      const href = attributeOf2(element, "href");
+      const at = element.sourceCodeLocation;
+      if (!rel.includes(INCLUDE_REL) || href === null || !at) continue;
+      if (full) break;
+      elements += 1;
+      if (elements > LIMITS.includeElements) {
+        skipped.push({ path: href.slice(0, 200), reason: "too-many" });
+        full = true;
+        break;
+      }
+      if (depth >= LIMITS.includeDepth) {
+        skipped.push({ path: href.slice(0, 200), reason: "too-deep" });
+        continue;
+      }
+      const targets = await resolveTargets(href, dir);
+      if (targets === null) continue;
+      const pieces = [];
+      let complete = true;
+      for (const target of targets) {
+        if (full) {
+          complete = false;
+          break;
+        }
+        const part = await loadPart(target, depth + 1);
+        if (part === null) {
+          complete = false;
+          continue;
+        }
+        pieces.push(rebasePart(part, directoryOf(target), dir));
+      }
+      if (!complete && !href.includes("*")) continue;
+      splices.push({ start: at.startOffset, end: at.endOffset, text: pieces.join("\n") });
+    }
+    return splices.length === 0 ? text : applySplices(text, splices);
+  }
+  const assembled = await expand(html, documentDir, 0, false);
+  return { html: assembled, parts: parts2, skipped: reported };
+}
+
+// src/pages/assemble.ts
+function createAssembler(host) {
+  return async (session, html, path) => {
+    const location = await host.sessions.storage(session);
+    const read = async (relativePath) => {
+      const file = await host.files.read(location, relativePath);
+      return file ? { bytes: file.bytes } : null;
+    };
+    const directory = directoryOf(path);
+    const expanded = await expandIncludes(html, { read, list: (dir) => host.files.list(location, dir) }, directory);
+    const carried = await resolveOwnFiles(expanded.html, read, directory);
+    return { html: carried.html, resolved: [...expanded.parts, ...carried.resolved], skipped: [...expanded.skipped, ...carried.skipped] };
+  };
 }
 
 // src/domain/revision.ts
@@ -11162,8 +11747,8 @@ function revisionOf(content) {
 function sha256Hex2(content) {
   return revisionOf(content);
 }
-function etagFor(revision) {
-  return `"${revision}"`;
+function etagFor(revision2) {
+  return `"${revision2}"`;
 }
 function ifNoneMatchMatches(header, etag) {
   if (!header) return false;
@@ -11232,8 +11817,24 @@ function createPageStore(host, resolve) {
     await persist(session, page, previous);
     return page;
   }
+  const loading = /* @__PURE__ */ new Map();
+  const reported = /* @__PURE__ */ new Map();
   return {
-    async load(session, requested) {
+    load(session, requested) {
+      const key = cacheKey(session, documentKey(requested));
+      const current = loading.get(key);
+      if (current) return current;
+      const started = loadNow(session, requested).finally(() => loading.delete(key));
+      loading.set(key, started);
+      return started;
+    },
+    remember,
+    knownRevision(session) {
+      return memory.get(session)?.revision ?? null;
+    }
+  };
+  async function loadNow(session, requested) {
+    {
       const path = documentKey(requested);
       const key = cacheKey(session, path);
       let content;
@@ -11257,8 +11858,14 @@ function createPageStore(host, resolve) {
           const outcome = await resolve(session, authored, path);
           html = outcome.html;
           site = { resolved: outcome.resolved.length, skipped: outcome.skipped };
-          for (const file of outcome.skipped) {
-            host.log.warn(`page ${key}: ${file.path} is referenced but was not carried into the document (${file.reason})`);
+          const report = outcome.skipped.map((file) => `${file.path} (${file.reason})`).join(", ");
+          if (report !== (reported.get(key) ?? "")) {
+            for (const file of outcome.skipped) {
+              host.log.warn(`page ${key}: ${file.path} is referenced but was not carried into the document (${file.reason})`);
+            }
+            reported.delete(key);
+            if (report) reported.set(key, report);
+            while (reported.size > 256) reported.delete(reported.keys().next().value);
           }
         } catch (error) {
           host.log.warn(`page ${key}: could not resolve its own files: ${errorText(error)}`);
@@ -11269,12 +11876,8 @@ function createPageStore(host, resolve) {
       retain(key, page);
       await persist(key, page, previous);
       return { ...page, stale: false, site };
-    },
-    remember,
-    knownRevision(session) {
-      return memory.get(session)?.revision ?? null;
     }
-  };
+  }
 }
 function isCachedPage(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -11446,6 +12049,101 @@ function instructionFragments(set) {
 ${contributor.instruction}`).join("\n\n");
 }
 
+// src/serving/grants.ts
+var KV_KEY = "grants:v1";
+function bare() {
+  return /* @__PURE__ */ Object.create(null);
+}
+function readStored(value) {
+  const out = bare();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+  for (const [from, targets] of Object.entries(value)) {
+    if (!targets || typeof targets !== "object" || Array.isArray(targets)) continue;
+    if (!isSessionId(from)) continue;
+    const kept = bare();
+    for (const [to, at] of Object.entries(targets)) {
+      if (isSessionId(to) && typeof at === "number" && Number.isFinite(at)) kept[to] = at;
+    }
+    if (Object.keys(kept).length > 0) out[from] = kept;
+  }
+  return out;
+}
+function createGrantStore(host) {
+  let queue = Promise.resolve();
+  function serial(work) {
+    const next = queue.then(work, work);
+    queue = next.catch(() => void 0);
+    return next;
+  }
+  async function load() {
+    return readStored(await host.kv.get(KV_KEY));
+  }
+  return {
+    async has(from, to) {
+      try {
+        return (await load())[from]?.[to] !== void 0;
+      } catch (error) {
+        host.log.warn(`grants: could not read: ${errorText(error)}`);
+        return false;
+      }
+    },
+    add(from, to, now) {
+      return serial(async () => {
+        const stored = await load();
+        const targets = { ...stored[from] ?? {}, [to]: now };
+        stored[from] = Object.fromEntries(Object.entries(targets).sort((a, b) => b[1] - a[1]).slice(0, LIMITS.grantsPerPage));
+        const newest = (page) => Math.max(...Object.values(stored[page] ?? {}));
+        const pages = Object.keys(stored).sort((a, b) => newest(b) - newest(a));
+        for (const page of pages.slice(LIMITS.grantPages)) delete stored[page];
+        await host.kv.set(KV_KEY, { ...stored });
+      });
+    },
+    revoke(from, to) {
+      return serial(async () => {
+        const stored = await load();
+        let removed = 0;
+        for (const page of Object.keys(stored)) {
+          if (from !== void 0 && page !== from) continue;
+          for (const target of Object.keys(stored[page] ?? {})) {
+            if (to !== void 0 && target !== to) continue;
+            delete stored[page][target];
+            removed += 1;
+          }
+          if (Object.keys(stored[page] ?? {}).length === 0) delete stored[page];
+        }
+        if (removed > 0) await host.kv.set(KV_KEY, { ...stored });
+        return removed;
+      });
+    },
+    async list(from) {
+      const stored = await load();
+      const grants = [];
+      for (const [page, targets] of Object.entries(stored)) {
+        if (from !== void 0 && page !== from) continue;
+        for (const [to, grantedAtMs] of Object.entries(targets)) grants.push({ from: page, to, grantedAtMs });
+      }
+      return grants.sort((a, b) => b.grantedAtMs - a.grantedAtMs);
+    }
+  };
+}
+async function describeGrants(host, grants, from) {
+  const out = [];
+  for (const grant of await grants.list(from).catch(() => [])) {
+    let session;
+    try {
+      session = await host.sessions.get(grant.to);
+    } catch {
+      continue;
+    }
+    if (!session || session.deleted) {
+      await grants.revoke(from, grant.to).catch(() => 0);
+      continue;
+    }
+    out.push({ sessionId: session.id, title: session.title.slice(0, LIMITS.titleChars) });
+  }
+  return out;
+}
+
 // src/domain/json/canonical.ts
 import { createHash as createHash3 } from "node:crypto";
 function canonicalJson(value) {
@@ -11464,9 +12162,9 @@ function signPayload(payload, key) {
   return `${encoded}.${signature(encoded, key)}`;
 }
 function openToken(token, key) {
-  const parts = token.split(".");
-  if (parts.length !== 2) return null;
-  const [encoded, supplied] = parts;
+  const parts2 = token.split(".");
+  if (parts2.length !== 2) return null;
+  const [encoded, supplied] = parts2;
   if (!encoded || !supplied) return null;
   try {
     const expected = Buffer.from(signature(encoded, key), "ascii");
@@ -12574,6 +13272,20 @@ function createDispatcher(serving, handlers) {
           throw new PageError("confirmation_invalid", "The confirmation is expired or does not match this request");
         }
       }
+      const grant = entry?.grant ? await entry.grant(invocation.params, context) : null;
+      if (grant) {
+        const binding = { session: token.session, revision: token.revision, requestId: request.id, method: request.method, params: invocation.params };
+        if (envelope.confirmation === null) {
+          const { challenge: challenge2, payload } = mintChallenge(binding, grant.summary, serving.now(), serving.signingKey);
+          return { status: 401, body: { confirm: { requestId: request.id, summary: payload.summary, challenge: challenge2, kind: "grant", grant: grant.target } } };
+        }
+        const challenge = openChallenge(envelope.confirmation, serving.signingKey, serving.now());
+        if (!challenge || !challengeMatches(challenge, binding)) {
+          throw new PageError("confirmation_invalid", "The confirmation is expired or does not match this request");
+        }
+        await grant.record();
+        serving.host.log.info(`grant given: ${token.session} \u2192 ${grant.target.sessionId}`);
+      }
       if (page.stale && invocation.spec.effect !== "read" && invocation.spec.effect !== "navigation") {
         throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);
       }
@@ -12654,6 +13366,321 @@ var navigationOpenExternal2 = handler({
   },
   async execute(params2) {
     return { result: { opened: true }, navigate: { kind: "external", url: new URL(params2.url).href } };
+  }
+});
+
+// src/domain/html/document.ts
+var XHTML = "http://www.w3.org/1999/xhtml";
+function injectKernel(source, options) {
+  const authored = parseAuthored(source);
+  if (authored) {
+    return injectInto(authored, options);
+  }
+  return wrapFragment(source, options);
+}
+function directChild(parent, tagName) {
+  for (const child of parent.childNodes) {
+    if (defaultTreeAdapter.isElementNode(child) && child.tagName === tagName && child.namespaceURI === XHTML) {
+      return child;
+    }
+  }
+  return null;
+}
+function parseAuthored(source) {
+  const text = source.charCodeAt(0) === 65279 ? source.slice(1) : source;
+  const document = parse(text, { scriptingEnabled: true, sourceCodeLocationInfo: true });
+  const html = directChild(document, "html");
+  if (!html) return null;
+  const head = directChild(html, "head");
+  const body = directChild(html, "body");
+  const frameset = directChild(html, "frameset");
+  const hasDoctype = document.childNodes.some(
+    (child) => defaultTreeAdapter.isDocumentTypeNode(child) && child.name.toLowerCase() === "html"
+  );
+  const hasAuthoredShell = [html, head, body, frameset].some((element) => element?.sourceCodeLocation != null);
+  if (!hasDoctype && !hasAuthoredShell) return null;
+  return { document, target: head ?? body ?? frameset ?? html };
+}
+function kernelElement(namespace, options) {
+  const script = defaultTreeAdapter.createElement("script", namespace, [
+    { name: "data-thread-page-kernel", value: "" },
+    { name: "data-config", value: JSON.stringify(options.config) }
+  ]);
+  defaultTreeAdapter.insertText(script, options.kernel);
+  return script;
+}
+function injectInto(authored, options) {
+  const namespace = authored.target.namespaceURI;
+  const nodes = [];
+  if (options.baseHref) {
+    nodes.push(defaultTreeAdapter.createElement("base", namespace, [{ name: "href", value: options.baseHref }]));
+  }
+  nodes.push(kernelElement(namespace, options));
+  const anchor = defaultTreeAdapter.getFirstChild(authored.target);
+  for (const node of nodes) {
+    if (anchor) defaultTreeAdapter.insertBefore(authored.target, node, anchor);
+    else defaultTreeAdapter.appendChild(authored.target, node);
+  }
+  return serialize(authored.document);
+}
+function wrapFragment(source, options) {
+  const base = options.baseHref ? `<base href="${escapeHtml(options.baseHref)}">
+` : "";
+  const config = escapeHtml(JSON.stringify(options.config));
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Thread Page</title>
+${base}<script data-thread-page-kernel data-config="${config}">${options.kernel}</script>
+<style>body{max-width:44rem;margin:2rem auto;padding:0 1rem;font:16px/1.55 system-ui,sans-serif;color:CanvasText;background:Canvas}</style>
+</head>
+<body>
+${source}
+</body>
+</html>`;
+}
+
+// src/domain/submissions/message.ts
+function formatSubmissionMessage(submission) {
+  const heading = submission.title.trim() || "Thread Page";
+  const sections = submission.answers.map((answer) => {
+    const label = answer.label.trim() || answer.name;
+    return `**${label}**
+${formatValue(answer.value)}`;
+  });
+  if (submission.files.length > 0) {
+    sections.push(
+      [
+        "**Attached files**",
+        ...submission.files.map((file) => `- \`$BB_THREAD_STORAGE/${file.path}\` (${file.name}, ${file.sizeBytes} bytes)`),
+        `They are in the \`${UPLOAD_DIR}/\` directory of your page root; read them with your normal tools.`
+      ].join("\n")
+    );
+  }
+  return [`The user answered the form on your Thread Page \u2014 ${heading}.`, ...sections].join("\n\n");
+}
+function formatValue(value) {
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "(left blank)";
+  return value.length > 0 ? value : "(left blank)";
+}
+function formatReplyMessage(title2, result2) {
+  const heading = title2?.trim() || "Interactive response";
+  const serialized = JSON.stringify(result2, null, 2) ?? "null";
+  let longestRun = 0;
+  for (const match of serialized.matchAll(/`+/g)) longestRun = Math.max(longestRun, match[0].length);
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  return [`The user sent an interactive response from your Thread Page \u2014 ${heading}.`, `**Result**
+
+${fence}json
+${serialized}
+${fence}`].join("\n\n");
+}
+
+// src/domain/tokens/answer-token.ts
+function mintAnswerToken(args, key) {
+  const path = documentKey(args.path);
+  const base = { v: 1, scope: "answer", host: args.host, target: args.target, revision: args.revision, iat: args.now, exp: args.now + LIMITS.answerTokenMs };
+  return signPayload(path ? { ...base, path } : base, key);
+}
+function verifyAnswerToken(token, key, now) {
+  if (typeof token !== "string" || token.length === 0 || token.length > LIMITS.tokenChars) return null;
+  const payload = openToken(token, key);
+  if (!isRecord(payload)) return null;
+  if (payload.v !== 1 || payload.scope !== "answer" || !isSessionId(payload.host) || !isSessionId(payload.target) || !isRevision(payload.revision) || !lifetimeValid({ iat: payload.iat, exp: payload.exp }, now, LIMITS.answerTokenMs)) {
+    return null;
+  }
+  let path = null;
+  if (payload.path !== void 0) {
+    if (!isDocumentPath(payload.path) || documentKey(payload.path) === null) return null;
+    path = payload.path;
+  }
+  return { v: 1, scope: "answer", host: payload.host, target: payload.target, path, revision: payload.revision, iat: payload.iat, exp: payload.exp };
+}
+
+// src/generated/kernel-runtime.ts
+var KERNEL_RUNTIME = '"use strict";(()=>{var De=Object.defineProperty;var Fe=(e,n,r)=>n in e?De(e,n,{enumerable:!0,configurable:!0,writable:!0,value:r}):e[n]=r;var j=(e,n,r)=>Fe(e,typeof n!="symbol"?n+"":n,r);var v=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,contributedPayloadMaxBytes:1048576,contributedCallMs:3e4,contributionsTtlMs:1e4,contributorInstructionBytes:2048,contributorGuideBytes:16384,contributorMethods:64,questionChars:1024,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,shellPollWorkingMs:2e3,shellPollAfterAnswerMs:6e4,refreshSwapMs:4e3,includeParts:200,includeElements:400,includeReports:100,includePartBytes:2097152,includeDepth:3,pagesReadEntries:16,pagesReadBytes:8388608,pagesAnswerBytes:98304,embedsPerPage:32,embedPollWorkingMs:3e3,embedPollMs:1e4,embedPollAfterAnswerMs:6e4,embedCallsPerMinute:30,answerTokenMs:72e5,grantsPerPage:64,grantPages:512,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var G=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],gt=new Set(G);var yt=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${v.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var D=1,q=1;var Ne=new Set(G),je=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,He=/^[a-z][a-zA-Z0-9-]*(?:\\.[a-z][a-zA-Z0-9]*)+$/,Je=/^[a-z][a-z0-9_]{0,63}$/;function S(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function Y(e,n){return Object.keys(e).length===n.length&&n.every(l=>Object.prototype.hasOwnProperty.call(e,l))}function oe(e){return typeof e=="string"&&je.test(e)}function se(e,n){return S(e)&&Y(e,["v","id","method","params","pageRevision"])&&e.v===q&&oe(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&He.test(e.method)&&e.pageRevision===n}function ie(e,n){if(!S(e)||e.v!==q||typeof e.id!="string"||typeof e.ok!="boolean"||n!==void 0&&e.id!==n)return!1;if(e.ok===!0)return Y(e,["v","id","ok","result"]);if(!Y(e,["v","id","ok","error"])||!S(e.error))return!1;let r=e.error;return!Object.keys(r).every(a=>a==="code"||a==="message"||a==="reason"||a==="detail")||"reason"in r&&(typeof r.reason!="string"||!Je.test(r.reason))||"detail"in r&&!("reason"in r)?!1:"code"in r&&"message"in r&&typeof r.code=="string"&&Ne.has(r.code)&&typeof r.message=="string"&&r.message.length>0&&r.message.length<=512}function ae(e){return typeof e=="string"?`Sent (${e})`:"Sent"}function le(e){return e.kind==="thread-page:scroll"&&typeof e.x=="number"&&typeof e.y=="number"&&Number.isFinite(e.x)&&Number.isFinite(e.y)&&e.x>=0&&e.y>=0}function z(e,n,r){return{v:1,id:oe(e)?e:"invalid",ok:!1,error:{code:n,message:r.slice(0,512)||"Request failed"}}}function ue(e){let n=e?.getAttribute("data-config");if(!n)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(n)}var K="index.html",Ve="uploads/";function de(e){return typeof e!="string"||e.length===0||e.length>1024||e.includes("\\0")||e.includes("\\\\")||e.startsWith("/")||e.startsWith(Ve)||!e.split("/").every(n=>n.length>0&&n!=="."&&n!=="..")?!1:/\\.html?$/i.test(e)}function Ue(e){return de(e)&&e.split("/").some(n=>n.startsWith("_"))}function H(e){return de(e)&&!Ue(e)}function qe(e,n,r,l=r){let a=e.getAttribute("href");if(a===null)return{kind:"default"};if(a.startsWith("#"))return{kind:"default"};let f;try{f=new URL(a,r??n)}catch{return{kind:"block"}}if(f.protocol!=="http:"&&f.protocol!=="https:")return{kind:"block"};if(l&&f.href.startsWith(l)){if(e.hasAttribute("download"))return{kind:"default"};let d=ze(f,l);return d!==null&&H(d)?{kind:"document",path:d}:{kind:"default"}}return e.hasAttribute("download")?{kind:"default"}:{kind:"external",url:f.href,label:(e.textContent||"").replace(/\\s+/g," ").trim().slice(0,160)}}function ze(e,n){let r=new URL(n).pathname;if(!e.pathname.startsWith(r))return null;try{return decodeURIComponent(e.pathname.slice(r.length))}catch{return null}}function ce(e,n,r=null){e.addEventListener("click",l=>{if(l.defaultPrevented||l.button!==0)return;let f=l.target?.closest?.("a[href]");if(!f)return;let d=e.querySelector("base")?.getAttribute("href")??null,u=d?new URL(d,e.baseURI).href:null,m=r?new URL(r,e.baseURI).href:u,p=qe(f,e.baseURI,u,m);p.kind!=="default"&&(l.preventDefault(),p.kind==="external"?n.external(p.url,p.label):p.kind==="document"&&n.document(p.path))},!0)}function fe(e,n){let r=Object.freeze({version:1,invoke:n.invoke,watch:n.watch,setDirty:n.setDirty,embed:n.embed});Object.defineProperty(e,"threadPage",{value:r,writable:!1,configurable:!1,enumerable:!0})}var pe=new Set(["context","session","sessions","projects","providers","storage","pages","navigation","voice"]);var $=class extends Error{constructor(r,l,a){super(l);j(this,"code");j(this,"reason");j(this,"detail");this.name="ThreadPageError",this.code=r,Object.defineProperty(this,"code",{value:r,enumerable:!0,writable:!1}),a?.reason!==void 0&&(Object.defineProperty(this,"reason",{value:a.reason,enumerable:!0,writable:!1}),a.detail!==void 0&&Object.defineProperty(this,"detail",{value:a.detail,enumerable:!0,writable:!1}))}};function Ke(e){let n=e.indexOf(".");return n>0&&!pe.has(e.slice(0,n))}function me(e,n){let r=new Map,l=[],a=null,f=0,d=null;function u(){return d??(d=_("context.get").then(y=>{let h=y?.capabilities??[];return new Map(h.map(w=>[String(w.method),String(w.effect)]))},y=>{throw d=null,y})),d}function m(){return f+=1,`tp-${typeof crypto<"u"&&typeof crypto.randomUUID=="function"?crypto.randomUUID():`${Date.now()}-${f}`}`}function p(y){let h=r.get(y);if(!(!h||!a))try{a(h.request)}catch(w){r.delete(y),h.reject(new $("invalid_request",w instanceof Error?w.message:"The request could not be sent"))}}function _(y,h){return new Promise((w,T)=>{if(typeof y!="string"){T(new $("invalid_request","A method name is required"));return}let M=m(),P={v:q,id:M,method:y,params:h===void 0?null:h,pageRevision:e};r.set(M,{request:P,resolve:w,reject:T}),a?p(M):l.push(M)})}function B(y,h,w,T){if(typeof w!="function")throw new TypeError("Thread Page watch needs a listener");let M=T?.intervalMs,P=typeof M=="number"&&Number.isFinite(M)?Math.max(v.watchMinMs,Math.min(v.watchMaxMs,Math.round(M))):v.watchDefaultMs,i=!1,c=!1,g=null;function E(C){i||(g!==null&&clearTimeout(g),g=setTimeout(L,C))}async function L(){if(g=null,!(i||c||n.visibilityState==="hidden")){c=!0;try{if(Ke(y)){let F=(await u()).get(y);if(F!==void 0&&F!=="read"){i=!0,n.removeEventListener("visibilitychange",R),w(void 0,new $("invalid_params",`watch polls read capabilities only; ${y} is ${F}`));return}}let C=await _(y,h);i||w(C,null)}catch(C){i||w(void 0,C)}finally{c=!1,i||E(P)}}}function R(){i||(n.visibilityState==="hidden"?(g!==null&&clearTimeout(g),g=null):E(0))}return n.addEventListener("visibilitychange",R),E(0),()=>{i||(i=!0,g!==null&&clearTimeout(g),g=null,n.removeEventListener("visibilitychange",R))}}return{invoke:_,watch:B,attach(y){for(a=y;l.length>0;){let h=l.shift();h&&p(h)}},receive(y){if(typeof y!="object"||y===null)return!1;let h=y.id;if(typeof h!="string")return!1;let w=r.get(h);if(!w)return!1;if(r.delete(h),!ie(y,h))return w.reject(new $("invalid_response","The Thread Page bridge returned an invalid response")),!0;let T=y;return T.ok?w.resolve(T.result):w.reject(new $(T.error.code,T.error.message,T.error)),!0}}}function ge(e){let n=new Map,r=0,l=!1,a=!1,f=!1;function d(){let u=l||a||n.size>0;u!==f&&(f=u,e(u))}return{isDirty:()=>f,markForm(u){return r+=1,n.set(u,r),d(),r},versionOf:u=>n.get(u),clearForm(u,m){m!==void 0&&n.get(u)===m&&(n.delete(u),d())},setCustom(u){l=u===!0,d()},setEmbedded(u){a=u===!0,d()}}}var We="allow-scripts allow-forms",Ge=1e4,ye=new Set(["pages.open","sessions.openHost","navigation.openExternal","sessions.snapshot","projects.list","providers.list"]),Ye=new Set(["pages.open","sessions.openHost"]),Ze=new Set(["context.get","session.reply",...ye]),Xe={not_found:"This page is not available: its session was archived, deleted, or never had a page.",no_page:"This session has not written its page yet. It appears here as soon as the agent saves it.",too_large:"This page is too large to show inside another page. Open it on its own.",unavailable:"This page cannot be reached right now. It appears here when it can.",nested:"A page shown inside another page does not show further pages. Open this page on its own to see them."},Qe=`This page already shows ${v.embedsPerPage} other pages, which is the most one page can.`;function et(e){return e.replace(/&/g,"&amp;").replace(/</g,"&lt;")}function tt(e){return`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><style>html,body{height:100%;margin:0}body{display:grid;place-items:center;font:14px/1.5 system-ui,sans-serif;color:GrayText;background:Canvas}p{margin:0;padding:1rem;max-width:30rem;text-align:center}</style></head><body><p>${et(e)}</p></body></html>`}function he(e,n){let r=e.document,l=[],a=null,f=!1,d=0,u=!1,m=null;function p(t){if(!t.onState)return;let o={status:t.status,sessionId:t.sessionId,path:t.path,title:t.title,revision:t.shown,working:t.working,updateAvailable:t.updateAvailable},s=JSON.stringify(o);if(s!==t.lastState){t.lastState=s;try{t.onState(o)}catch{}}}function _(){n.setDirty(l.some(t=>!t.stopped&&t.dirty))}function B(t,o){t.port?.close?.(),t.port=null;let s=t.frame,b=s.parentNode,k=s.nextSibling;b&&b.removeChild(s),s.removeAttribute("src"),s.removeAttribute("allow"),s.removeAttribute("name"),s.removeAttribute("csp"),s.setAttribute("sandbox",We),s.setAttribute("referrerpolicy","no-referrer"),s.srcdoc=o,b&&b.insertBefore(s,k)}function y(t,o,s=Xe[o]){let b=t.status!==o||t.shown!==null;t.status=o,t.shown=null,t.latest=null,t.answerToken=null,t.dirty=!1,t.updateAvailable=!1,b&&B(t,tt(s)),_(),p(t)}function h(t,o){let s=t.shown!==null;t.restore=s?t.scroll:null,t.scroll={x:0,y:0},t.status="shown",t.shown=o.revision,t.latest=t.shown,t.answerToken=typeof o.answerToken=="string"?o.answerToken:null,t.dirty=!1,t.updateAvailable=!1,t.reload=!1,B(t,o.html),_(),p(t)}function w(t,o){typeof o.title=="string"&&(t.title=o.title),t.projectId=typeof o.projectId=="string"?o.projectId:null,t.working=o.working===!0,t.readOnly=o.readOnly===!0}function T(t,o){if(!(t.stopped||o.deferred===!0)){if(S(o.error)){let s=o.error.reason;y(t,s==="no_page"?"no_page":s==="too_large"?"too_large":s==="unreachable"?"unavailable":"not_found");return}if(w(t,o),o.unchanged===!0){t.latest===t.shown&&typeof o.answerToken=="string"&&(t.answerToken=o.answerToken),p(t);return}if(!(typeof o.revision!="string"||typeof o.html!="string")){if(t.dirty&&t.shown!==null&&!t.reload){t.latest=o.revision,t.updateAvailable=!0,t.port?.postMessage({kind:"thread-page:update-available"}),p(t);return}h(t,o)}}}function M(){return l.filter(t=>!t.stopped&&!t.inert)}function P(t){a!==null&&clearTimeout(a),a=null,!(M().length===0||r.visibilityState==="hidden")&&(a=setTimeout(()=>{i()},t))}async function i(){if(a=null,f||r.visibilityState==="hidden")return;let t=M();if(t.length===0)return;f=!0;let o=v.pagesReadEntries;d>=t.length&&(d=0);let s=t.slice(d,d+o);d=d+o>=t.length?0:d+o;let b=d!==0;try{let k=s.map(O=>({sessionId:O.sessionId,...O.path===K?{}:{path:O.path},...O.latest&&!O.reload?{ifNoneMatch:O.latest}:{}})),x=await n.invoke("pages.read",{pages:k}),A=Array.isArray(x?.pages)?x.pages:[];s.forEach((O,Be)=>{let N=A[Be];!S(N)||N.sessionId!==O.sessionId||N.path===O.path&&(N.deferred===!0&&(b=!0),T(O,N))})}catch{for(let k of s)k.status==="loading"&&p(k)}finally{f=!1;let k=Date.now(),x=M().some(A=>A.working||A.answeredUntil>k||A.status==="loading");P(b?250:x?v.embedPollWorkingMs:v.embedPollMs)}}function c(){f||P(0)}function g(t,o){try{t.port?.postMessage(o)}catch{}}function E(t,o,s){let b=S(s)&&typeof s.code=="string"?s.code:"handler_error",k=s instanceof Error&&s.message?s.message:"Request failed";g(t,z(o,b,k))}function L(){return m??(m=n.invoke("context.get").then(t=>(S(t)&&Array.isArray(t.capabilities)?t.capabilities:[]).filter(s=>S(s)&&typeof s.method=="string"&&Ze.has(s.method)),t=>{throw m=null,t})),m}async function R(t,o){if(!t.answerToken)throw Object.assign(new Error("This page is still loading; try again in a moment."),{code:"unavailable"});if(Date.now()<t.declinedUntil)throw Object.assign(new Error("You did not allow this page to send answers there. Try again in a moment."),{code:"cancelled"});try{let s=await n.invoke("pages.answer",{answerToken:t.answerToken,...o});return t.answeredUntil=Date.now()+v.embedPollAfterAnswerMs,c(),s}catch(s){throw S(s)&&s.code==="cancelled"&&(t.declinedUntil=Date.now()+Ge),S(s)&&(s.code==="stale_page"||s.code==="confirmation_invalid")&&(s.code==="confirmation_invalid"&&(t.latest=null),c()),s}}function C(t){let o=Date.now();return t.calls.length>0&&o-t.calls[0]>=6e4&&(t.calls=t.calls.filter(s=>o-s<6e4)),t.calls.length>=v.embedCallsPerMinute?!1:(t.calls.push(o),!0)}function F(){let t=e.navigator.userActivation;return t?t.isActive:!0}async function Re(t,o){if(!C(t)){g(t,z(o.id,"rate_limited","Too many requests from this embedded page; try again shortly."));return}try{let s;if(o.method==="context.get"){if(o.params!==null)throw Object.assign(new Error("Invalid parameters for context.get"),{code:"invalid_params"});s={protocolVersion:1,session:{id:t.sessionId,title:t.title??"",projectId:t.projectId},page:{revision:t.shown,readOnly:t.readOnly},capabilities:await L()}}else if(o.method==="session.reply")s=await R(t,{reply:o.params});else if(ye.has(o.method)){if(Ye.has(o.method)&&!F())throw Object.assign(new Error("A page shown inside another page can only navigate when the reader clicks."),{code:"unavailable"});s=await n.invoke(o.method,o.params)}else throw Object.assign(new Error(`${o.method} is not available to a page shown inside another page.`),{code:"unavailable"});g(t,{v:1,id:o.id,ok:!0,result:s})}catch(s){E(t,o.id,s)}}async function Oe(t,o){let s=typeof o.submissionId=="string"?o.submissionId:"";try{if(!C(t))throw new Error("Too many requests from this embedded page; try again shortly.");if(Array.isArray(o.files)&&o.files.length>0)throw new Error(Z);let b=await R(t,{form:{submissionId:s,title:o.title,answers:o.answers}});g(t,{kind:"thread-page:submit-result",submissionId:s,ok:!0,message:ae(b.delivery)})}catch(b){g(t,{kind:"thread-page:submit-result",submissionId:s,ok:!1,error:b instanceof Error&&b.message?b.message:"Request failed"})}}function Le(t,o){if(!(t.stopped||!S(o))){if(o.kind==="thread-page:dirty"||o.kind==="thread-page:clean"){let s=e.navigator.userActivation;t.dirty=o.kind==="thread-page:dirty"&&(s?s.hasBeenActive:!0),_(),!t.dirty&&t.updateAvailable&&(t.reload=!0,c());return}if(o.kind==="thread-page:scroll"){le(o)&&(t.scroll={x:o.x,y:o.y});return}if(o.kind==="thread-page:apply-update"){if(!t.updateAvailable||!C(t))return;t.reload=!0,c();return}if(o.kind==="thread-page:open-document"){if(!H(o.path)||o.path===t.path||!C(t))return;t.path=o.path,t.shown=null,t.latest=null,t.answerToken=null,t.dirty=!1,t.updateAvailable=!1,t.scroll={x:0,y:0},t.status="loading",_(),p(t),c();return}if(o.kind==="thread-page:submit"){Oe(t,o);return}if(t.shown===null||!se(o,t.shown)){g(t,z(o.id,"invalid_request","Invalid Thread Page bridge request"));return}Re(t,o)}}function Ie(t){let o=l.find(A=>!A.stopped&&A.frame.contentWindow===t.source);if(!o||o.port||o.status!=="shown")return;let s=t.data;if(!S(s)||s.kind!=="thread-page:ready"||s.version!==D)return;let b=new e.MessageChannel,k=b.port1;o.port=k,k.onmessage=A=>{o.port===k&&Le(o,A.data)},k.start?.(),o.frame.contentWindow?.postMessage({kind:"thread-page:connect",version:D},"*",[b.port2]);let x=o.restore;o.restore=null,x&&(x.x>0||x.y>0)&&k.postMessage({kind:"thread-page:restore-scroll",x:x.x,y:x.y})}function Pe(){u||(u=!0,e.addEventListener("message",Ie),r.addEventListener("visibilitychange",()=>{r.visibilityState==="hidden"?(a!==null&&clearTimeout(a),a=null):c()}))}function $e(t){let o=t;if(!o||typeof o!="object"||o.nodeType!==1||o.ownerDocument!==r)throw new TypeError("threadPage.embed needs an <iframe> or a container element of this document");if(o.tagName.toLowerCase()==="iframe")return{frame:o,created:!1};let s=r.createElement("iframe");return s.setAttribute("title","Embedded page"),s.setAttribute("style","display:block;width:100%;height:100%;border:0"),o.appendChild(s),{frame:s,created:!0}}return{embed(t,o){let s=o;if(!s||typeof s!="object"||typeof s.sessionId!="string"||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(s.sessionId))throw new TypeError("threadPage.embed needs { sessionId }");if(s.path!==void 0&&s.path!==K&&!H(s.path))throw new TypeError("threadPage.embed: path is not a document of a page");if(s.onState!==void 0&&typeof s.onState!="function")throw new TypeError("threadPage.embed: onState must be a function");let{frame:b,created:k}=$e(t),x={frame:b,created:k,sessionId:s.sessionId,onState:s.onState??null,path:s.path??K,status:"loading",shown:null,latest:null,answerToken:null,title:null,projectId:null,working:!1,readOnly:!1,dirty:!1,updateAvailable:!1,reload:!1,port:null,scroll:{x:0,y:0},restore:null,calls:[],answeredUntil:0,declinedUntil:0,stopped:!1,inert:!1,lastState:""};for(let A of l)!A.stopped&&A.frame===b&&re(A);return l.push(x),n.embedded?(x.inert=!0,y(x,"nested")):M().length>v.embedsPerPage?(x.inert=!0,y(x,"unavailable",Qe)):(p(x),Pe(),c()),()=>re(x)}};function re(t){t.stopped||(t.stopped=!0,t.port?.close?.(),t.port=null,l.splice(l.indexOf(t),1),t.created?t.frame.remove():t.frame.removeAttribute("srcdoc"),_(),M().length===0&&a!==null&&(clearTimeout(a),a=null))}}var Z="Files cannot be attached from inside another page. Open this page on its own to send them.";var nt="input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]";function X(e){if(!e)return"";let n=e.cloneNode(!0);for(let r of Array.from(n.querySelectorAll(nt)))r.remove();return(n.textContent||"").replace(/\\s+/g," ").trim()}function rt(e,n){let r=n.getAttribute("data-label");if(r&&r.trim())return r.trim();let l=n.closest("fieldset");if(l){let d=X(l.querySelector("legend"));if(d)return d}let a=n.getAttribute("aria-label");if(a&&a.trim())return a.trim();let f=n.closest("label");if(f){let d=X(f);if(d)return d}if(n.id){let d=e.ownerDocument,u=Array.from(d.querySelectorAll("label[for]")).find(p=>p.htmlFor===n.id),m=X(u??null);if(m)return m}return n.name}var ot=new Set(["button","submit","reset","image","file"]);function st(e){return Array.from(e.elements).filter(n=>{let r=n;return typeof r.name=="string"&&r.name.length>0&&!r.disabled&&"type"in r})}function be(e,n){let r=st(e),l=[],a=new Set;if(n&&(J(n)==="button"||J(n)==="input")){let f=n,d=f.value||(f.textContent||"").trim();l.push({name:f.name||"action",label:"Action",value:d}),f.name&&a.add(f.name)}for(let f of r){let d=f.name,u=String(f.type||"").toLowerCase();if(a.has(d)||ot.has(u))continue;a.add(d);let m=r.filter(p=>p.name===d);l.push({name:d,label:rt(e,f),value:it(f,m,u)})}return l}function J(e){return e.tagName.toLowerCase()}function it(e,n,r){if(r==="checkbox"){let l=n.filter(a=>J(a)==="input");return l.length===1?l[0]?.checked===!0:l.filter(a=>a.checked).map(a=>a.value)}if(r==="radio"){let l=n.find(a=>J(a)==="input"&&a.checked);return l?l.value:""}return J(e)==="select"&&e.multiple?Array.from(e.selectedOptions).map(l=>l.value):n.length>1?n.map(l=>String(l.value??"")):String(e.value??"")}var at="data-thread-page-manual",we="data-thread-page-status",lt="data-thread-page-range",ut=new Set(["input","textarea","select","button","fieldset"]);function V(e){return e.hasAttribute(at)}function Q(e){let n=[];return"tagName"in e&&e.tagName.toLowerCase()==="form"&&n.push(e),"querySelectorAll"in e&&n.push(...Array.from(e.querySelectorAll("form"))),n.filter(r=>!V(r))}function ee(e){if(!e)return null;let n=e.form;return n&&typeof n=="object"&&n.tagName?.toLowerCase()==="form"?n:e.closest?.("form")??null}function W(e){let n=new Set(Q(e)),r=[];"hasAttribute"in e&&e.hasAttribute("form")&&r.push(e),"querySelectorAll"in e&&r.push(...Array.from(e.querySelectorAll("[form]")));for(let l of r){let a=ee(l);a&&!V(a)&&n.add(a)}return[...n]}function I(e){let n=e.querySelector(`[${we}]`);return n||(n=e.ownerDocument.createElement("p"),n.setAttribute(we,""),n.setAttribute("role","status"),e.appendChild(n)),n}var Ee=new WeakSet;function ke(e){e.noValidate=!0;for(let n of U(e)){if(n.tagName.toLowerCase()!=="input"||n.type!=="range")continue;let r=n;if(Ee.has(r))continue;Ee.add(r);let l=e.ownerDocument.createElement("output");l.setAttribute(lt,"");let a=()=>{l.textContent=String(r.value)};r.addEventListener("input",a),a(),r.insertAdjacentElement("afterend",l)}}function U(e){return Array.from(e.elements).filter(n=>ut.has(n.tagName.toLowerCase()))}function dt(e){let n=[];for(let r of U(e)){if(r.tagName.toLowerCase()!=="input"||r.type!=="file")continue;let l=r;if(!l.disabled)for(let a of Array.from(l.files??[])){if(n.length>=v.uploadsPerForm)return n;n.push({field:l.name||"file",file:a})}}return n}function xe(e){let n=[];for(let r of U(e))r.disabled||(r.disabled=!0,n.push(r));return n}function te(e){for(let n of e)n.disabled=!1}function ct(e){let n=e.getAttribute("data-title");return n&&n.trim()?n.trim().slice(0,300):(e.ownerDocument.querySelector("h1")?.textContent||"").trim().slice(0,300)||"Thread Page"}function ve(e,n,r){return{submissionId:r,form:e,title:ct(e),answers:be(e,n),files:dt(e)}}var Me="data-thread-page-offline",ne="Offline copy \\u2014 responses are disabled until the source host reconnects.";function Se(e,n){let r=new Set,l=n;function a(){if(!e.body)return;let u=e.querySelector(`[${Me}="host"]`);l&&!u?(u=e.createElement("aside"),u.setAttribute(Me,"host"),u.setAttribute("role","status"),u.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText"),u.textContent=ne,e.body.insertBefore(u,e.body.firstChild)):!l&&u&&u.remove()}function f(u){for(let m of W(u)){for(let p of U(m))p.disabled||(p.disabled=!0,r.add(p));I(m).textContent=ne}}function d(){for(let u of r)u.disabled=!1;r.clear();for(let u of Q(e)){let m=I(u);m.textContent===ne&&(m.textContent="")}}return{isReadOnly:()=>l,apply(u){l=u,u?f(e):d(),a()},prepare(u){l&&f(u),a()}}}function Te(e,n){let r=e.document,l=null,a="0,0",f=!1;function d(){l=null;let u=Math.max(0,Math.round(e.scrollX||0)),m=Math.max(0,Math.round(e.scrollY||0)),p=`${u},${m}`;p!==a&&(a=p,n(u,m))}e.addEventListener("scroll",()=>{l===null&&(d(),l=setTimeout(d,200))},{passive:!0});for(let u of["wheel","touchstart","keydown","mousedown"])e.addEventListener(u,()=>f=!0,{passive:!0,capture:!0});return{restore(u,m){if(!Number.isFinite(u)||!Number.isFinite(m)||u<0||m<0)return;f=!1;let p=()=>{if(!f)try{e.scrollTo(u,m)}catch{}};p(),r.readyState==="loading"&&r.addEventListener("DOMContentLoaded",p,{once:!0}),r.readyState!=="complete"&&e.addEventListener("load",p,{once:!0})}}}var Ae="data-thread-page-update";function _e(e,n){let r=!1;function l(){if(!r||!e.body||e.querySelector(`[${Ae}="host"]`))return;let a=e.createElement("aside");a.setAttribute(Ae,"host"),a.setAttribute("role","status"),a.setAttribute("style","position:sticky;top:0;z-index:2147483647;display:flex;flex-wrap:wrap;align-items:center;gap:.5rem .75rem;margin:0;padding:.6rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText");let f=e.createElement("span");f.textContent="This page changed \\u2014 what you typed is kept until you update.";let d=e.createElement("button");d.type="button",d.textContent="Update",d.setAttribute("style","font:inherit;padding:.2rem .7rem;cursor:pointer"),d.addEventListener("click",()=>{d.disabled=!0,n()}),a.append(f,d),e.body.insertBefore(a,e.body.firstChild)}return{prepare:l,show(){r=!0,l(),e.readyState==="loading"&&e.addEventListener("DOMContentLoaded",l,{once:!0})}}}function Ce(e,n){let r=e.document,l=null,a=new Map,f=new WeakSet;function d(i){if(!l)return!1;try{return l.postMessage(i),!0}catch{return!1}}let u=ge(i=>{d({kind:i?"thread-page:dirty":"thread-page:clean"})}),m=me(n.pageRevision,r),p=Se(r,n.stale),_=he(e,{invoke:(i,c)=>m.invoke(i,c),setDirty:i=>u.setEmbedded(i),embedded:n.embedded===!0}),B=Te(e,(i,c)=>{d({kind:"thread-page:scroll",x:i,y:c})}),y=_e(r,()=>{d({kind:"thread-page:apply-update"})});fe(e,{version:1,invoke:(i,c)=>m.invoke(i,c),watch:(i,c,g,E)=>m.watch(i,c,g,E),setDirty:i=>u.setCustom(i!==!1),embed:(i,c)=>_.embed(i,c)});function h(i){for(let c of W(i))ke(c);p.prepare(i),y.prepare()}h(r),r.readyState==="loading"&&r.addEventListener("DOMContentLoaded",()=>h(r),{once:!0}),typeof e.MutationObserver=="function"&&r.documentElement&&new e.MutationObserver(c=>{for(let g of c)for(let E of Array.from(g.addedNodes))E.nodeType===1&&h(E)}).observe(r.documentElement,{childList:!0,subtree:!0});function w(i){let c=ee(i.target);!c||V(c)||u.markForm(c)}r.addEventListener("input",w,!0),r.addEventListener("change",w,!0),r.addEventListener("submit",i=>{let c=i.target;if(!c||c.tagName?.toLowerCase()!=="form"||V(c)||(i.preventDefault(),p.isReadOnly()||f.has(c)))return;let g=`sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,E=c,L=ve(E,i.submitter??null,g);if(n.embedded&&L.files.length>0){I(E).textContent=Z;return}let R={form:E,disabled:[],dirtyVersion:u.versionOf(E)};a.set(g,R),f.add(E),I(E).textContent=L.files.length>0?"Uploading\\u2026":"Sending\\u2026",R.disabled=xe(E),d({kind:"thread-page:submit",submissionId:g,title:L.title,answers:L.answers,files:L.files})||(a.delete(g),f.delete(E),te(R.disabled),I(E).textContent="Page connection is not ready; try again in a moment.")},!0),ce(r,{external:(i,c)=>{m.invoke("navigation.openExternal",c?{url:i,label:c}:{url:i}).catch(()=>{})},document:i=>{d({kind:"thread-page:open-document",path:i})}},n.siteRoot??null);function T(i){if(S(i)){if(i.kind==="thread-page:source-state"){p.apply(i.stale===!0);return}if(i.kind==="thread-page:restore-scroll"){typeof i.x=="number"&&typeof i.y=="number"&&B.restore(i.x,i.y);return}if(i.kind==="thread-page:update-available"){n.embedded&&y.show();return}if(i.kind==="thread-page:submit-progress"){let c=typeof i.submissionId=="string"?a.get(i.submissionId):void 0;c&&(I(c.form).textContent=String(i.message??"Working\\u2026").slice(0,160));return}if(i.kind==="thread-page:submit-result"){let c=typeof i.submissionId=="string"?a.get(i.submissionId):void 0;if(!c)return;a.delete(i.submissionId),f.delete(c.form);let g=i.ok===!0;I(c.form).textContent=g?String(i.message??"Sent").slice(0,160):String(i.error??"Could not send").slice(0,160),te(c.disabled),p.isReadOnly()&&p.apply(!0),g&&u.clearForm(c.form,c.dirtyVersion);return}m.receive(i)}}function M(i){l=i,i.onmessage=c=>T(c.data),i.start?.(),m.attach(c=>{i.postMessage(c)}),u.isDirty()&&d({kind:"thread-page:dirty"})}function P(i){if(l||i.source!==e.parent)return;let c=i.data;if(!S(c)||c.kind!=="thread-page:connect"||c.version!==D||!i.ports||i.ports.length!==1)return;i.stopImmediatePropagation();let g=i.ports[0];g&&M(g)}return e.addEventListener("message",P,!0),n.stale&&p.apply(!0),e.parent.postMessage({kind:"thread-page:ready",version:D,revision:n.pageRevision},"*"),{deliver:i=>T(i),connect:i=>M(i)}}Ce(window,ue(document.currentScript));})();';
+
+// src/serving/empty-page.ts
+var EMPTY_REVISION = revisionOf("");
+async function loadUnlessUnwritten(serving, session) {
+  try {
+    return await serving.pages.load(session);
+  } catch (error) {
+    if (PageError.is(error) && error.code === "no_page") return null;
+    throw error;
+  }
+}
+var EMPTY_DOCUMENT = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Not written yet</title>
+<style>html,body{height:100%;margin:0}body{display:grid;place-items:center;font:15px/1.5 system-ui,sans-serif;color:GrayText;background:Canvas}p{margin:0;padding:1rem;max-width:32rem;text-align:center}</style>
+</head>
+<body><p>This session has not written its page yet. It appears here as soon as the agent saves it.</p></body>
+</html>`;
+
+// src/serving/bridge/handlers/pages.ts
+function failed(sessionId, path, code, reason, message) {
+  return { sessionId, path, error: { code, reason, message } };
+}
+var READ_ENVELOPE_BYTES = 4 * 1024;
+function bytesOf(value) {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+var pagesRead2 = handler({
+  method: "pages.read",
+  async execute(params2, { serving, session: caller }) {
+    let room = LIMITS.pagesReadBytes - READ_ENVELOPE_BYTES;
+    const pages = [];
+    const loads = /* @__PURE__ */ new Map();
+    const loaded = (sessionId, key) => {
+      const id = `${sessionId}#${key ?? ""}`;
+      let pending = loads.get(id);
+      if (!pending) {
+        pending = (async () => {
+          const owner = await eligibleSession(serving, sessionId);
+          return { owner, page: key ? await serving.pages.load(sessionId, key) : await loadUnlessUnwritten(serving, sessionId) };
+        })();
+        loads.set(id, pending);
+      }
+      return pending;
+    };
+    const add = (entry) => {
+      room -= bytesOf(entry);
+      pages.push(entry);
+    };
+    for (const [index, wanted] of params2.pages.entries()) {
+      const sessionId = wanted.sessionId;
+      const key = documentKey(wanted.path);
+      const path = key ?? ENTRY_DOCUMENT;
+      if (index > 0 && room < READ_ENVELOPE_BYTES) {
+        add({ sessionId, path, deferred: true });
+        continue;
+      }
+      try {
+        const { owner, page } = await loaded(sessionId, key);
+        if (!page) {
+          add(failed(sessionId, path, "not_found", "no_page", "That session has not written its page yet."));
+          continue;
+        }
+        const shared = {
+          sessionId,
+          path,
+          title: owner.title.slice(0, LIMITS.titleChars),
+          projectId: owner.projectId,
+          working: owner.state === "working",
+          readOnly: page.stale,
+          // Renewed with every read, so a page that keeps polling never holds an expired one. spec R5.60a
+          answerToken: mintAnswerToken({ host: caller.id, target: sessionId, path: key, revision: page.revision, now: serving.now() }, serving.signingKey)
+        };
+        if (wanted.ifNoneMatch === page.revision) {
+          add({ ...shared, unchanged: true });
+          continue;
+        }
+        const floor = Buffer.byteLength(page.html, "utf8");
+        if (floor > LIMITS.pagesReadBytes - READ_ENVELOPE_BYTES) {
+          add(failed(sessionId, path, "response_too_large", "too_large", "That page is too large to show inside another page."));
+          continue;
+        }
+        if (floor > room && index > 0) {
+          add({ sessionId, path, deferred: true });
+          continue;
+        }
+        const config = { pageRevision: page.revision, stale: page.stale, siteRoot: serving.site.siteRoot(sessionId), embedded: true };
+        const html = injectKernel(page.html, { kernel: KERNEL_RUNTIME, config, baseHref: serving.site.baseHref(sessionId, key) });
+        const entry = { ...shared, revision: page.revision, html };
+        const bytes = bytesOf(entry);
+        if (bytes > LIMITS.pagesReadBytes - READ_ENVELOPE_BYTES) {
+          add(failed(sessionId, path, "response_too_large", "too_large", "That page is too large to show inside another page."));
+          continue;
+        }
+        if (bytes > room && index > 0) {
+          add({ sessionId, path, deferred: true });
+          continue;
+        }
+        add(entry);
+      } catch (error) {
+        if (!PageError.is(error)) serving.host.log.warn(`pages.read ${sessionId}: ${errorText(error)}`);
+        const code = PageError.is(error) ? error.code : "unavailable";
+        if (code === "page_too_large") add(failed(sessionId, path, "response_too_large", "too_large", PUBLIC_MESSAGES.pageTooLarge));
+        else if (code === "not_found" || code === "ineligible" || code === "no_page") add(failed(sessionId, path, "not_found", code === "no_page" ? "no_page" : "no_session", code === "ineligible" || code === "no_page" ? error.message : "That page is not available."));
+        else add(failed(sessionId, path, "unavailable", "unreachable", PUBLIC_MESSAGES.unavailable));
+      }
+    }
+    return { result: { pages } };
+  }
+});
+function quotable(title2) {
+  return excerpt(title2.replace(/["'`\u00ab\u00bb\u2018-\u201f\u2039\u203a\u300c-\u300f]/g, ""), 70) || "(untitled)";
+}
+function openToken2(params2, context) {
+  const token = verifyAnswerToken(params2.answerToken, context.serving.signingKey, context.serving.now());
+  if (!token || token.host !== context.session.id) throw new PageError("confirmation_invalid", "This answer is not bound to a page this page has read; read it again.");
+  return token;
+}
+async function targetOf(token, context) {
+  try {
+    return await eligibleSession(context.serving, token.target);
+  } catch (error) {
+    if (PageError.is(error) && (error.code === "not_found" || error.code === "ineligible")) throw new PageError("not_found", "That page's session is no longer available.");
+    throw error;
+  }
+}
+var pagesAnswer2 = handler({
+  method: "pages.answer",
+  async refuse(params2, context) {
+    await targetOf(openToken2(params2, context), context);
+  },
+  /** One grant per (this page's session → the embedded session); the page's own session needs none. spec R5.64, R5.66 */
+  async grant(params2, context) {
+    const token = openToken2(params2, context);
+    if (token.target === context.session.id || !context.serving.settings.current().embedAnswerGrants) return null;
+    if (await context.serving.grants.has(context.session.id, token.target)) return null;
+    const target = await targetOf(token, context);
+    const from = quotable(context.session.title);
+    const to = quotable(target.title);
+    return {
+      summary: `Let \u201C${from}\u201D send your answers to \u201C${to}\u201D (${target.id})? It shows that session's page inside it. You are asked once; what is answered there then goes to \u201C${to}\u201D as if you had answered on its own page.`,
+      target: { sessionId: target.id, title: target.title.slice(0, LIMITS.titleChars) },
+      record: () => context.serving.grants.add(context.session.id, target.id, context.serving.now())
+    };
+  },
+  async execute(params2, context) {
+    const { serving, requestId } = context;
+    const token = openToken2(params2, context);
+    await targetOf(token, context);
+    const page = await serving.pages.load(token.target, token.path);
+    if (page.stale) throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);
+    if (page.revision !== token.revision) throw new PageError("stale_page", "The embedded page changed; it refreshes before you answer.");
+    if (params2.form) {
+      const submission = { actionToken: "", submissionId: params2.form.submissionId, pageRevision: token.revision, title: params2.form.title, answers: params2.form.answers, files: [] };
+      const print2 = sha256Hex2(JSON.stringify({ revision: submission.pageRevision, title: submission.title, answers: submission.answers, files: submission.files }));
+      const remembered2 = serving.submissions.remember(
+        `${token.target}:${submission.submissionId}`,
+        print2,
+        async () => {
+          const sent = await serving.host.sessions.send(token.target, formatSubmissionMessage(submission), "queue");
+          return { status: 200, body: { ok: true, delivery: sent.delivery } };
+        },
+        serving.now()
+      );
+      if (remembered2.kind === "conflict") throw new PageError("conflict", "This submission id was already used with different answers");
+      const outcome2 = await remembered2.outcome;
+      return { result: { delivery: outcome2.body.delivery, duplicate: remembered2.kind === "replay" } };
+    }
+    const reply = params2.reply;
+    const print = fingerprint({ revision: token.revision, result: reply.result, mode: reply.mode, title: reply.title ?? null });
+    const remembered = serving.replies.remember(`${token.target}:${reply.idempotencyKey ?? requestId}`, print, () => serving.host.sessions.send(token.target, formatReplyMessage(reply.title, reply.result), reply.mode), serving.now());
+    if (remembered.kind === "conflict") throw new PageError("conflict", "This idempotency key was already used with a different reply");
+    const outcome = await remembered.outcome;
+    return { result: { delivery: outcome.delivery, duplicate: remembered.kind === "replay" } };
   }
 });
 
@@ -12829,43 +13856,6 @@ var storageSet2 = handler({
   }
 });
 
-// src/domain/submissions/message.ts
-function formatSubmissionMessage(submission) {
-  const heading = submission.title.trim() || "Thread Page";
-  const sections = submission.answers.map((answer) => {
-    const label = answer.label.trim() || answer.name;
-    return `**${label}**
-${formatValue(answer.value)}`;
-  });
-  if (submission.files.length > 0) {
-    sections.push(
-      [
-        "**Attached files**",
-        ...submission.files.map((file) => `- \`$BB_THREAD_STORAGE/${file.path}\` (${file.name}, ${file.sizeBytes} bytes)`),
-        `They are in the \`${UPLOAD_DIR}/\` directory of your page root; read them with your normal tools.`
-      ].join("\n")
-    );
-  }
-  return [`The user answered the form on your Thread Page \u2014 ${heading}.`, ...sections].join("\n\n");
-}
-function formatValue(value) {
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "(left blank)";
-  return value.length > 0 ? value : "(left blank)";
-}
-function formatReplyMessage(title2, result2) {
-  const heading = title2?.trim() || "Interactive response";
-  const serialized = JSON.stringify(result2, null, 2) ?? "null";
-  let longestRun = 0;
-  for (const match of serialized.matchAll(/`+/g)) longestRun = Math.max(longestRun, match[0].length);
-  const fence = "`".repeat(Math.max(3, longestRun + 1));
-  return [`The user sent an interactive response from your Thread Page \u2014 ${heading}.`, `**Result**
-
-${fence}json
-${serialized}
-${fence}`].join("\n\n");
-}
-
 // src/serving/bridge/handlers/writes.ts
 var sessionReply2 = handler({
   method: "session.reply",
@@ -13035,6 +14025,8 @@ var ALL_HANDLERS = [
   projectsBrowse2,
   projectsCreate2,
   pagesOpen2,
+  pagesRead2,
+  pagesAnswer2,
   sessionsOpenHost2,
   navigationOpenExternal2
 ];
@@ -13110,9 +14102,9 @@ function bridgeRoute(dispatch) {
     try {
       body = await readJsonBody(context, LIMITS.contributedPayloadMaxBytes + 16384);
     } catch (error) {
-      const failed = PageError.is(error) ? error : new PageError("invalid_json", "Invalid bridge body");
-      const code = failed.code === "request_too_large" ? "request_too_large" : "invalid_json";
-      return jsonResponse({ response: failure(void 0, code, failed.message) }, failed.status);
+      const failed2 = PageError.is(error) ? error : new PageError("invalid_json", "Invalid bridge body");
+      const code = failed2.code === "request_too_large" ? "request_too_large" : "invalid_json";
+      return jsonResponse({ response: failure(void 0, code, failed2.message) }, failed2.status);
     }
     const outcome = await dispatch(body);
     return jsonResponse(outcome.body, outcome.status);
@@ -13128,6 +14120,17 @@ function chromeActionRoute(serving) {
       const record = typeof body === "object" && body !== null && !Array.isArray(body) ? body : {};
       const token = requireActionToken(serving, record.actionToken);
       const action = typeof record.action === "string" ? record.action : "";
+      if (action === "revoke-grant") {
+        if (!isSessionId(record.sessionId)) throw new PageError("invalid_params", "A session id is required");
+        const release2 = acquireRate(serving, token.session);
+        try {
+          const removed = await serving.grants.revoke(token.session, record.sessionId);
+          serving.host.log.info(`grant revoked: ${token.session} \u2192 ${record.sessionId} (${removed})`);
+          return jsonResponse({ ok: true, revoked: removed });
+        } finally {
+          release2();
+        }
+      }
       if (!ACTIONS.has(action)) throw new PageError("invalid_params", "Unknown chrome action");
       const session = await serving.host.sessions.get(token.session);
       if (!session || session.deleted) throw new PageError("not_found", "That session is not available");
@@ -13156,83 +14159,6 @@ function chromeActionRoute(serving) {
   };
 }
 
-// src/domain/html/document.ts
-var XHTML = "http://www.w3.org/1999/xhtml";
-function injectKernel(source, options) {
-  const authored = parseAuthored(source);
-  if (authored) {
-    return injectInto(authored, options);
-  }
-  return wrapFragment(source, options);
-}
-function directChild(parent, tagName) {
-  for (const child of parent.childNodes) {
-    if (defaultTreeAdapter.isElementNode(child) && child.tagName === tagName && child.namespaceURI === XHTML) {
-      return child;
-    }
-  }
-  return null;
-}
-function parseAuthored(source) {
-  const text = source.charCodeAt(0) === 65279 ? source.slice(1) : source;
-  const document = parse(text, { scriptingEnabled: true, sourceCodeLocationInfo: true });
-  const html = directChild(document, "html");
-  if (!html) return null;
-  const head = directChild(html, "head");
-  const body = directChild(html, "body");
-  const frameset = directChild(html, "frameset");
-  const hasDoctype = document.childNodes.some(
-    (child) => defaultTreeAdapter.isDocumentTypeNode(child) && child.name.toLowerCase() === "html"
-  );
-  const hasAuthoredShell = [html, head, body, frameset].some((element) => element?.sourceCodeLocation != null);
-  if (!hasDoctype && !hasAuthoredShell) return null;
-  return { document, target: head ?? body ?? frameset ?? html };
-}
-function kernelElement(namespace, options) {
-  const script = defaultTreeAdapter.createElement("script", namespace, [
-    { name: "data-thread-page-kernel", value: "" },
-    { name: "data-config", value: JSON.stringify(options.config) }
-  ]);
-  defaultTreeAdapter.insertText(script, options.kernel);
-  return script;
-}
-function injectInto(authored, options) {
-  const namespace = authored.target.namespaceURI;
-  const nodes = [];
-  if (options.baseHref) {
-    nodes.push(defaultTreeAdapter.createElement("base", namespace, [{ name: "href", value: options.baseHref }]));
-  }
-  nodes.push(kernelElement(namespace, options));
-  const anchor = defaultTreeAdapter.getFirstChild(authored.target);
-  for (const node of nodes) {
-    if (anchor) defaultTreeAdapter.insertBefore(authored.target, node, anchor);
-    else defaultTreeAdapter.appendChild(authored.target, node);
-  }
-  return serialize(authored.document);
-}
-function wrapFragment(source, options) {
-  const base = options.baseHref ? `<base href="${escapeHtml(options.baseHref)}">
-` : "";
-  const config = escapeHtml(JSON.stringify(options.config));
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
-<title>Thread Page</title>
-${base}<script data-thread-page-kernel data-config="${config}">${options.kernel}</script>
-<style>body{max-width:44rem;margin:2rem auto;padding:0 1rem;font:16px/1.55 system-ui,sans-serif;color:CanvasText;background:Canvas}</style>
-</head>
-<body>
-${source}
-</body>
-</html>`;
-}
-
-// src/generated/kernel-runtime.ts
-var KERNEL_RUNTIME = '"use strict";(()=>{var ae=Object.defineProperty;var le=(e,t,n)=>t in e?ae(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var S=(e,t,n)=>le(e,typeof t!="symbol"?t+"":t,n);var h=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,contributedPayloadMaxBytes:1048576,contributedCallMs:3e4,contributionsTtlMs:1e4,contributorInstructionBytes:2048,contributorGuideBytes:16384,contributorMethods:64,questionChars:1024,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var I=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],ve=new Set(I);var Ae=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${h.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var P=1,F=1;var ue=new Set(I);var de=/^[a-z][a-z0-9_]{0,63}$/;function T(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function J(e,t){return Object.keys(e).length===t.length&&t.every(o=>Object.prototype.hasOwnProperty.call(e,o))}function V(e,t){if(!T(e)||e.v!==F||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return J(e,["v","id","ok","result"]);if(!J(e,["v","id","ok","error"])||!T(e.error))return!1;let n=e.error;return!Object.keys(n).every(s=>s==="code"||s==="message"||s==="reason"||s==="detail")||"reason"in n&&(typeof n.reason!="string"||!de.test(n.reason))||"detail"in n&&!("reason"in n)?!1:"code"in n&&"message"in n&&typeof n.code=="string"&&ue.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function q(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}var ce="uploads/";function U(e){return typeof e!="string"||e.length===0||e.length>1024||e.includes("\\0")||e.includes("\\\\")||e.startsWith("/")||e.startsWith(ce)||!e.split("/").every(t=>t.length>0&&t!=="."&&t!=="..")?!1:/\\.html?$/i.test(e)}function fe(e,t,n,o=n){let s=e.getAttribute("href");if(s===null)return{kind:"default"};if(s.startsWith("#"))return{kind:"default"};let u;try{u=new URL(s,n??t)}catch{return{kind:"block"}}if(u.protocol!=="http:"&&u.protocol!=="https:")return{kind:"block"};if(o&&u.href.startsWith(o)){if(e.hasAttribute("download"))return{kind:"default"};let a=me(u,o);return a!==null&&U(a)?{kind:"document",path:a}:{kind:"default"}}return e.hasAttribute("download")?{kind:"default"}:{kind:"external",url:u.href,label:(e.textContent||"").replace(/\\s+/g," ").trim().slice(0,160)}}function me(e,t){let n=new URL(t).pathname;if(!e.pathname.startsWith(n))return null;try{return decodeURIComponent(e.pathname.slice(n.length))}catch{return null}}function z(e,t,n=null){e.addEventListener("click",o=>{if(o.defaultPrevented||o.button!==0)return;let u=o.target?.closest?.("a[href]");if(!u)return;let a=e.querySelector("base")?.getAttribute("href")??null,l=a?new URL(a,e.baseURI).href:null,p=n?new URL(n,e.baseURI).href:l,c=fe(u,e.baseURI,l,p);c.kind!=="default"&&(o.preventDefault(),c.kind==="external"?t.external(c.url,c.label):c.kind==="document"&&t.document(c.path))},!0)}function K(e,t){let n=Object.freeze({version:1,invoke:t.invoke,watch:t.watch,setDirty:t.setDirty});Object.defineProperty(e,"threadPage",{value:n,writable:!1,configurable:!1,enumerable:!0})}var G=new Set(["context","session","sessions","projects","providers","storage","pages","navigation","voice"]);var M=class extends Error{constructor(n,o,s){super(o);S(this,"code");S(this,"reason");S(this,"detail");this.name="ThreadPageError",this.code=n,Object.defineProperty(this,"code",{value:n,enumerable:!0,writable:!1}),s?.reason!==void 0&&(Object.defineProperty(this,"reason",{value:s.reason,enumerable:!0,writable:!1}),s.detail!==void 0&&Object.defineProperty(this,"detail",{value:s.detail,enumerable:!0,writable:!1}))}};function pe(e){let t=e.indexOf(".");return t>0&&!G.has(e.slice(0,t))}function W(e,t){let n=new Map,o=[],s=null,u=0,a=null;function l(){return a??(a=w("context.get").then(d=>{let m=d?.capabilities??[];return new Map(m.map(g=>[String(g.method),String(g.effect)]))},d=>{throw a=null,d})),a}function p(){return u+=1,`tp-${typeof crypto<"u"&&typeof crypto.randomUUID=="function"?crypto.randomUUID():`${Date.now()}-${u}`}`}function c(d){let m=n.get(d);if(!(!m||!s))try{s(m.request)}catch(g){n.delete(d),m.reject(new M("invalid_request",g instanceof Error?g.message:"The request could not be sent"))}}function w(d,m){return new Promise((g,r)=>{if(typeof d!="string"){r(new M("invalid_request","A method name is required"));return}let i=p(),y={v:F,id:i,method:d,params:m===void 0?null:m,pageRevision:e};n.set(i,{request:y,resolve:g,reject:r}),s?c(i):o.push(i)})}function A(d,m,g,r){if(typeof g!="function")throw new TypeError("Thread Page watch needs a listener");let i=r?.intervalMs,y=typeof i=="number"&&Number.isFinite(i)?Math.max(h.watchMinMs,Math.min(h.watchMaxMs,Math.round(i))):h.watchDefaultMs,f=!1,E=!1,b=null;function R(k){f||(b!==null&&clearTimeout(b),b=setTimeout(ie,k))}async function ie(){if(b=null,!(f||E||t.visibilityState==="hidden")){E=!0;try{if(pe(d)){let $=(await l()).get(d);if($!==void 0&&$!=="read"){f=!0,t.removeEventListener("visibilitychange",O),g(void 0,new M("invalid_params",`watch polls read capabilities only; ${d} is ${$}`));return}}let k=await w(d,m);f||g(k,null)}catch(k){f||g(void 0,k)}finally{E=!1,f||R(y)}}}function O(){f||(t.visibilityState==="hidden"?(b!==null&&clearTimeout(b),b=null):R(0))}return t.addEventListener("visibilitychange",O),R(0),()=>{f||(f=!0,b!==null&&clearTimeout(b),b=null,t.removeEventListener("visibilitychange",O))}}return{invoke:w,watch:A,attach(d){for(s=d;o.length>0;){let m=o.shift();m&&c(m)}},receive(d){if(typeof d!="object"||d===null)return!1;let m=d.id;if(typeof m!="string")return!1;let g=n.get(m);if(!g)return!1;if(n.delete(m),!V(d,m))return g.reject(new M("invalid_response","The Thread Page bridge returned an invalid response")),!0;let r=d;return r.ok?g.resolve(r.result):g.reject(new M(r.error.code,r.error.message,r.error)),!0}}}function Z(e){let t=new Map,n=0,o=!1,s=!1;function u(){let a=o||t.size>0;a!==s&&(s=a,e(a))}return{isDirty:()=>s,markForm(a){return n+=1,t.set(a,n),u(),n},versionOf:a=>t.get(a),clearForm(a,l){l!==void 0&&t.get(a)===l&&(t.delete(a),u())},setCustom(a){o=a===!0,u()}}}var ge="input,textarea,select,button,option,small,output,[data-thread-page-range],[data-thread-page-status]";function B(e){if(!e)return"";let t=e.cloneNode(!0);for(let n of Array.from(t.querySelectorAll(ge)))n.remove();return(t.textContent||"").replace(/\\s+/g," ").trim()}function ye(e,t){let n=t.getAttribute("data-label");if(n&&n.trim())return n.trim();let o=t.closest("fieldset");if(o){let a=B(o.querySelector("legend"));if(a)return a}let s=t.getAttribute("aria-label");if(s&&s.trim())return s.trim();let u=t.closest("label");if(u){let a=B(u);if(a)return a}if(t.id){let a=e.ownerDocument,l=Array.from(a.querySelectorAll("label[for]")).find(c=>c.htmlFor===t.id),p=B(l??null);if(p)return p}return t.name}var be=new Set(["button","submit","reset","image","file"]);function he(e){return Array.from(e.elements).filter(t=>{let n=t;return typeof n.name=="string"&&n.name.length>0&&!n.disabled&&"type"in n})}function Y(e,t){let n=he(e),o=[],s=new Set;if(t&&(C(t)==="button"||C(t)==="input")){let u=t,a=u.value||(u.textContent||"").trim();o.push({name:u.name||"action",label:"Action",value:a}),u.name&&s.add(u.name)}for(let u of n){let a=u.name,l=String(u.type||"").toLowerCase();if(s.has(a)||be.has(l))continue;s.add(a);let p=n.filter(c=>c.name===a);o.push({name:a,label:ye(e,u),value:Ee(u,p,l)})}return o}function C(e){return e.tagName.toLowerCase()}function Ee(e,t,n){if(n==="checkbox"){let o=t.filter(s=>C(s)==="input");return o.length===1?o[0]?.checked===!0:o.filter(s=>s.checked).map(s=>s.value)}if(n==="radio"){let o=t.find(s=>C(s)==="input"&&s.checked);return o?o.value:""}return C(e)==="select"&&e.multiple?Array.from(e.selectedOptions).map(o=>o.value):t.length>1?t.map(o=>String(o.value??"")):String(e.value??"")}var xe="data-thread-page-manual",X="data-thread-page-status",we="data-thread-page-range",Me=new Set(["input","textarea","select","button","fieldset"]);function _(e){return e.hasAttribute(xe)}function N(e){let t=[];return"tagName"in e&&e.tagName.toLowerCase()==="form"&&t.push(e),"querySelectorAll"in e&&t.push(...Array.from(e.querySelectorAll("form"))),t.filter(n=>!_(n))}function j(e){if(!e)return null;let t=e.form;return t&&typeof t=="object"&&t.tagName?.toLowerCase()==="form"?t:e.closest?.("form")??null}function L(e){let t=new Set(N(e)),n=[];"hasAttribute"in e&&e.hasAttribute("form")&&n.push(e),"querySelectorAll"in e&&n.push(...Array.from(e.querySelectorAll("[form]")));for(let o of n){let s=j(o);s&&!_(s)&&t.add(s)}return[...t]}function x(e){let t=e.querySelector(`[${X}]`);return t||(t=e.ownerDocument.createElement("p"),t.setAttribute(X,""),t.setAttribute("role","status"),e.appendChild(t)),t}var Q=new WeakSet;function ee(e){e.noValidate=!0;for(let t of v(e)){if(t.tagName.toLowerCase()!=="input"||t.type!=="range")continue;let n=t;if(Q.has(n))continue;Q.add(n);let o=e.ownerDocument.createElement("output");o.setAttribute(we,"");let s=()=>{o.textContent=String(n.value)};n.addEventListener("input",s),s(),n.insertAdjacentElement("afterend",o)}}function v(e){return Array.from(e.elements).filter(t=>Me.has(t.tagName.toLowerCase()))}function ke(e){let t=[];for(let n of v(e)){if(n.tagName.toLowerCase()!=="input"||n.type!=="file")continue;let o=n;if(!o.disabled)for(let s of Array.from(o.files??[])){if(t.length>=h.uploadsPerForm)return t;t.push({field:o.name||"file",file:s})}}return t}function te(e){let t=[];for(let n of v(e))n.disabled||(n.disabled=!0,t.push(n));return t}function D(e){for(let t of e)t.disabled=!1}function Se(e){let t=e.getAttribute("data-title");return t&&t.trim()?t.trim().slice(0,300):(e.ownerDocument.querySelector("h1")?.textContent||"").trim().slice(0,300)||"Thread Page"}function ne(e,t,n){return{submissionId:n,form:e,title:Se(e),answers:Y(e,t),files:ke(e)}}var re="data-thread-page-offline",H="Offline copy \\u2014 responses are disabled until the source host reconnects.";function oe(e,t){let n=new Set,o=t;function s(){if(!e.body)return;let l=e.querySelector(`[${re}="host"]`);o&&!l?(l=e.createElement("aside"),l.setAttribute(re,"host"),l.setAttribute("role","status"),l.setAttribute("style","position:relative;z-index:2147483647;margin:0;padding:.75rem 1rem;border-bottom:1px solid currentColor;font:600 14px/1.4 system-ui,sans-serif;background:Canvas;color:CanvasText"),l.textContent=H,e.body.insertBefore(l,e.body.firstChild)):!o&&l&&l.remove()}function u(l){for(let p of L(l)){for(let c of v(p))c.disabled||(c.disabled=!0,n.add(c));x(p).textContent=H}}function a(){for(let l of n)l.disabled=!1;n.clear();for(let l of N(e)){let p=x(l);p.textContent===H&&(p.textContent="")}}return{isReadOnly:()=>o,apply(l){o=l,l?u(e):a(),s()},prepare(l){o&&u(l),s()}}}function se(e,t){let n=e.document,o=null,s=new Map,u=new WeakSet;function a(r){if(!o)return!1;try{return o.postMessage(r),!0}catch{return!1}}let l=Z(r=>{a({kind:r?"thread-page:dirty":"thread-page:clean"})}),p=W(t.pageRevision,n),c=oe(n,t.stale);K(e,{version:1,invoke:(r,i)=>p.invoke(r,i),watch:(r,i,y,f)=>p.watch(r,i,y,f),setDirty:r=>l.setCustom(r!==!1)});function w(r){for(let i of L(r))ee(i);c.prepare(r)}w(n),n.readyState==="loading"&&n.addEventListener("DOMContentLoaded",()=>w(n),{once:!0}),typeof e.MutationObserver=="function"&&n.documentElement&&new e.MutationObserver(i=>{for(let y of i)for(let f of Array.from(y.addedNodes))f.nodeType===1&&w(f)}).observe(n.documentElement,{childList:!0,subtree:!0});function A(r){let i=j(r.target);!i||_(i)||l.markForm(i)}n.addEventListener("input",A,!0),n.addEventListener("change",A,!0),n.addEventListener("submit",r=>{let i=r.target;if(!i||i.tagName?.toLowerCase()!=="form"||_(i)||(r.preventDefault(),c.isReadOnly()||u.has(i)))return;let y=`sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,f=i,E=ne(f,r.submitter??null,y),b={form:f,disabled:[],dirtyVersion:l.versionOf(f)};s.set(y,b),u.add(f),x(f).textContent=E.files.length>0?"Uploading\\u2026":"Sending\\u2026",b.disabled=te(f),a({kind:"thread-page:submit",submissionId:y,title:E.title,answers:E.answers,files:E.files})||(s.delete(y),u.delete(f),D(b.disabled),x(f).textContent="Page connection is not ready; try again in a moment.")},!0),z(n,{external:(r,i)=>{p.invoke("navigation.openExternal",i?{url:r,label:i}:{url:r}).catch(()=>{})},document:r=>{a({kind:"thread-page:open-document",path:r})}},t.siteRoot??null);function d(r){if(T(r)){if(r.kind==="thread-page:source-state"){c.apply(r.stale===!0);return}if(r.kind==="thread-page:submit-progress"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;i&&(x(i.form).textContent=String(r.message??"Working\\u2026").slice(0,160));return}if(r.kind==="thread-page:submit-result"){let i=typeof r.submissionId=="string"?s.get(r.submissionId):void 0;if(!i)return;s.delete(r.submissionId),u.delete(i.form);let y=r.ok===!0;x(i.form).textContent=y?String(r.message??"Sent").slice(0,160):String(r.error??"Could not send").slice(0,160),D(i.disabled),c.isReadOnly()&&c.apply(!0),y&&l.clearForm(i.form,i.dirtyVersion);return}p.receive(r)}}function m(r){o=r,r.onmessage=i=>d(i.data),r.start?.(),p.attach(i=>{r.postMessage(i)}),l.isDirty()&&a({kind:"thread-page:dirty"})}function g(r){if(o||r.source!==e.parent)return;let i=r.data;if(!T(i)||i.kind!=="thread-page:connect"||i.version!==P||!r.ports||r.ports.length!==1)return;r.stopImmediatePropagation();let y=r.ports[0];y&&m(y)}return e.addEventListener("message",g,!0),t.stale&&c.apply(!0),e.parent.postMessage({kind:"thread-page:ready",version:P},"*"),{deliver:r=>d(r),connect:r=>m(r)}}se(window,q(document.currentScript));})();';
-
 // src/serving/document-access.ts
 function documentPathFrom(context) {
   const raw = new URL(context.req.url).searchParams.get("path");
@@ -13240,28 +14166,6 @@ function documentPathFrom(context) {
   if (!isDocumentPath(raw)) throw new PageError("invalid_request", "That is not a document of this page.");
   return documentKey(raw);
 }
-
-// src/serving/empty-page.ts
-var EMPTY_REVISION = revisionOf("");
-async function loadUnlessUnwritten(serving, session) {
-  try {
-    return await serving.pages.load(session);
-  } catch (error) {
-    if (PageError.is(error) && error.code === "no_page") return null;
-    throw error;
-  }
-}
-var EMPTY_DOCUMENT = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>Not written yet</title>
-<style>html,body{height:100%;margin:0}body{display:grid;place-items:center;font:15px/1.5 system-ui,sans-serif;color:GrayText;background:Canvas}p{margin:0;padding:1rem;max-width:32rem;text-align:center}</style>
-</head>
-<body><p>This session has not written its page yet. It appears here as soon as the agent saves it.</p></body>
-</html>`;
 
 // src/serving/document-route.ts
 function documentRoute(serving) {
@@ -13312,12 +14216,12 @@ function documentSessionRoute(serving) {
       release = acquireRate(serving, token.session);
       await eligibleSession(serving, token.session);
       const page = path ? await serving.pages.load(token.session, path) : await loadUnlessUnwritten(serving, token.session);
-      const revision = page?.revision ?? EMPTY_REVISION;
-      const minted = mintActionToken({ session: token.session, revision, path, now: serving.now() }, serving.signingKey);
+      const revision2 = page?.revision ?? EMPTY_REVISION;
+      const minted = mintActionToken({ session: token.session, revision: revision2, path, now: serving.now() }, serving.signingKey);
       return jsonResponse({
         ok: true,
         actionToken: minted.token,
-        pageRevision: revision,
+        pageRevision: revision2,
         expiresAt: minted.payload.exp,
         documentUrl: serving.site.documentUrl(token.session, path),
         path: path ?? ENTRY_DOCUMENT,
@@ -13336,7 +14240,7 @@ function documentSessionRoute(serving) {
 import { randomBytes as randomBytes2 } from "node:crypto";
 
 // src/generated/shell-runtime.ts
-var SHELL_RUNTIME = '"use strict";(()=>{var U=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,contributedPayloadMaxBytes:1048576,contributedCallMs:3e4,contributionsTtlMs:1e4,contributorInstructionBytes:2048,contributorGuideBytes:16384,contributorMethods:64,questionChars:1024,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var A=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],Se=new Set(A);var ke=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${U.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var D=1,H=1,P="Not written yet \\u2014 the page appears here as soon as the agent saves it",se=new Set(A),ie=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,ae=/^[a-z][a-zA-Z0-9-]*(?:\\.[a-z][a-zA-Z0-9]*)+$/,le=/^[a-z][a-z0-9_]{0,63}$/;function x(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function L(e,t){return Object.keys(e).length===t.length&&t.every(d=>Object.prototype.hasOwnProperty.call(e,d))}function I(e){return typeof e=="string"&&ie.test(e)}function q(e,t){return x(e)&&L(e,["v","id","method","params","pageRevision"])&&e.v===H&&I(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&ae.test(e.method)&&e.pageRevision===t}function N(e,t){if(!x(e)||e.v!==H||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return L(e,["v","id","ok","result"]);if(!L(e,["v","id","ok","error"])||!x(e.error))return!1;let n=e.error;return!Object.keys(n).every(i=>i==="code"||i==="message"||i==="reason"||i==="detail")||"reason"in n&&(typeof n.reason!="string"||!le.test(n.reason))||"detail"in n&&!("reason"in n)?!1:"code"in n&&"message"in n&&typeof n.code=="string"&&se.has(n.code)&&typeof n.message=="string"&&n.message.length>0&&n.message.length<=512}function C(e,t,n){return{v:1,id:I(e)?e:"invalid",ok:!1,error:{code:t,message:n.slice(0,512)||"Request failed"}}}function $(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}var j="index.html",de="uploads/";function z(e){return typeof e!="string"||e.length===0||e.length>1024||e.includes("\\0")||e.includes("\\\\")||e.startsWith("/")||e.startsWith(de)||!e.split("/").every(t=>t.length>0&&t!=="."&&t!=="..")?!1:/\\.html?$/i.test(e)}function W(e,t,n){let{acts:d,pin:i,read:c,archive:m,title:y}=t,k=n.fetchImpl??fetch;if(e.stale){for(let p of[i,c,m])p.disabled=!0;return}let h=i.dataset.on==="true",S=c.dataset.on==="true",T=!1;function o(){i.textContent=h?"\\u2605":"\\u2606",i.dataset.on=String(h),i.setAttribute("aria-pressed",String(h)),i.title=h?"Pinned in bb":"Pin in bb"}function r(){c.textContent=S?"Read":"Unread",c.dataset.on=String(S),c.title=S?"Mark read":"Mark unread"}let s;function a(p){n.view.setStatus(p,!0),s!==void 0&&clearTimeout(s),s=setTimeout(()=>n.view.setStatus("",!1),6e3)}async function f(p){try{let E=await k(e.chromeActionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:e.actionToken,action:p})}),w=await E.json().catch(()=>null),M=w&&w.state;return!E.ok||!w||w.ok!==!0||!M?(a(w&&typeof w.message=="string"&&w.message||`Request failed (${E.status})`),null):{pinned:M.pinned===!0,unread:M.unread===!0,archived:M.archived===!0}}catch(E){return a(E instanceof Error?E.message:"Request failed"),null}}async function u(p){if(T)return null;T=!0,d.dataset.busy="true";try{return await f(p)}finally{T=!1,delete d.dataset.busy}}function b(p){h=p.pinned,S=p.unread,o(),r()}i.addEventListener("click",()=>{u(h?"unpin":"pin").then(p=>{p&&b(p)})}),c.addEventListener("click",()=>{u(S?"read":"unread").then(p=>{p&&b(p)})}),m.addEventListener("click",async()=>{if(T)return;let p=y.textContent?.trim()||"this session";if(!await n.confirmer.confirm(`Archive \\u201C${p}\\u201D? Its page stops being served.`))return;let w=await u("archive");w&&(w.archived?n.view.navigateAway():b(w))}),o(),r()}function F(e){let t=e.querySelector("p"),n=e.querySelector(\'button[value="cancel"]\'),d=e.querySelector(\'button[value="confirm"]\'),i=null,c;function m(y){let k=i;if(i=null,y&&c)try{c()}catch{}c=void 0,e.open&&e.close(),k?.(y)}return n?.addEventListener("click",y=>{y.preventDefault(),m(!1)}),d?.addEventListener("click",y=>{y.preventDefault(),m(!0)}),e.addEventListener("cancel",y=>{y.preventDefault(),m(!1)}),e.addEventListener("close",()=>{i&&m(!1)}),{confirm(y,k){return new Promise(h=>{if(i&&m(!1),t&&(t.textContent=y),i=h,c=k,typeof e.showModal=="function")try{e.showModal()}catch{m(!1)}else m(!1)})}}}function V(e){let t=null;return{inPlace(n){e.location.assign(n)},reserveWindow(){try{if(t=e.open("","_blank"),t)try{t.opener=null}catch{}}catch{t=null}},external(n){let d=t;if(t=null,d&&!d.closed)try{d.location.href=n;return}catch{try{d.close()}catch{}}e.location.assign(n)},release(){let n=t;t=null;try{n?.close()}catch{}}}}function G(e,t,n,d=e.fetch.bind(e)){let i=`"${t.pageRevision}"`,c=!1,m=!1,y=!1,k=t.stale,h=null,S=null;function T(a){h!==null&&clearTimeout(h),h=null,!(m||e.document.visibilityState!=="visible")&&(h=setTimeout(()=>{h=null,s()},a))}function o(){h!==null&&clearTimeout(h),h=null,S?.abort(),S=null}function r(){c?(n.setStatus("Page changed \\u2014 reload when ready",!0),n.showReload(!0)):n.reloadView()}async function s(){if(m||y||e.document.visibilityState!=="visible")return;if(Date.now()>=t.expiresAt-3e4){m=!0,c?(n.setStatus("Session expiring \\u2014 reload when ready",!0),n.showReload(!0)):n.reloadView();return}y=!0,S=new AbortController;let a=t.documentUrl;try{let f=await d(a,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":i},signal:S.signal});if(a!==t.documentUrl)return;if(f.status===401||f.status===403){m=!0,n.setStatus("Session expired \\u2014 reload this page",!0),n.showReload(!0);return}if(!f.ok&&f.status!==304){n.setStatus("Page unavailable",!0);return}let u=f.headers.get("x-thread-page-stale")==="true";n.setWorking(f.headers.get("x-thread-page-activity")==="working"),u!==k&&(k=u,n.onStaleChanged(u));let b=f.headers.get("x-thread-page-empty")==="true";n.setStatus(u?"Offline copy \\u2014 read-only":b?P:t.notice??"",u);let p=f.headers.get("etag");p&&p!==i&&(i=p,r())}catch(f){f instanceof DOMException&&f.name==="AbortError"||n.setStatus("Cannot check for updates",!0)}finally{S=null,y=!1,T(t.pollMs)}}return e.document.addEventListener("visibilitychange",()=>{e.document.visibilityState==="visible"?T(0):o()}),{start:()=>T(t.pollMs),setDirty:a=>{c=a},retarget:()=>{o(),i=`"${t.pageRevision}"`,k=t.stale,c=!1,m=!1,y=!1,T(t.pollMs)},pollNow:()=>s(),isStopped:()=>m}}function K(e){let{config:t,confirmer:n,navigator:d}=e,i=e.fetchImpl??fetch;function c(o,r){o.postMessage(r)}async function m(o){return(await i(t.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify(o)})).json().catch(()=>null)}function y(o){return!x(o)||o.kind!=="page"&&o.kind!=="host"&&o.kind!=="external"||typeof o.url!="string"||o.kind==="external"&&!/^https?:\\/\\//i.test(o.url)||o.kind!=="external"&&!o.url.startsWith("/")?null:{kind:o.kind,url:o.url}}function k(o,r,s){if(!x(s)||!N(s.response,r.id)){c(o,C(r.id,"invalid_response","The Thread Page bridge returned an invalid response"));return}let a=s.navigate===void 0?null:y(s.navigate);if(s.response.ok&&a){c(o,s.response),a.kind==="external"?d.external(a.url):d.inPlace(a.url);return}d.release(),c(o,s.response)}async function h(o,r){try{let s=await m({actionToken:t.actionToken,request:r});if(x(s)&&x(s.confirm)){let a=s.confirm;if(typeof a.challenge!="string"||typeof a.summary!="string"||a.requestId!==r.id){c(o,C(r.id,"invalid_response","The Thread Page bridge returned an invalid confirmation"));return}let f=r.method==="navigation.openExternal";if(!await n.confirm(a.summary,f?()=>d.reserveWindow():void 0)){c(o,C(r.id,"cancelled","You declined this action"));return}let b=await m({actionToken:t.actionToken,request:r,confirmation:a.challenge});k(o,r,b);return}k(o,r,s)}catch(s){d.release(),c(o,C(r.id,"unavailable",s instanceof Error?s.message:"The Thread Page bridge is unavailable"))}}async function S(o){let r=o.file;if(!r||typeof r.size!="number")throw new Error("Attachment is not a file");let s=r.name||"file";if(r.size<=0)throw new Error(`Attachment ${s} is empty`);if(r.size>t.maxUploadBytes)throw new Error(`Attachment ${s} is larger than ${Math.round(t.maxUploadBytes/(1024*1024))} MiB`);let a=await ce(r),f=await i(t.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,pageRevision:t.pageRevision,name:s,content:a})}),u=await f.json().catch(()=>null);if(!f.ok||!u||u.ok!==!0||typeof u.name!="string"||typeof u.path!="string"||typeof u.sizeBytes!="number")throw new Error(u&&typeof u.message=="string"&&u.message||`Upload failed (${f.status})`);return{field:String(o.field||"file").slice(0,128),name:u.name,path:u.path,sizeBytes:u.sizeBytes}}async function T(o,r){let s=typeof r.submissionId=="string"?r.submissionId:"";try{let a=(Array.isArray(r.files)?r.files:[]).slice(0,t.maxUploads),f=[];for(let E=0;E<a.length;E+=1)c(o,{kind:"thread-page:submit-progress",submissionId:s,message:`Uploading ${E+1} of ${a.length}\\u2026`}),f.push(await S(a[E]));f.length>0&&c(o,{kind:"thread-page:submit-progress",submissionId:s,message:"Sending\\u2026"});let u=await i(t.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,submissionId:s,pageRevision:t.pageRevision,title:r.title,answers:r.answers,files:f})}),b=await u.json().catch(()=>({ok:!1,message:"Invalid server response"})),p=u.ok&&b.ok===!0;c(o,{kind:"thread-page:submit-result",submissionId:s,ok:p,message:typeof b.delivery=="string"?`Sent (${b.delivery})`:"Sent",error:typeof b.message=="string"?b.message:`Request failed (${u.status})`})}catch(a){c(o,{kind:"thread-page:submit-result",submissionId:s,ok:!1,error:a instanceof Error?a.message:"Request failed"})}}return{handle(o,r){if(x(r)){if(r.kind==="thread-page:dirty"){e.onDirty(!0);return}if(r.kind==="thread-page:clean"){e.onDirty(!1);return}if(r.kind==="thread-page:submit"){T(o,r);return}if(r.kind==="thread-page:open-document"){z(r.path)&&e.onOpenDocument?.(r.path);return}if(!q(r,t.pageRevision)){c(o,C(r.id,"invalid_request","Invalid Thread Page bridge request"));return}h(o,r)}}}}async function ce(e){let t=new Uint8Array(await e.arrayBuffer()),n="",d=32768;for(let i=0;i<t.length;i+=d)n+=String.fromCharCode.apply(null,Array.from(t.subarray(i,i+d)));return btoa(n)}var _="threadPageDocument";function Y(e,t,n,d){let{status:i,work:c,reload:m,dialog:y,acts:k,pin:h,read:S,archive:T,title:o}=n,r=d??e.fetch.bind(e),s=n.frame,a=null,f=!0,u=t.stale,b={setStatus(l,g){i.textContent=l,i.dataset.tone=g?"warn":""},setWorking(l){c.dataset.visible=l&&t.workingLabel?"true":"false"},showReload(l){m.dataset.visible=l?"true":"false"},onStaleChanged(l){u=l,a?.postMessage({kind:"thread-page:source-state",stale:l})},reloadView(){e.location.reload()}},p=G(e,t,b,d),E=V(e),w=F(y),M=K({config:t,confirmer:w,navigator:E,onDirty:l=>p.setDirty(l),onOpenDocument:l=>{B(l,!0)},...d?{fetchImpl:d}:{}}),O=e.document.querySelector("a.home");k&&h&&S&&T&&W(t,{acts:k,pin:h,read:S,archive:T,title:o},{confirmer:w,view:{setStatus:(l,g)=>b.setStatus(l,g),navigateAway:()=>{O?.href?e.location.assign(O.href):e.location.reload()}},...d?{fetchImpl:d}:{}});function ne(){let l=new e.MessageChannel,g=l.port1;a=g,g.onmessage=R=>M.handle(g,R.data),g.start?.(),s.contentWindow?.postMessage({kind:"thread-page:connect",version:D},"*",[l.port2]),g.postMessage({kind:"thread-page:source-state",stale:u})}e.addEventListener("message",l=>{if(!f||l.origin!=="null"||l.source!==s.contentWindow)return;let g=l.data;!x(g)||g.kind!=="thread-page:ready"||g.version!==D||(f=!1,ne())});function re(l){let g=s.cloneNode(!1);g.setAttribute("src",l),s.replaceWith(g),s=g}function oe(l){let g=new URL(e.location.href);return l===j?g.searchParams.delete("path"):g.searchParams.set("path",l),`${g.pathname}${g.search}${g.hash}`}async function B(l,g=!0){if(!t.navigable||l===t.documentPath)return!1;try{let R=await r(t.documentSessionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,path:l})}),v=await R.json().catch(()=>null);return!R.ok||!x(v)||v.ok!==!0||typeof v.actionToken!="string"||typeof v.pageRevision!="string"||typeof v.expiresAt!="number"||typeof v.documentUrl!="string"||!v.documentUrl.startsWith("/")||typeof v.path!="string"?(b.setStatus(x(v)&&typeof v.message=="string"&&v.message||"That page could not be opened",!0),!1):(t.actionToken=v.actionToken,t.pageRevision=v.pageRevision,t.expiresAt=v.expiresAt,t.documentUrl=v.documentUrl,t.documentPath=v.path,t.stale=v.stale===!0,t.empty=v.empty===!0,u=t.stale,a=null,f=!0,re(t.documentUrl),p.retarget(),b.showReload(!1),b.setStatus(t.stale?"Offline copy \\u2014 read-only":t.empty?P:t.notice??"",t.stale),g&&e.history.pushState({[_]:t.documentPath},"",oe(t.documentPath)),!0)}catch{return b.setStatus("That page could not be opened",!0),!1}}if(t.navigable){try{e.history.replaceState({[_]:t.documentPath},"",e.location.href)}catch{}e.addEventListener("popstate",l=>{let g=l.state,R=x(g)&&typeof g[_]=="string"?g[_]:null;R&&B(R,!1)})}return m.addEventListener("click",()=>e.location.reload()),s.src=t.documentUrl,p.start(),{poller:p,openDocument:B}}var ue=$(document.currentScript),J=document.querySelector("iframe"),Z=document.querySelector("[data-shell-status]"),Q=document.querySelector("[data-shell-working]"),X=document.querySelector("[data-shell-reload]"),ee=document.querySelector("dialog"),te=document.querySelector(".title"),pe=document.querySelector("[data-shell-acts]"),ge=document.querySelector(\'[data-act="pin"]\'),fe=document.querySelector(\'[data-act="read"]\'),me=document.querySelector(\'[data-act="archive"]\');if(!J||!Z||!Q||!X||!ee||!te)throw new Error("Thread Page shell: chrome is incomplete");Y(window,ue,{frame:J,status:Z,work:Q,reload:X,dialog:ee,title:te,acts:pe,pin:ge,read:fe,archive:me});})();';
+var SHELL_RUNTIME = '"use strict";(()=>{var Y=Object.freeze({entryDocumentBytes:5242880,uploadFileBytes:25165824,uploadsPerForm:8,submissionBodyBytes:65536,answersPerSubmission:64,answerValueChars:8e3,answerListItems:64,capabilityPayloadBytes:65536,capabilityJsonDepth:16,contributedPayloadMaxBytes:1048576,contributedCallMs:3e4,contributionsTtlMs:1e4,contributorInstructionBytes:2048,contributorGuideBytes:16384,contributorMethods:64,questionChars:1024,capabilityJsonNodes:1e4,promptChars:32768,resultTextBytes:65536,titleChars:240,storageValueBytes:32768,storageKeyChars:128,snapshotDefault:100,snapshotMax:200,activityDefault:8,activityMax:20,actionTokenMs:72e5,confirmationMs:12e4,selectionTokenMs:6e5,selectionTokens:32,idempotencyRecords:512,idempotencyMs:3e5,ratePerMinute:120,rateConcurrent:8,shellPollMs:1e4,shellPollWorkingMs:2e3,shellPollAfterAnswerMs:6e4,refreshSwapMs:4e3,includeParts:200,includeElements:400,includeReports:100,includePartBytes:2097152,includeDepth:3,pagesReadEntries:16,pagesReadBytes:8388608,pagesAnswerBytes:98304,embedsPerPage:32,embedPollWorkingMs:3e3,embedPollMs:1e4,embedPollAfterAnswerMs:6e4,embedCallsPerMinute:30,answerTokenMs:72e5,grantsPerPage:64,grantPages:512,watchDefaultMs:8e3,watchMinMs:2e3,watchMaxMs:3e5,inlineFileBytes:2097152,inlineTotalBytes:3145728,inlineCssDepth:3,offlineCopyBytes:204800,offlineCacheEntries:32,offlineCacheBytes:8388608,requestIdChars:96,methodNameChars:96,tokenChars:4096,errorMessageChars:512,summaryChars:512,projectsMax:200,providersMax:64,modelsPerProvider:64});var U=["invalid_json","invalid_request","invalid_params","invalid_response","request_too_large","response_too_large","unsupported_version","unknown_method","stale_page","confirmation_required","confirmation_invalid","cancelled","not_found","conflict","unavailable","rate_limited","handler_error","invalid_result"],Ge=new Set(U);var $e=Object.freeze({noPage:"This session has no page yet. Run `bb thread-page init` in the session first.",ineligible:"Only visible root sessions have pages.",pageTooLarge:`The page\'s entry document is larger than ${Y.entryDocumentBytes/(1024*1024)} MiB and was not served.`,unavailable:"The page\'s source is unreachable. Reconnect its host and try again.",staleCopy:"The source host is offline; this cached page is read-only.",stalePage:"This page changed; reload it before responding.",handler:"Could not execute the page action.",rateLimited:"Too many requests from this page; try again shortly.",invalidSession:"A valid session id is required.",tokenInvalid:"This page session is invalid or expired; reload the page."});var q=1,J=1,D="Not written yet \\u2014 the page appears here as soon as the agent saves it",xe=new Set(U),Me=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/,Re=/^[a-z][a-zA-Z0-9-]*(?:\\.[a-z][a-zA-Z0-9]*)+$/,Ce=/^[a-z][a-z0-9_]{0,63}$/;function v(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function N(e,t){return Object.keys(e).length===t.length&&t.every(m=>Object.prototype.hasOwnProperty.call(e,m))}function K(e){return typeof e=="string"&&Me.test(e)}function Z(e,t){return v(e)&&N(e,["v","id","method","params","pageRevision"])&&e.v===J&&K(e.id)&&typeof e.method=="string"&&e.method.length>=3&&e.method.length<=96&&Re.test(e.method)&&e.pageRevision===t}function Q(e,t){if(!v(e)||e.v!==J||typeof e.id!="string"||typeof e.ok!="boolean"||t!==void 0&&e.id!==t)return!1;if(e.ok===!0)return N(e,["v","id","ok","result"]);if(!N(e,["v","id","ok","error"])||!v(e.error))return!1;let s=e.error;return!Object.keys(s).every(u=>u==="code"||u==="message"||u==="reason"||u==="detail")||"reason"in s&&(typeof s.reason!="string"||!Ce.test(s.reason))||"detail"in s&&!("reason"in s)?!1:"code"in s&&"message"in s&&typeof s.code=="string"&&xe.has(s.code)&&typeof s.message=="string"&&s.message.length>0&&s.message.length<=512}function X(e){return typeof e=="string"?`Sent (${e})`:"Sent"}function ee(e){return e.kind==="thread-page:scroll"&&typeof e.x=="number"&&typeof e.y=="number"&&Number.isFinite(e.x)&&Number.isFinite(e.y)&&e.x>=0&&e.y>=0}function A(e,t,s){return{v:1,id:K(e)?e:"invalid",ok:!1,error:{code:t,message:s.slice(0,512)||"Request failed"}}}function te(e){let t=e?.getAttribute("data-config");if(!t)throw new Error("Thread Page runtime: configuration is missing");return JSON.parse(t)}var ne="index.html",Pe="uploads/";function re(e){return typeof e!="string"||e.length===0||e.length>1024||e.includes("\\0")||e.includes("\\\\")||e.startsWith("/")||e.startsWith(Pe)||!e.split("/").every(t=>t.length>0&&t!=="."&&t!=="..")?!1:/\\.html?$/i.test(e)}function _e(e){return re(e)&&e.split("/").some(t=>t.startsWith("_"))}function oe(e){return re(e)&&!_e(e)}function se(e,t,s){let{acts:m,pin:u,read:f,archive:h,title:x}=t,S=s.fetchImpl??fetch;if(e.stale){for(let a of[u,f,h])a.disabled=!0;return}let g=u.dataset.on==="true",k=f.dataset.on==="true",y=!1;function i(){u.textContent=g?"\\u2605":"\\u2606",u.dataset.on=String(g),u.setAttribute("aria-pressed",String(g)),u.title=g?"Pinned in bb":"Pin in bb"}function n(){f.textContent=k?"Read":"Unread",f.dataset.on=String(k),f.title=k?"Mark read":"Mark unread"}let o;function c(a){s.view.setStatus(a,!0),o!==void 0&&clearTimeout(o),o=setTimeout(()=>s.view.setStatus("",!1),6e3)}async function E(a){try{let w=await S(e.chromeActionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:e.actionToken,action:a})}),b=await w.json().catch(()=>null),R=b&&b.state;return!w.ok||!b||b.ok!==!0||!R?(c(b&&typeof b.message=="string"&&b.message||`Request failed (${w.status})`),null):{pinned:R.pinned===!0,unread:R.unread===!0,archived:R.archived===!0}}catch(w){return c(w instanceof Error?w.message:"Request failed"),null}}async function p(a){if(y)return null;y=!0,m.dataset.busy="true";try{return await E(a)}finally{y=!1,delete m.dataset.busy}}function M(a){g=a.pinned,k=a.unread,i(),n()}u.addEventListener("click",()=>{p(g?"unpin":"pin").then(a=>{a&&M(a)})}),f.addEventListener("click",()=>{p(k?"read":"unread").then(a=>{a&&M(a)})}),h.addEventListener("click",async()=>{if(y)return;let a=x.textContent?.trim()||"this session";if(!await s.confirmer.confirm(`Archive \\u201C${a}\\u201D? Its page stops being served.`))return;let b=await p("archive");b&&(b.archived?s.view.navigateAway():M(b))}),i(),n()}var Ae={heading:"Confirm this action",confirmLabel:"Confirm",cancelLabel:"Cancel"};function ie(e,t=0){let s=e.querySelector("p"),m=e.querySelector("h2"),u=e.querySelector(\'button[value="cancel"]\'),f=e.querySelector(\'button[value="confirm"]\'),h=null,x=0,S;function g(k){let y=h;if(h=null,k&&S)try{S()}catch{}S=void 0,e.open&&e.close(),y?.(k)}return u?.addEventListener("click",k=>{k.preventDefault(),g(!1)}),f?.addEventListener("click",k=>{k.preventDefault(),!(Date.now()<x)&&g(!0)}),e.addEventListener("cancel",k=>{k.preventDefault(),g(!1)}),e.addEventListener("close",()=>{h&&g(!1)}),{confirm(k,y,i=Ae){return new Promise(n=>{if(h){n(!1);return}if(x=Date.now()+t,s&&(s.textContent=k),m&&(m.textContent=i.heading),f&&(f.textContent=i.confirmLabel),u&&(u.textContent=i.cancelLabel),h=n,S=y,typeof e.showModal=="function")try{e.showModal()}catch{g(!1)}else g(!1)})}}}function ae(e,t,s){let{button:m,dialog:u}=t,f=s.fetchImpl??fetch,h=u.querySelector("ul"),x=u.querySelector(\'button[value="close"]\'),S=[...e.grants];function g(){if(m.hidden=S.length===0,m.textContent=`Answers \\u2192 ${S.length}`,m.title="Sessions this page may send your answers to",!!h){h.textContent="";for(let y of S){let i=h.ownerDocument.createElement("li"),n=h.ownerDocument.createElement("span");n.textContent=y.title||y.sessionId;let o=h.ownerDocument.createElement("button");o.type="button",o.textContent="Revoke",o.addEventListener("click",()=>{k(y.sessionId,o)}),i.append(n,o),h.appendChild(i)}S.length===0&&u.open&&u.close()}}async function k(y,i){i.disabled=!0;try{let n=await f(e.chromeActionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:e.actionToken,action:"revoke-grant",sessionId:y})}),o=await n.json().catch(()=>null);if(!n.ok||!v(o)||o.ok!==!0)throw new Error(v(o)&&typeof o.message=="string"&&o.message||`Request failed (${n.status})`);S=S.filter(c=>c.sessionId!==y),g()}catch(n){i.disabled=!1,s.setStatus(n instanceof Error?n.message:"Could not revoke",!0)}}return m.addEventListener("click",()=>{typeof u.showModal=="function"&&!u.open&&u.showModal()}),x?.addEventListener("click",()=>{u.open&&u.close()}),g(),{add(y){S.some(i=>i.sessionId===y.sessionId)||(S=[...S,y]),g()}}}function le(e){let t=null;return{inPlace(s){e.location.assign(s)},reserveWindow(){try{if(t=e.open("","_blank"),t)try{t.opener=null}catch{}}catch{t=null}},external(s){let m=t;if(t=null,m&&!m.closed)try{m.location.href=s;return}catch{try{m.close()}catch{}}e.location.assign(s)},release(){let s=t;t=null;try{s?.close()}catch{}}}}var W="Page changed \\u2014 reload when ready";function de(e,t,s,m=e.fetch.bind(e)){let u=`"${t.pageRevision}"`,f=!1,h=!1,x=!1,S=t.stale,g=null,k=0,y=null,i=t.working,n=0,o=!1;function c(){return i||Date.now()<n?t.pollWorkingMs:t.pollMs}function E(w){g!==null&&clearTimeout(g),g=null,!(h||e.document.visibilityState!=="visible")&&(k=Date.now()+w,g=setTimeout(()=>{g=null,a()},w))}function p(){g!==null&&clearTimeout(g),g=null,y?.abort(),y=null}function M(){f?(o=!0,s.setStatus(W,!0),s.showReload(!0)):s.refreshDocument()}async function a(){if(h||x||e.document.visibilityState!=="visible")return;if(Date.now()>=t.expiresAt-3e4){h=!0,f?(s.setStatus("Session expiring \\u2014 reload when ready",!0),s.showReload(!0)):s.reloadView();return}x=!0,y=new AbortController;let w=t.documentUrl;try{let b=await m(w,{method:"GET",credentials:"same-origin",cache:"no-store",headers:{"if-none-match":u},signal:y.signal});if(w!==t.documentUrl)return;if(b.status===401||b.status===403){h=!0,s.setStatus("Session expired \\u2014 reload this page",!0),s.showReload(!0);return}if(!b.ok&&b.status!==304){s.setStatus("Page unavailable",!0);return}let R=b.headers.get("x-thread-page-stale")==="true";i=b.headers.get("x-thread-page-activity")==="working",s.setWorking(i),R!==S&&(S=R,s.onStaleChanged(R));let C=b.headers.get("x-thread-page-empty")==="true";o&&!R?s.setStatus(W,!0):s.setStatus(R?"Offline copy \\u2014 read-only":C?D:t.notice??"",R);let T=b.headers.get("etag");T&&T!==u&&(u=T,M())}catch(b){b instanceof DOMException&&b.name==="AbortError"||s.setStatus("Cannot check for updates",!0)}finally{y=null,x=!1,E(c())}}return e.document.addEventListener("visibilitychange",()=>{e.document.visibilityState==="visible"?E(0):p()}),{start:()=>E(c()),setDirty:w=>{f=w,!f&&o&&!h&&(o=!1,s.refreshDocument())},offer:()=>{o=!0,s.setStatus(W,!0),s.showReload(!0)},isDirty:()=>f,expectChange:()=>{n=Date.now()+t.pollAfterAnswerMs,!x&&(g===null||k-Date.now()>t.pollWorkingMs)&&E(t.pollWorkingMs)},retarget:()=>{p(),u=`"${t.pageRevision}"`,S=t.stale,f=!1,o=!1,h=!1,x=!1,E(c())},pollNow:()=>a(),isStopped:()=>h}}var ue=new Set(["session.reply","pages.answer"]);function ce(e){let{config:t,confirmer:s,navigator:m}=e,u=e.fetchImpl??fetch;function f(i,n){i.postMessage(n)}async function h(i){return(await u(t.bridgeUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify(i)})).json().catch(()=>null)}function x(i){return!v(i)||i.kind!=="page"&&i.kind!=="host"&&i.kind!=="external"||typeof i.url!="string"||i.kind==="external"&&!/^https?:\\/\\//i.test(i.url)||i.kind!=="external"&&!i.url.startsWith("/")?null:{kind:i.kind,url:i.url}}function S(i,n,o){if(!v(o)||!Q(o.response,n.id)){f(i,A(n.id,"invalid_response","The Thread Page bridge returned an invalid response"));return}let c=o.navigate===void 0?null:x(o.navigate);if(o.response.ok&&c){f(i,o.response),c.kind==="external"?m.external(c.url):m.inPlace(c.url);return}m.release(),f(i,o.response)}async function g(i,n){try{let o=await h({actionToken:t.actionToken,request:n});if(v(o)&&v(o.confirm)){let c=o.confirm;if(typeof c.challenge!="string"||typeof c.summary!="string"||c.requestId!==n.id){f(i,A(n.id,"invalid_response","The Thread Page bridge returned an invalid confirmation"));return}let E=n.method==="navigation.openExternal",p=c.kind==="grant"&&v(c.grant)&&typeof c.grant.sessionId=="string"&&typeof c.grant.title=="string"?{sessionId:c.grant.sessionId,title:c.grant.title}:null;if(!await s.confirm(c.summary,E?()=>m.reserveWindow():void 0,p?{heading:"Allow answers from this page?",confirmLabel:"Allow",cancelLabel:"Don\\u2019t allow"}:void 0)){f(i,A(n.id,"cancelled",p?"You did not allow it, so the answer was not sent":"You declined this action"));return}let a=await h({actionToken:t.actionToken,request:n,confirmation:c.challenge}),w=v(a)&&v(a.response)&&v(a.response.error)&&a.response.error.code==="confirmation_invalid";p&&v(a)&&v(a.response)&&!w&&e.onGranted?.(p),ue.has(n.method)&&v(a)&&v(a.response)&&a.response.ok===!0&&e.onAnswered?.(),S(i,n,a);return}ue.has(n.method)&&v(o)&&v(o.response)&&o.response.ok===!0&&e.onAnswered?.(),S(i,n,o)}catch(o){m.release(),f(i,A(n.id,"unavailable",o instanceof Error?o.message:"The Thread Page bridge is unavailable"))}}async function k(i){let n=i.file;if(!n||typeof n.size!="number")throw new Error("Attachment is not a file");let o=n.name||"file";if(n.size<=0)throw new Error(`Attachment ${o} is empty`);if(n.size>t.maxUploadBytes)throw new Error(`Attachment ${o} is larger than ${Math.round(t.maxUploadBytes/(1024*1024))} MiB`);let c=await De(n),E=await u(t.uploadUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,pageRevision:t.pageRevision,name:o,content:c})}),p=await E.json().catch(()=>null);if(!E.ok||!p||p.ok!==!0||typeof p.name!="string"||typeof p.path!="string"||typeof p.sizeBytes!="number")throw new Error(p&&typeof p.message=="string"&&p.message||`Upload failed (${E.status})`);return{field:String(i.field||"file").slice(0,128),name:p.name,path:p.path,sizeBytes:p.sizeBytes}}async function y(i,n){let o=typeof n.submissionId=="string"?n.submissionId:"";try{let c=(Array.isArray(n.files)?n.files:[]).slice(0,t.maxUploads),E=[];for(let w=0;w<c.length;w+=1)f(i,{kind:"thread-page:submit-progress",submissionId:o,message:`Uploading ${w+1} of ${c.length}\\u2026`}),E.push(await k(c[w]));E.length>0&&f(i,{kind:"thread-page:submit-progress",submissionId:o,message:"Sending\\u2026"});let p=await u(t.submitUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,submissionId:o,pageRevision:t.pageRevision,title:n.title,answers:n.answers,files:E})}),M=await p.json().catch(()=>({ok:!1,message:"Invalid server response"})),a=p.ok&&M.ok===!0;a&&e.onAnswered?.(),f(i,{kind:"thread-page:submit-result",submissionId:o,ok:a,message:X(M.delivery),error:typeof M.message=="string"?M.message:`Request failed (${p.status})`})}catch(c){f(i,{kind:"thread-page:submit-result",submissionId:o,ok:!1,error:c instanceof Error?c.message:"Request failed"})}}return{handle(i,n){if(v(n)){if(n.kind==="thread-page:dirty"){e.onDirty(!0);return}if(n.kind==="thread-page:clean"){e.onDirty(!1);return}if(n.kind==="thread-page:submit"){y(i,n);return}if(n.kind==="thread-page:scroll"){ee(n)&&e.onScroll?.(n.x,n.y);return}if(n.kind!=="thread-page:apply-update"){if(n.kind==="thread-page:open-document"){oe(n.path)&&e.onOpenDocument?.(n.path);return}if(!Z(n,t.pageRevision)){f(i,A(n.id,"invalid_request","Invalid Thread Page bridge request"));return}g(i,n)}}}}}async function De(e){let t=new Uint8Array(await e.arrayBuffer()),s="",m=32768;for(let u=0;u<t.length;u+=m)s+=String.fromCharCode.apply(null,Array.from(t.subarray(u,u+m)));return btoa(s)}var L="threadPageDocument",Be=400;function me(e,t,s,m){let{status:u,work:f,reload:h,dialog:x,acts:S,pin:g,read:k,archive:y,title:i}=s,n=m??e.fetch.bind(e),o=s.frame,c=null,E=t.stale,p=new WeakSet([o]),M={x:0,y:0},a=null,w=null,b=null,R=0,C={setStatus(r,l){u.textContent=r,u.dataset.tone=l?"warn":""},setWorking(r){f.dataset.visible=r&&t.workingLabel?"true":"false"},showReload(r){h.dataset.visible=r?"true":"false"},onStaleChanged(r){E=r,c?.postMessage({kind:"thread-page:source-state",stale:r})},reloadView(){e.location.reload()},refreshDocument(){H()}},T=de(e,t,C,m),ke=le(e),F=ie(x,Be),we=ce({config:t,confirmer:F,navigator:ke,onDirty:r=>{T.setDirty(r),r&&a&&(B(),T.offer())},onOpenDocument:r=>{O(r,!0)},onAnswered:()=>T.expectChange(),onScroll:(r,l)=>{M={x:r,y:l}},onGranted:r=>w?.add(r),...m?{fetchImpl:m}:{}}),G=e.document.querySelector("a.home");S&&g&&k&&y&&se(t,{acts:S,pin:g,read:k,archive:y,title:i},{confirmer:F,view:{setStatus:(r,l)=>C.setStatus(r,l),navigateAway:()=>{G?.href?e.location.assign(G.href):e.location.reload()}},...m?{fetchImpl:m}:{}}),s.grants&&(w=ae(t,s.grants,{setStatus:(r,l)=>C.setStatus(r,l),...m?{fetchImpl:m}:{}}));function $(r,l){let d=new e.MessageChannel,P=d.port1;c=P,P.onmessage=_=>{c===P&&we.handle(P,_.data)},P.start?.(),r.contentWindow?.postMessage({kind:"thread-page:connect",version:q},"*",[d.port2]),P.postMessage({kind:"thread-page:source-state",stale:E}),l&&(l.x>0||l.y>0)&&P.postMessage({kind:"thread-page:restore-scroll",x:l.x,y:l.y})}e.addEventListener("message",r=>{if(r.origin!=="null")return;let l=r.source===o.contentWindow?o:a&&r.source===a.frame.contentWindow?a.frame:null;if(!l||!p.has(l))return;let d=r.data;if(!(!v(d)||d.kind!=="thread-page:ready"||d.version!==q)){if(p.delete(l),l===o){let P=b;b=null,$(o,P),j(d.revision);return}a&&(a.ready=!0,a.revision=typeof d.revision=="string"?d.revision:null,a.loaded&&I())}});function j(r){typeof r=="string"&&r!==t.pageRevision&&T.pollNow()}function Ee(r){let l=o.cloneNode(!1);l.removeAttribute("data-incoming"),l.setAttribute("src",r),p.add(l),o.replaceWith(l),o=l}function B(){let r=a;r&&(a=null,clearTimeout(r.timer),r.frame.remove(),r.settle(!1))}function I(){let r=a;if(!r)return;a=null,clearTimeout(r.timer),V(r.apply);let l=o;o=r.frame,c=null;let d=M;M={x:0,y:0},R+=1,r.ready?$(o,d):b=d,l.remove(),o.removeAttribute("data-incoming"),T.retarget(),C.showReload(!1),C.setStatus(t.stale?"Offline copy \\u2014 read-only":t.empty?D:t.notice??"",t.stale),r.ready&&j(r.revision),r.settle(!0)}function Te(r){let l=new URL(e.location.href);return r===ne?l.searchParams.delete("path"):l.searchParams.set("path",r),`${l.pathname}${l.search}${l.hash}`}async function z(r){let l=await n(t.documentSessionUrl,{method:"POST",credentials:"same-origin",cache:"no-store",headers:{"content-type":"application/json"},body:JSON.stringify({actionToken:t.actionToken,path:r})}),d=await l.json().catch(()=>null);return!l.ok||!v(d)||d.ok!==!0||typeof d.actionToken!="string"||typeof d.pageRevision!="string"||typeof d.expiresAt!="number"||typeof d.documentUrl!="string"||!d.documentUrl.startsWith("/")||typeof d.path!="string"?v(d)&&typeof d.message=="string"&&d.message||"That page could not be opened":{actionToken:d.actionToken,pageRevision:d.pageRevision,expiresAt:d.expiresAt,documentUrl:d.documentUrl,path:d.path,stale:d.stale===!0,empty:d.empty===!0}}function V(r){t.actionToken=r.actionToken,t.pageRevision=r.pageRevision,t.expiresAt=r.expiresAt,t.documentUrl=r.documentUrl,t.documentPath=r.path,t.stale=r.stale,t.empty=r.empty,E=t.stale}async function O(r,l=!0){if(!t.navigable||r===t.documentPath)return!1;try{let d=await z(r);return typeof d=="string"?(C.setStatus(d,!0),!1):(B(),V(d),c=null,M={x:0,y:0},b=null,R+=1,Ee(t.documentUrl),T.retarget(),C.showReload(!1),C.setStatus(t.stale?"Offline copy \\u2014 read-only":t.empty?D:t.notice??"",t.stale),l&&e.history.pushState({[L]:t.documentPath},"",Te(t.documentPath)),!0)}catch{return C.setStatus("That page could not be opened",!0),!1}}async function H(){if(!t.navigable)return e.location.reload(),!1;B();let r=R,l;try{l=await z(t.documentPath)}catch{l="unavailable"}if(r!==R)return!1;if(typeof l=="string")return e.location.reload(),!1;if(T.isDirty())return T.offer(),!1;B();let d=o.cloneNode(!1);return d.setAttribute("data-incoming",""),d.setAttribute("src",l.documentUrl),p.add(d),new Promise(P=>{let _={frame:d,ready:!1,revision:null,loaded:!1,apply:l,timer:setTimeout(()=>{a===_&&I()},t.refreshSwapMs),settle:P};a=_,d.addEventListener("load",()=>{_.loaded=!0,a===_&&_.ready&&I()}),o.insertAdjacentElement("afterend",d)})}if(t.navigable){try{e.history.replaceState({[L]:t.documentPath},"",e.location.href)}catch{}e.addEventListener("popstate",r=>{let l=r.state,d=v(l)&&typeof l[L]=="string"?l[L]:null;d&&O(d,!1)})}return h.addEventListener("click",()=>{if(T.isStopped()){e.location.reload();return}let r=h.dataset.visible==="true"&&T.isDirty();T.setDirty(!1),r||H()}),o.src=t.documentUrl,T.start(),{poller:T,openDocument:O,refreshDocument:H,shownFrame:()=>o}}var Le=te(document.currentScript),pe=document.querySelector("iframe"),he=document.querySelector("[data-shell-status]"),ye=document.querySelector("[data-shell-working]"),be=document.querySelector("[data-shell-reload]"),ve=document.querySelector("dialog:not([data-shell-grants-dialog])"),fe=document.querySelector("[data-shell-grants]"),ge=document.querySelector("[data-shell-grants-dialog]"),Se=document.querySelector(".title"),Ie=document.querySelector("[data-shell-acts]"),Oe=document.querySelector(\'[data-act="pin"]\'),He=document.querySelector(\'[data-act="read"]\'),Ue=document.querySelector(\'[data-act="archive"]\');if(!pe||!he||!ye||!be||!ve||!Se)throw new Error("Thread Page shell: chrome is incomplete");me(window,Le,{frame:pe,status:he,work:ye,reload:be,dialog:ve,title:Se,acts:Ie,pin:Oe,read:He,archive:Ue,grants:fe&&ge?{button:fe,dialog:ge}:null});})();';
 
 // src/runtime/shared/protocol.ts
 var EMPTY_PAGE_STATUS = "Not written yet \u2014 the page appears here as soon as the agent saves it";
@@ -13365,7 +14269,14 @@ var SHELL_CSS = `
 .act:disabled{opacity:.5;cursor:default}
  .act-warn:hover{color:var(--warn);border-color:var(--warn)}
  @media(max-width:34rem){.work .word{display:none}.status{font-size:.8rem}.acts{order:9;margin-left:auto}}
-iframe{display:block;width:100%;height:100%;border:0;background:var(--bg)}
+/* Two frames can share the stage: a refreshed document loads behind the shown one. spec R2.18a */
+.stage{position:relative;min-height:0}
+iframe{position:absolute;inset:0;display:block;width:100%;height:100%;border:0;background:var(--bg)}
+iframe[data-incoming]{visibility:hidden}
+.grants{flex:none}
+dialog.grants-list ul{list-style:none;margin:0 0 1rem;padding:0;display:grid;gap:.4rem}
+dialog.grants-list li{display:flex;align-items:center;justify-content:space-between;gap:.75rem}
+dialog.grants-list li span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 dialog{margin:auto;max-width:min(30rem,calc(100vw - 2rem));padding:1.15rem 1.25rem;border:1px solid var(--line);border-radius:.75rem;color:var(--ink);background:var(--surface)}
 dialog::backdrop{background:rgb(0 0 0 / .45)}dialog h2{margin:0 0 .5rem;font-size:1rem}dialog p{margin:0 0 1rem;color:var(--muted);overflow-wrap:anywhere}
 dialog .row{display:flex;gap:.5rem;justify-content:flex-end}dialog button{padding:.4rem .8rem;border:1px solid var(--line);border-radius:.4rem;color:var(--ink);background:var(--bg);cursor:pointer}
@@ -13404,10 +14315,11 @@ function renderShell(view) {
     <span class="title">${title2}</span>
     <span class="work" role="status" data-shell-working data-visible="${working}"><span class="dot" aria-hidden="true"></span><span class="word">${escapeHtml(view.config.workingLabel)}</span></span>
     <span class="status" role="status" data-shell-status${warn ? ' data-tone="warn"' : ""}>${escapeHtml(initialStatus(view.config))}</span>
+    <button type="button" class="act grants" data-shell-grants hidden></button>
     ${acts}
     <button type="button" class="reload" data-shell-reload aria-label="Reload updated page">Reload</button>
   </header>
-  <iframe title="${title2}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
+  <div class="stage"><iframe title="${title2}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe></div>
 </div>
 <dialog aria-labelledby="tp-confirm-title">
   <form method="dialog">
@@ -13418,6 +14330,12 @@ function renderShell(view) {
       <button type="button" value="confirm">Confirm</button>
     </div>
   </form>
+</dialog>
+<dialog class="grants-list" data-shell-grants-dialog aria-labelledby="tp-grants-title">
+  <h2 id="tp-grants-title">This page may send your answers to</h2>
+  <p>You allowed each of these once, when you first answered that session from inside this page. Revoke one and you are asked again next time.</p>
+  <ul></ul>
+  <div class="row"><button type="button" value="close">Close</button></div>
 </dialog>
 <script nonce="${nonce}" data-config="${config}">${SHELL_RUNTIME}</script>
 </body>
@@ -13465,6 +14383,11 @@ function homeRoute(serving) {
           empty: false,
           notice,
           pollMs: LIMITS.shellPollMs,
+          pollWorkingMs: LIMITS.shellPollWorkingMs,
+          pollAfterAnswerMs: LIMITS.shellPollAfterAnswerMs,
+          working: false,
+          refreshSwapMs: LIMITS.refreshSwapMs,
+          grants: await describeGrants(serving.host, serving.grants, BUILTIN_HOME_ID),
           maxUploadBytes: LIMITS.uploadFileBytes,
           maxUploads: LIMITS.uploadsPerForm
         }
@@ -13505,10 +14428,10 @@ function shellRoute(serving) {
       const path = documentPathFrom(context);
       const session = await eligibleSession(serving, id);
       const page = path ? await serving.pages.load(id, path) : await loadUnlessUnwritten(serving, id);
-      const revision = page?.revision ?? EMPTY_REVISION;
+      const revision2 = page?.revision ?? EMPTY_REVISION;
       const stale = page?.stale ?? false;
       const now = serving.now();
-      const { token, payload } = mintActionToken({ session: id, revision, path, now }, serving.signingKey);
+      const { token, payload } = mintActionToken({ session: id, revision: revision2, path, now }, serving.signingKey);
       const nonce = randomBytes3(18).toString("base64url");
       const settings = serving.settings.current();
       const html = renderShell({
@@ -13519,7 +14442,7 @@ function shellRoute(serving) {
         chrome: { hostUrl: serving.hostSessionUrl(session), pinned: session.pinned, unread: session.unread },
         config: {
           actionToken: token,
-          pageRevision: revision,
+          pageRevision: revision2,
           expiresAt: payload.exp,
           documentUrl: serving.site.documentUrl(id, path),
           documentPath: path ?? ENTRY_DOCUMENT,
@@ -13534,6 +14457,11 @@ function shellRoute(serving) {
           empty: page === null,
           notice: null,
           pollMs: LIMITS.shellPollMs,
+          pollWorkingMs: LIMITS.shellPollWorkingMs,
+          pollAfterAnswerMs: LIMITS.shellPollAfterAnswerMs,
+          working: session.state === "working",
+          refreshSwapMs: LIMITS.refreshSwapMs,
+          grants: await describeGrants(serving.host, serving.grants, id),
           maxUploadBytes: LIMITS.uploadFileBytes,
           maxUploads: LIMITS.uploadsPerForm
         }
@@ -13717,20 +14645,8 @@ async function createPlugin(bb, options = {}) {
   const serving = {
     host,
     contributions,
-    // Strategy A cannot serve a sandboxed document's own files on an
-    // authenticated origin, so the document carries them. Delete this
-    // argument, and pages/inline.ts, once the host can authorise them.
-    pages: createPageStore(host, async (session, html, path) => {
-      const location = await host.sessions.storage(session);
-      return resolveOwnFiles(
-        html,
-        async (relativePath) => {
-          const file = await host.files.read(location, relativePath);
-          return file ? { bytes: file.bytes } : null;
-        },
-        directoryOf(path)
-      );
-    }),
+    // Every document goes through one pipeline: parts in, then own files carried. spec R5.56
+    pages: createPageStore(host, createAssembler(host)),
     settings,
     signingKey,
     site,
@@ -13740,6 +14656,7 @@ async function createPlugin(bb, options = {}) {
     submissions: createOutcomeMemory(),
     replies: createOutcomeMemory(),
     selections: createSelectionStore(),
+    grants: createGrantStore(host),
     hostSessionUrl: bbSessionUrl,
     now
   };

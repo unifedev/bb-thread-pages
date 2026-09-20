@@ -49,9 +49,12 @@ export interface EmbedManager {
 }
 
 export const EMBED_SANDBOX = "allow-scripts allow-forms";
+const DECLINED_COOLDOWN_MS = 10_000;
 
 /** What an embedded page may reach through the embedding page. Everything else is `unavailable`. spec R4.48 */
 const PASS_THROUGH: ReadonlySet<string> = new Set(["pages.open", "sessions.openHost", "navigation.openExternal", "sessions.snapshot", "projects.list", "providers.list"]);
+/** Of those, the ones that move the reader's view without a confirmation. */
+const NAVIGATES: ReadonlySet<string> = new Set(["pages.open", "sessions.openHost"]);
 const INSIDE_AN_EMBED: ReadonlySet<string> = new Set(["context.get", "session.reply", ...PASS_THROUGH]);
 
 const PLACEHOLDERS: Record<Exclude<EmbedStatus, "loading" | "shown">, string> = {
@@ -97,6 +100,7 @@ interface Embed {
   restore: { x: number; y: number } | null;
   calls: number[];
   answeredUntil: number;
+  declinedUntil: number;
   stopped: boolean;
   /** Shows a placeholder for good and is never read: a nested embed, or one too many. */
   inert: boolean;
@@ -129,15 +133,29 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     deps.setDirty(embeds.some((embed) => !embed.stopped && embed.dirty));
   }
 
-  /** The frame is configured by the kernel on every load, whatever the author set. spec R3.24, R4.43 */
+  /**
+   * The frame is configured by the kernel on every load, whatever the author
+   * set. It is taken out of the document while it changes: assigning `srcdoc`
+   * to a frame in place is a navigation, which adds an entry to the reader's
+   * history for every refresh (measured); a frame put back in gets a new
+   * browsing context, whose first load adds none. The element stays the
+   * author's element, in the same place. spec R3.24, R4.43, R4.50
+   */
   function load(embed: Embed, html: string): void {
     embed.port?.close?.();
     embed.port = null;
-    embed.frame.removeAttribute("src");
-    embed.frame.removeAttribute("allow");
-    embed.frame.setAttribute("sandbox", EMBED_SANDBOX);
-    embed.frame.setAttribute("referrerpolicy", "no-referrer");
-    embed.frame.srcdoc = html;
+    const frame = embed.frame;
+    const parent = frame.parentNode;
+    const next = frame.nextSibling;
+    if (parent) parent.removeChild(frame);
+    frame.removeAttribute("src");
+    frame.removeAttribute("allow");
+    frame.removeAttribute("name");
+    frame.removeAttribute("csp");
+    frame.setAttribute("sandbox", EMBED_SANDBOX);
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.srcdoc = html;
+    if (parent) parent.insertBefore(frame, next);
   }
 
   function placeholder(embed: Embed, status: Exclude<EmbedStatus, "loading" | "shown">, text = PLACEHOLDERS[status]): void {
@@ -224,7 +242,8 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     if (rotation >= all.length) rotation = 0;
     const batch = all.slice(rotation, rotation + size);
     rotation = rotation + size >= all.length ? 0 : rotation + size;
-    let again = all.length > size;
+    // More embeds than one call holds take turns: the rest of this round follows at once, the next round waits its tick.
+    let again = rotation !== 0;
     try {
       const pages = batch.map((embed) => ({
         sessionId: embed.sessionId,
@@ -287,6 +306,8 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
 
   async function answer(embed: Embed, body: Record<string, unknown>): Promise<{ delivery: unknown; duplicate: unknown }> {
     if (!embed.answerToken) throw Object.assign(new Error("This page is still loading; try again in a moment."), { code: "unavailable" });
+    // The reader said no a moment ago: an embedded page may not put the question straight back up.
+    if (Date.now() < embed.declinedUntil) throw Object.assign(new Error("You did not allow this page to send answers there. Try again in a moment."), { code: "cancelled" });
     try {
       const sent = (await deps.invoke("pages.answer", { answerToken: embed.answerToken, ...body })) as { delivery: unknown; duplicate: unknown };
       embed.answeredUntil = Date.now() + LIMITS.embedPollAfterAnswerMs;
@@ -294,6 +315,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       return sent;
     } catch (error) {
       // The embedded page moved on, or the token ran out: fetch what is current.
+      if (isRecord(error) && error.code === "cancelled") embed.declinedUntil = Date.now() + DECLINED_COOLDOWN_MS;
       if (isRecord(error) && (error.code === "stale_page" || error.code === "confirmation_invalid")) {
         if (error.code === "confirmation_invalid") embed.latest = null;
         soon();
@@ -302,10 +324,29 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     }
   }
 
-  async function bridge(embed: Embed, request: BridgeRequestMessage): Promise<void> {
+  /**
+   * One budget for everything an embedded page can make this page spend: its
+   * capability calls, its answers, and the reads a link or an accepted update
+   * causes. A refused call is not counted, so a page that floods recovers.
+   * spec R4.49
+   */
+  function allowed(embed: Embed): boolean {
     const now = Date.now();
-    embed.calls = embed.calls.filter((at) => now - at < 60_000);
-    if (embed.calls.push(now) > LIMITS.embedCallsPerMinute) {
+    if (embed.calls.length > 0 && now - (embed.calls[0] as number) >= 60_000) embed.calls = embed.calls.filter((at) => now - at < 60_000);
+    if (embed.calls.length >= LIMITS.embedCallsPerMinute) return false;
+    embed.calls.push(now);
+    return true;
+  }
+
+  /** Whether the reader has just acted, here or inside a frame of this page (activation reaches ancestors). */
+  function readerActed(): boolean {
+    const activation = (win.navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+    // An engine without the API cannot tell; links inside an embed must keep working there.
+    return activation ? activation.isActive : true;
+  }
+
+  async function bridge(embed: Embed, request: BridgeRequestMessage): Promise<void> {
+    if (!allowed(embed)) {
       reply(embed, makeFailure(request.id, "rate_limited", "Too many requests from this embedded page; try again shortly."));
       return;
     }
@@ -322,6 +363,10 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       } else if (request.method === "session.reply") {
         result = await answer(embed, { reply: request.params });
       } else if (PASS_THROUGH.has(request.method)) {
+        // An embedded page may not take the reader's whole view elsewhere by itself. spec R4.48
+        if (NAVIGATES.has(request.method) && !readerActed()) {
+          throw Object.assign(new Error("A page shown inside another page can only navigate when the reader clicks."), { code: "unavailable" });
+        }
         result = await deps.invoke(request.method, request.params);
       } else {
         throw Object.assign(new Error(`${request.method} is not available to a page shown inside another page.`), { code: "unavailable" });
@@ -335,6 +380,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
   async function submit(embed: Embed, data: Record<string, unknown>): Promise<void> {
     const submissionId = typeof data.submissionId === "string" ? data.submissionId : "";
     try {
+      if (!allowed(embed)) throw new Error("Too many requests from this embedded page; try again shortly.");
       // Uploads take the shell's token, which names the embedding page. spec R4.51
       if (Array.isArray(data.files) && data.files.length > 0) throw new Error(EMBEDDED_FILES_REFUSAL);
       const sent = await answer(embed, { form: { submissionId, title: data.title, answers: data.answers } });
@@ -347,7 +393,9 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
   function onEmbedMessage(embed: Embed, data: unknown): void {
     if (embed.stopped || !isRecord(data)) return;
     if (data.kind === "thread-page:dirty" || data.kind === "thread-page:clean") {
-      embed.dirty = data.kind === "thread-page:dirty";
+      // Dirt is what the reader typed. A page nobody has touched cannot hold this page's refresh hostage.
+      const sticky = (win.navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
+      embed.dirty = data.kind === "thread-page:dirty" && (sticky ? sticky.hasBeenActive : true);
       syncDirty();
       // What was only offered while the reader typed is shown once they are done.
       if (!embed.dirty && embed.updateAvailable) {
@@ -361,13 +409,14 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       return;
     }
     if (data.kind === "thread-page:apply-update") {
+      if (!embed.updateAvailable || !allowed(embed)) return;
       embed.reload = true;
       soon();
       return;
     }
     if (data.kind === "thread-page:open-document") {
       // A link to another document of the embedded page opens it here; no history entry. spec R4.50
-      if (!isDocumentPath(data.path) || data.path === embed.path) return;
+      if (!isDocumentPath(data.path) || data.path === embed.path || !allowed(embed)) return;
       embed.path = data.path;
       embed.shown = null;
       embed.latest = null;
@@ -468,6 +517,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
         restore: null,
         calls: [],
         answeredUntil: 0,
+        declinedUntil: 0,
         stopped: false,
         inert: false,
         lastState: "",

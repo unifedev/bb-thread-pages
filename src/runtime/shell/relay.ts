@@ -102,7 +102,9 @@ export function createRelay(deps: RelayDeps): Relay {
           return;
         }
         const second = await postBridge({ actionToken: config.actionToken, request, confirmation: confirm.challenge });
-        if (grant && isRecord(second) && isRecord(second.response) && second.response.ok === true) deps.onGranted?.(grant);
+        // The host records the grant when it accepts the challenge, whatever the answer itself then does.
+        const refusedChallenge = isRecord(second) && isRecord(second.response) && isRecord(second.response.error) && second.response.error.code === "confirmation_invalid";
+        if (grant && isRecord(second) && isRecord(second.response) && !refusedChallenge) deps.onGranted?.(grant);
         if (ANSWERS.has(request.method) && isRecord(second) && isRecord(second.response) && second.response.ok === true) deps.onAnswered?.();
         deliver(port, request, second);
         return;

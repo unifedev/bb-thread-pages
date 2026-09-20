@@ -82,6 +82,9 @@ export const LIMITS = Object.freeze({
   refreshSwapMs: 4_000,
   /** Parts a document includes, all levels together; one part; how deep a part may include. R1.23, D32 */
   includeParts: 200,
+  /** Include elements one document may hold, and unresolved ones it reports. */
+  includeElements: 400,
+  includeReports: 100,
   includePartBytes: 2 * 1024 * 1024,
   includeDepth: 3,
   /** `pages.read`: entries per call, and its own response bound. R5.56, R5.58, D29 */

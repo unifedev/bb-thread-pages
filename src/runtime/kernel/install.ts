@@ -189,7 +189,8 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   win.addEventListener("message", acceptPort, true);
 
   if (config.stale) readOnly.apply(true);
-  win.parent.postMessage({ kind: "thread-page:ready", version: HANDSHAKE_VERSION }, "*");
+  // The revision lets the shell notice a document newer than the token it holds for it.
+  win.parent.postMessage({ kind: "thread-page:ready", version: HANDSHAKE_VERSION, revision: config.pageRevision }, "*");
 
   return { deliver: (message) => onShellMessage(message), connect: (fake) => connect(fake as MessagePort) };
 }

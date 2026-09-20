@@ -13,7 +13,8 @@ export function installScroll(win: Window, report: (x: number, y: number) => voi
   const doc = win.document;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let last = "0,0";
-  let moved = false;
+  /** The reader acted on the new document themselves, so a pending restore gives way. */
+  let acted = false;
 
   function send(): void {
     timer = null;
@@ -29,25 +30,29 @@ export function installScroll(win: Window, report: (x: number, y: number) => voi
   win.addEventListener(
     "scroll",
     () => {
-      moved = true;
-      if (timer === null) timer = setTimeout(send, REPORT_MS);
+      // Once at once, then once more when it settles: a refresh may come at any moment.
+      if (timer !== null) return;
+      send();
+      timer = setTimeout(send, REPORT_MS);
     },
     { passive: true },
   );
+  // A scroll event cannot tell the reader's scrolling from a restore's own, so watch what causes one.
+  for (const type of ["wheel", "touchstart", "keydown", "mousedown"]) {
+    win.addEventListener(type, () => (acted = true), { passive: true, capture: true });
+  }
 
   return {
     restore(x, y) {
       if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) return;
-      moved = false;
+      acted = false;
       const go = () => {
-        // The reader has scrolled the new document themselves: leave them there.
-        if (moved) return;
+        if (acted) return;
         try {
           win.scrollTo(x, y);
         } catch {
           // Nothing to scroll.
         }
-        moved = false;
       };
       go();
       // The document may still be growing: try again as it completes.

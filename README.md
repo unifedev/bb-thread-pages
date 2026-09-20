@@ -32,18 +32,25 @@ verify it. Nothing here decides what the product should be.
   agent still has to write it. It creates no file, unless an operator has
   configured a seed of their own; there is no template, stylesheet or example.
 - `bb thread-page guide` — the authoring guide: forms and controls anywhere on
-  the page, own files and several documents, uploads, `window.threadPage`,
-  every capability, other services and servers, limits, and what the sandbox
-  silences.
+  the page, own files, several documents and parts, how an open page follows a
+  save, showing another session's page, uploads, `window.threadPage`, every
+  capability, other services and servers, limits, and what the sandbox silences.
 - `bb thread-page home [--clear]` — makes this session's page the home page,
   or returns to the built-in one.
 - `bb thread-page status` — settings, the exact instruction a new session
-  receives, and this session's page.
+  receives, this session's page, and what could not be carried into it.
+- `bb thread-page grants [--revoke <page> <target> | --revoke-all]` — which
+  pages may send the reader's answers to which sessions from an embed.
 
 The page root is the session's storage directory (`$BB_THREAD_STORAGE`):
 `index.html` is the page, any file beside it is served relatively (nested
 paths included), any other `.html` file is a document of the page that opens
-in place, and `uploads/` holds what the reader attaches.
+in place — except *parts*, HTML under a path segment starting with `_`, which a
+document includes at serve time with
+`<link rel="thread-page-include" href="_parts/*.html">` — and `uploads/` holds
+what the reader attaches. An open page follows a save in about two seconds while
+its session works, swapped in place. A page shows another session's page with
+`threadPage.embed(target, { sessionId })`.
 
 ## Layout
 
@@ -53,11 +60,12 @@ src/plugin.ts             composition root
 src/domain/               host-free: limits, errors, tokens, capabilities, submissions, HTML injection
 src/host/                 the host contract (spec 08) and its projected types
 src/bb/                   the bb adapter — the only package that imports the SDK's runtime shapes
-src/pages/                page layout, the page store (revision, offline copy), the site strategy
+src/pages/                page layout, the page store (revision, offline copy), the assembling
+                          pipeline (parts, then own files), the site strategy
 src/serving/              routes, the bridge dispatcher and capability handlers
 src/agent/                CLI, standing instruction, an operator's optional seed, generated guide
 src/home/                 the built-in home page (bundled by scripts/build-runtime.mjs)
-src/config/               the five settings
+src/config/               the six settings
 src/runtime/              browser code: the kernel (inside the sandboxed page) and the shell (trusted chrome)
 src/generated/            the bundled runtimes as string modules (committed; npm run build:runtime)
 test/                     vitest: domain, runtime (jsdom), serving (fake host), bb adapter, guide

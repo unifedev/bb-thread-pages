@@ -19,12 +19,19 @@ export interface Confirmer {
 
 const DEFAULT_WORDING: ConfirmWording = { heading: "Confirm this action", confirmLabel: "Confirm", cancelLabel: "Cancel" };
 
-export function createConfirmer(dialog: HTMLDialogElement): Confirmer {
+/**
+ * `armMs`: how long after a question appears its confirm button ignores a
+ * click, so a page cannot slide a question under a click the reader meant for
+ * something else. A question asked while one is open is declined, never
+ * swapped in.
+ */
+export function createConfirmer(dialog: HTMLDialogElement, armMs = 0): Confirmer {
   const text = dialog.querySelector("p");
   const heading = dialog.querySelector("h2");
   const cancel = dialog.querySelector<HTMLButtonElement>('button[value="cancel"]');
   const confirm = dialog.querySelector<HTMLButtonElement>('button[value="confirm"]');
   let active: ((approved: boolean) => void) | null = null;
+  let armedAt = 0;
   let gesture: (() => void) | undefined;
 
   function settle(approved: boolean): void {
@@ -48,6 +55,7 @@ export function createConfirmer(dialog: HTMLDialogElement): Confirmer {
   });
   confirm?.addEventListener("click", (event) => {
     event.preventDefault();
+    if (Date.now() < armedAt) return;
     settle(true);
   });
   dialog.addEventListener("cancel", (event) => {
@@ -61,7 +69,12 @@ export function createConfirmer(dialog: HTMLDialogElement): Confirmer {
   return {
     confirm(summary, onConfirmGesture, wording = DEFAULT_WORDING) {
       return new Promise((resolve) => {
-        if (active) settle(false);
+        // One question at a time: the open one stays as it is, under the reader's cursor.
+        if (active) {
+          resolve(false);
+          return;
+        }
+        armedAt = Date.now() + armMs;
         if (text) text.textContent = summary;
         if (heading) heading.textContent = wording.heading;
         if (confirm) confirm.textContent = wording.confirmLabel;

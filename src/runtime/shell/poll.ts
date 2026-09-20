@@ -26,10 +26,14 @@ export interface Poller {
   /** The reader just answered from the page: poll at the working cadence for a while. spec R2.17a */
   expectChange(): void;
   isDirty(): boolean;
+  /** Offers the new version instead of showing it: the reader began typing while it loaded. spec R2.21 */
+  offer(): void;
   /** For tests: run one poll now. */
   pollNow(): Promise<void>;
   isStopped(): boolean;
 }
+
+const OFFER = "Page changed — reload when ready";
 
 export function createPoller(win: Window, config: ShellConfig, view: PollView, fetchImpl: typeof fetch = win.fetch.bind(win)): Poller {
   let etag = `"${config.pageRevision}"`;
@@ -42,6 +46,8 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
   let controller: AbortController | null = null;
   let working = config.working;
   let answeredUntil = 0;
+  /** A new version is being offered to a dirty page; the offer stays up until it is taken. spec R2.21 */
+  let offered = false;
 
   /** Two cadences on the one poll: fast while a change is likely. spec R2.17a, D28 */
   function interval(): number {
@@ -68,7 +74,8 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
 
   function newVersion(): void {
     if (dirty) {
-      view.setStatus("Page changed — reload when ready", true);
+      offered = true;
+      view.setStatus(OFFER, true);
       view.showReload(true);
     } else {
       view.refreshDocument();
@@ -118,7 +125,8 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
         view.onStaleChanged(stale);
       }
       const empty = response.headers.get("x-thread-page-empty") === "true";
-      view.setStatus(stale ? "Offline copy — read-only" : empty ? EMPTY_PAGE_STATUS : (config.notice ?? ""), stale);
+      if (offered && !stale) view.setStatus(OFFER, true);
+      else view.setStatus(stale ? "Offline copy — read-only" : empty ? EMPTY_PAGE_STATUS : (config.notice ?? ""), stale);
       const next = response.headers.get("etag");
       if (next && next !== etag) {
         etag = next;
@@ -142,6 +150,16 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
     start: () => schedule(interval()),
     setDirty: (next) => {
       dirty = next;
+      // Nothing left to protect: what was only offered is shown. spec R2.21
+      if (!dirty && offered && !stopped) {
+        offered = false;
+        view.refreshDocument();
+      }
+    },
+    offer: () => {
+      offered = true;
+      view.setStatus(OFFER, true);
+      view.showReload(true);
     },
     isDirty: () => dirty,
     expectChange: () => {
@@ -153,6 +171,7 @@ export function createPoller(win: Window, config: ShellConfig, view: PollView, f
       etag = `"${config.pageRevision}"`;
       lastStale = config.stale;
       dirty = false;
+      offered = false;
       stopped = false;
       polling = false;
       schedule(interval());

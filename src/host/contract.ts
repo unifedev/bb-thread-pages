@@ -52,9 +52,11 @@ export interface SessionHost {
     /**
      * Names of the regular files directly inside a directory of a storage
      * location ("" is its root), symbolic links not followed; empty when the
-     * directory does not exist. spec R8.11a
+     * directory does not exist; null when the host cannot say for sure (its
+     * listing was cut short), so a pattern is left as written rather than half
+     * honoured. spec R8.11a
      */
-    list(location: StorageLocation, relativeDirectory: string): Promise<string[]>;
+    list(location: StorageLocation, relativeDirectory: string): Promise<string[] | null>;
     /** `exists` when `onlyIfAbsent` is set and the file is already there. */
     write(location: StorageLocation, relativePath: string, bytes: Uint8Array, options: { onlyIfAbsent: boolean }): Promise<WriteOutcome>;
     /** Which of the given absolute paths exist on a host, in one batched call where possible. */
