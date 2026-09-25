@@ -41,7 +41,7 @@ describe("the authoring guide", () => {
     expect(coreGuide).toContain("What you get when you say nothing");
     expect(coreGuide).toContain("Pages have internet access");
     expect(coreGuide).toContain("`window.prompt`, `alert`, `confirm`");
-    expect(coreGuide).toContain("**`window.open(url)`**");
+    expect(coreGuide).toContain("**`window.open(url)`** from a click handler");
     expect(coreGuide).toContain("Your page is yours alone");
     expect(coreGuide).toContain("data-thread-page-manual");
     expect(coreGuide).toContain("uploads/");
@@ -71,7 +71,7 @@ describe("the authoring guide", () => {
 
     const embedding = section(coreGuide, "## Showing another session's page", "## window.threadPage");
     expect(embedding).toContain("window.threadPage.embed(target, { sessionId, path, onState })");
-    expect(embedding).toContain('`sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"`');
+    expect(embedding).toContain('`sandbox="allow-scripts allow-forms allow-popups allow-downloads"`');
     expect(embedding).toContain('`allow="fullscreen *"`');
     expect(embedding).toMatch(new RegExp(`every ${LIMITS.embedPollWorkingMs / 1000} s while an embedded session is working`));
     expect(embedding).toMatch(/checked in one call\s+per tick/);
@@ -94,9 +94,8 @@ describe("the authoring guide", () => {
   // sites and large media, with numbers, and nothing left that became false. R6.25
   it("explains links, windows, downloads, own files, full screen, other sites and large media, and drops what became false", () => {
     const affordances = section(coreGuide, "## Links, windows, downloads and full screen", "## Other sites in a frame");
-    expect(affordances).toMatch(/opens in a \*\*new tab\*\*, with no dialog,\s+whatever its `target`/);
-    expect(affordances).toContain("**`window.open(url)`** works from a click handler");
-    expect(affordances).toMatch(/called without one, the reader is asked\s+first/);
+    expect(affordances).toMatch(/\*\*asks the reader\*\* in the top bar's dialog/);
+    expect(affordances).toMatch(/that window \*\*stays sandboxed\*\*/);
     expect(affordances).toContain("**`mailto:` and `tel:`**");
     expect(affordances).toContain("`URL.createObjectURL(blob)`");
     expect(affordances).toContain("`element.requestFullscreen()`");
@@ -117,7 +116,7 @@ describe("the authoring guide", () => {
     expect(files).toContain('`<a href="clip.mp4" download="Our clip.mp4">`');
     expect(coreGuide).toContain(`| Large media fetched for the reader | up to ${LIMITS.shellFetchBytes / (1024 * 1024)} MiB per file`);
 
-    for (const stale of ["frame-src 'none'", "a frame with a URL is blocked", "a page has no popups", "goes through the usual confirmation", "What the sandbox silences", "routes it through `navigation.openExternal`, which confirms"]) {
+    for (const stale of ["frame-src 'none'", "a frame with a URL is blocked", "a page has no popups", "What the sandbox silences", "with no dialog,\n  whatever its", "popups-to-escape"]) {
       expect(coreGuide, stale).not.toContain(stale);
     }
   });

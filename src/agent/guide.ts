@@ -330,7 +330,7 @@ What the host does for you, with no further code:
   offered inside the embed, and your page counts as dirty meanwhile, so your own
   refresh waits too;
 - follows its links: one to another document of that page opens in the embed,
-  an \`https:\` link opens in a new tab as it does in your page;
+  an \`https:\` link goes through the usual confirmation;
 - shows a short line of its own when there is nothing to show — no such
   session, archived, no page yet, too large, unreachable — and keeps checking.
 
@@ -556,9 +556,9 @@ with \`storage.set\`. That works whenever the service answers a cross-origin
 request from \`Origin: null\`, and many APIs do; an unauthenticated call that
 comes back as a readable 401 tells you the origin is accepted. Two things do
 not work, and the host offers no mechanism for either, by design: a sign-in
-flow that sends the reader to a login page and back (a popup opens, but the
-flow has nowhere to return to — your page's origin is \`null\`, it has no
-top-level navigation, and login pages refuse to load in a frame), and an SDK
+flow that sends the reader to a login page and back (your page's own popups
+stay sandboxed, its origin is \`null\` so the flow has nowhere to return to, it
+has no top-level navigation, and login pages refuse to load in a frame), and an SDK
 that checks a registered JavaScript origin, because \`null\` cannot be
 registered.
 
@@ -583,17 +583,19 @@ bugs to work around.`;
 
 const browserAffordances = () => `## Links, windows, downloads and full screen
 
-They work as on any website, on the reader's click:
+On the reader's click:
 
-- **Links.** Any \`<a href="https://…">\` opens in a **new tab**, with no dialog,
-  whatever its \`target\`; a link with no target does not replace your page.
-  The new tab is the site itself, on its own origin, signed in as the reader is.
-- **\`window.open(url)\`** works from a click handler and returns the window,
-  which is on the site's origin, so you cannot read it. Without a click the
-  browser blocks it, as it would anywhere.
-- **\`navigation.openExternal\`** still works for pages written against it: during
-  a click it opens with no dialog; called without one, the reader is asked
-  first, in the top bar's dialog naming the destination.
+- **Links.** Any \`<a href="https://…">\` works, whatever its \`target\`: the host
+  intercepts the click and routes it through \`navigation.openExternal\`, which
+  **asks the reader** in the top bar's dialog, naming the destination, and then
+  opens the site in a **new tab** as itself, signed in as the reader is. Your
+  page is never replaced. Call \`navigation.openExternal\` yourself from script
+  for the same thing.
+- **\`window.open(url)\`** from a click handler opens a window, with no dialog —
+  but that window **stays sandboxed**: the site in it has no cookies and no
+  storage, as in a frame. Fine for a plain page or a document you built;
+  use a link or \`navigation.openExternal\` for a site the reader must use as
+  themselves. Without a click the browser blocks it, as it would anywhere.
 - **\`mailto:\` and \`tel:\`** links hand off to the reader's mail and phone apps.
 - **Downloads.** A file your page builds downloads the usual way: make a
   \`Blob\`, point an \`<a download="name.csv">\` at \`URL.createObjectURL(blob)\`, click

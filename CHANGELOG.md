@@ -6,20 +6,22 @@ Implements spec 1.4 (`bartsoj/bb-thread-pages`, DECISIONS D33–D37). Existing
 pages keep working; `window.threadPage.version` and the bridge protocol stay
 `1`.
 
-### Links and windows work as on any website (D34)
+### Popups and downloads, sandboxed (D34, option D)
 
 - The page frame and every embed frame are sandboxed
-  `allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads`
-  (the document CSP says the same). `allow-same-origin`, top navigation and
-  modals stay refused.
-- A link to another site opens in a **new tab with no confirmation**, whatever
-  its `target`; a link without one no longer replaces the page. The new tab is
-  the site on its own origin.
-- `window.open` works natively on a click. `navigation.openExternal` opens with
-  no dialog during a click; without one it still asks, as before.
-- `mailto:` and `tel:` hand off to the reader's apps. A `blob:`/`data:` download
-  the page builds is saved (Chromium and WebKit; WebKit also needed `blob:`
-  and `data:` in the shell's `frame-src`).
+  `allow-scripts allow-forms allow-popups allow-downloads` (the document CSP
+  says the same). `allow-popups-to-escape-sandbox` is refused, as are
+  `allow-same-origin`, top navigation and modals.
+- `window.open` and a `target` the page opens itself now work on a click, but
+  the window **stays sandboxed** on an opaque origin: it holds nothing of the
+  host's, whatever URL it shows.
+- A link to another site keeps 1.5.0's path: `navigation.openExternal`, the
+  reader confirms, and the shell opens the site as itself. No-dialog links wait
+  until bb serves no file of a page unsandboxed on its origin (spec R8.33,
+  X37).
+- `mailto:` and `tel:` open a popup of the reader's handler, never in place of
+  the page. A `blob:`/`data:` download the page builds is saved (Chromium and
+  WebKit; WebKit also needed `blob:` and `data:` in the shell's `frame-src`).
 
 ### A page's own files: opened and downloaded by the shell (D33)
 
@@ -51,14 +53,15 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
   `bb thread-page status` as "fetched by the shell". Delete when bb lands
   #1632, #3617 and #4339.
 
-### Known: a popup can reach bb's raw file route
+### Why the popups stay sandboxed
 
-- A popup escapes the sandbox, so page script can open any URL of the host in
-  an unsandboxed tab. bb 0.43.4's thread-storage route serves `.svg` and `.xml`
-  inline with no `sandbox` CSP (only `.html` gets one), so an agent-written SVG
-  opened that way runs script on the host's origin with the reader's
-  credential (measured on a harness that serves files the way bb does). The fix
-  is bb's: a `sandbox` CSP on every raw file response.
+- bb 0.43.4's thread-storage route serves `.svg` and `.xml` inline with no
+  `sandbox` CSP (only `.html` gets one). With popups that escape the sandbox,
+  page script could open such a file on the host's origin with the reader's
+  credential; measured on a harness that serves files as bb does. With the
+  popup sandboxed the same window has an opaque origin and holds nothing. The
+  fix that would allow no-dialog links is bb's: a `sandbox` CSP on every raw
+  file response.
 
 ## 1.5.0 — 2026-09-20 — refresh in place, embedded pages, parts
 

@@ -6,7 +6,6 @@ import { createDirtyTracker } from "./dirty.ts";
 import { createEmbedManager, EMBEDDED_FILES_REFUSAL } from "./embed.ts";
 import { buildIntent, formsReachedFrom, isManualForm, lockForm, ownerForm, prepareForm, statusLine, unlockForm, type PendingForm } from "./forms.ts";
 import { createLargeMedia } from "./large-media.ts";
-import { openExternalNatively } from "./open-external.ts";
 import { createReadOnlyController } from "./readonly.ts";
 import { installScroll } from "./scroll.ts";
 import { createUpdateOffer } from "./update-offer.ts";
@@ -61,8 +60,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
 
   installApi(win, {
     version: 1,
-    // On the reader's click the browser opens it, with no dialog; otherwise the host confirms. spec R5.34a, D34
-    invoke: (method, params) => (method === "navigation.openExternal" && openExternalNatively(win, params) ? Promise.resolve({ opened: true }) : bridge.invoke(method, params)),
+    invoke: (method, params) => bridge.invoke(method, params),
     watch: (method, params, listener, options) => bridge.watch(method, params, listener, options),
     setDirty: (value) => dirty.setCustom(value !== false),
     embed: (target, options) => embeds.embed(target, options),
@@ -136,7 +134,10 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       file: (path, download, name) => {
         post({ kind: "thread-page:open-file", path, download, name });
       },
-      // Inside the reader's click, so the browser allows it; the new window is on the site's own origin. D34
+      external: (url, label) => {
+        void bridge.invoke("navigation.openExternal", label ? { url, label } : { url }).catch(() => undefined);
+      },
+      // A popup of the reader's handler (mailto:, tel:), inside the click; it stays sandboxed. D34
       newTab: (url) => {
         try {
           win.open(url, "_blank", "noopener,noreferrer");

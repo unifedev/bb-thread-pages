@@ -24,7 +24,7 @@ describe("the shell", () => {
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(response.headers.get("content-security-policy")).toMatch(/script-src 'nonce-/);
-    expect(html).toContain('sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" allow="fullscreen *"');
+    expect(html).toContain('sandbox="allow-scripts allow-forms allow-popups allow-downloads" allow="fullscreen *"');
     // The shell hands its own files address to the runtime, for own-file links and large media. D33, D37
     expect(html).toContain("&quot;filesUrl&quot;:&quot;/api/v1/threads/thr_a/thread-storage/files/&quot;");
     expect(html).toContain("data-config=");

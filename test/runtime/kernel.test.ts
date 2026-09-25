@@ -363,17 +363,12 @@ describe("anchors", () => {
     // Inside an embed the shell is not this page's: its own files are refused, visibly in the guide. R4.50
     expect(decideAnchor(anchor("data.json"), documentUrl, base, base, true)).toEqual({ kind: "block" });
     expect(decideAnchor(anchor("other.html"), documentUrl, base, base, true)).toEqual({ kind: "document", path: "other.html" });
-    // Other sites: a new tab unless the author already named a window. D34
-    expect(decideAnchor(anchor("https://github.com/x/y", "Repo"), documentUrl, base)).toEqual({ kind: "new-tab", url: "https://github.com/x/y" });
-    for (const target of ["_self", "_top", "_parent", " _TOP "]) {
-      const link = anchor("https://example.com/");
+    // Other sites: through the confirmed capability, whatever the target; the page's own popups stay sandboxed. D34 (option D)
+    expect(decideAnchor(anchor("https://github.com/x/y", "Repo"), documentUrl, base)).toEqual({ kind: "external", url: "https://github.com/x/y", label: "Repo" });
+    for (const target of ["_self", "_top", "_blank", "docs"]) {
+      const link = anchor("https://example.com/", "E");
       link.setAttribute("target", target);
-      expect(decideAnchor(link, documentUrl, base), target).toEqual({ kind: "new-tab", url: "https://example.com/" });
-    }
-    for (const target of ["_blank", "docs"]) {
-      const link = anchor("https://example.com/");
-      link.setAttribute("target", target);
-      expect(decideAnchor(link, documentUrl, base), target).toEqual({ kind: "default" });
+      expect(decideAnchor(link, documentUrl, base), target).toEqual({ kind: "external", url: "https://example.com/", label: "E" });
     }
     // The reader's own handlers, and files the page built. D34
     expect(decideAnchor(anchor("mailto:a@b.c"), documentUrl, base)).toEqual({ kind: "new-tab", url: "mailto:a@b.c" });
@@ -401,17 +396,15 @@ describe("anchors", () => {
     return event;
   }
 
-  it("opens another site in a new tab on click, with no capability call and no dialog (D34)", () => {
+  it("routes a click on another site's link through navigation.openExternal, whatever its target (R4.15, D34 option D)", () => {
     const { posted } = install(`<head></head><body><a id="ext" href="https://example.com/docs">Docs</a><a id="blank" href="https://example.com/b" target="_blank">B</a></body>`);
     const open = vi.fn(() => null);
     window.open = open as never;
     expect(click(document.getElementById("ext")!).defaultPrevented).toBe(true);
-    expect(open).toHaveBeenCalledWith("https://example.com/docs", "_blank", "noopener,noreferrer");
-    // A link that already opens a window is the browser's own; a modified click keeps its meaning.
-    expect(click(document.getElementById("blank")!).defaultPrevented).toBe(false);
-    expect(click(document.getElementById("ext")!, { metaKey: true }).defaultPrevented).toBe(false);
-    expect(open).toHaveBeenCalledTimes(1);
-    expect(posted.messages.some((entry) => (entry as { method?: string }).method === "navigation.openExternal")).toBe(false);
+    expect(click(document.getElementById("blank")!, { metaKey: true }).defaultPrevented).toBe(true);
+    expect(open).not.toHaveBeenCalled();
+    const sent = posted.messages.filter((entry) => (entry as { method?: string }).method === "navigation.openExternal") as { params: unknown }[];
+    expect(sent.map((entry) => entry.params)).toEqual([{ url: "https://example.com/docs", label: "Docs" }, { url: "https://example.com/b", label: "B" }]);
   });
 
   it("hands a link to one of the page's own files to the shell, with the download name (D33)", () => {
@@ -422,22 +415,14 @@ describe("anchors", () => {
     expect(posted.messages).toContainEqual({ kind: "thread-page:open-file", path: "clip.mp4", download: true, name: "Alua.mp4" });
   });
 
-  it("opens navigation.openExternal natively during the reader's click, and asks the host otherwise (D34)", async () => {
+  it("sends navigation.openExternal to the host, which confirms, even during a click (D34 option D)", async () => {
     const { posted, api } = install(`<head></head><body></body>`);
     const open = vi.fn(() => null);
     window.open = open as never;
-    const activation = { isActive: true, hasBeenActive: true };
-    Object.defineProperty(window.navigator, "userActivation", { value: activation, configurable: true });
-    await expect(api.invoke("navigation.openExternal", { url: "https://example.com/a", label: "A" })).resolves.toEqual({ opened: true });
-    expect(open).toHaveBeenCalledWith("https://example.com/a", "_blank", "noopener,noreferrer");
-    // Parameters the host would reject are the host's to reject, with its own error.
-    void api.invoke("navigation.openExternal", { url: "javascript:alert(1)" }).catch(() => undefined);
-    void api.invoke("navigation.openExternal", { url: "https://example.com/", extra: 1 }).catch(() => undefined);
-    activation.isActive = false;
-    void api.invoke("navigation.openExternal", { url: "https://example.com/b" }).catch(() => undefined);
-    expect(open).toHaveBeenCalledTimes(1);
-    const sent = posted.messages.filter((entry) => (entry as { method?: string }).method === "navigation.openExternal") as { params: unknown }[];
-    expect(sent.map((entry) => entry.params)).toEqual([{ url: "javascript:alert(1)" }, { url: "https://example.com/", extra: 1 }, { url: "https://example.com/b" }]);
+    Object.defineProperty(window.navigator, "userActivation", { value: { isActive: true, hasBeenActive: true }, configurable: true });
+    void api.invoke("navigation.openExternal", { url: "https://example.com/a", label: "A" }).catch(() => undefined);
+    expect(open).not.toHaveBeenCalled();
+    expect(posted.messages.some((entry) => (entry as { method?: string }).method === "navigation.openExternal")).toBe(true);
   });
 
   it("asks the shell to open another document of the page on click", () => {

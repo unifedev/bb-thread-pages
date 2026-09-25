@@ -44,9 +44,11 @@ for bb's file route that answers as bb 0.43.4 does.
 
 `GATE=1` imitates bb Connect's edge: every request needs a `SameSite=Lax`
 cookie set by `/login`, so a request from the sandboxed frame fails as it does
-remotely. `PROBE_SVG=1` adds an SVG that, opened on the host's origin, reads the
-shell — the bb-side finding recorded in `CHANGELOG.md` 1.6.0.
+remotely. `PROBE_SVG=1` adds an SVG that tries to read the shell when a window
+the page opens shows it — the bb-side issue in `CHANGELOG.md` 1.6.0 (X37). The
+check passes when that window gets origin `null` and no token.
 
-Results of 25 September 2026: Chromium and WebKit, 23 of 23 plain and 24 of 24
-gated over https; the SVG probe read a token in both.
+Results of 25 September 2026, option D (popups sandboxed, links confirmed):
+Chromium and WebKit, 23 of 23 plain and 25 of 25 gated over https. With
+popups that escaped the sandbox, the same probe read a token in both engines.
 

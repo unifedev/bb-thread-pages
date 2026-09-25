@@ -4,26 +4,24 @@ import { downloadName, isOwnFilePath } from "../../domain/own-files.ts";
 /**
  * Authored links work. spec R4.15, R4.15a, R4.15b, DECISIONS D33, D34
  *
- * The page frame may open popups that escape the sandbox, so a link to
- * another site needs no help: it opens in a new tab on the reader's click,
- * natively, with no confirmation. The kernel only makes sure it is a new tab —
- * a link with no target (or `_self`, `_parent`, `_top`) would otherwise
- * replace the page inside the frame. `mailto:` and `tel:` open the same way,
- * as a popup of the reader's handler (a browser with no handler would put its
- * error page in place of the page), and a download of a `blob:`/`data:` URL
- * the page built is the browser's own.
+ * A link to another site is routed through `navigation.openExternal`: the
+ * reader confirms in trusted chrome and the shell opens the site as itself.
+ * The page's own popups stay sandboxed (option D), so this is how a site gets
+ * its cookies — and why it asks: no-dialog links wait until the host serves
+ * no file of a page unsandboxed on its origin (spec R8.33, X37).
  *
- * What the browser cannot do from an opaque origin is the page's own files:
- * a request from the frame carries no credential, and `download` is ignored
- * across origins. So a link to another document of the page asks the shell to
- * open it in place, and a link to any other file of the page asks the shell
- * to download it (`download`) or open it in a new tab — the shell does both
- * from its own origin, which carries the reader's credential.
+ * The page's own files: a link to another document of the page asks the shell
+ * to open it in place, and a link to any other file asks the shell to download
+ * it (`download`) or open it in a new tab, from its own origin with the
+ * reader's credential (D33). `mailto:`/`tel:` open a popup of the reader's
+ * handler, never in place of the page, and a download of a `blob:`/`data:` URL
+ * the page built is the browser's own.
  */
 export type AnchorDecision =
   | { kind: "default" }
   | { kind: "document"; path: string }
   | { kind: "file"; path: string; download: boolean; name: string | null }
+  | { kind: "external"; url: string; label: string }
   | { kind: "new-tab"; url: string }
   | { kind: "block" };
 
@@ -64,7 +62,9 @@ export function decideAnchor(anchor: HTMLAnchorElement, documentUrl: string, sit
     if (embedded) return { kind: "block" };
     return { kind: "file", path, download, name: download ? downloadName(anchor.getAttribute("download")) : null };
   }
-  return inPlace ? { kind: "new-tab", url: target.href } : { kind: "default" };
+  // Another site: confirmed, then opened by the shell as itself, whatever the target. The page's own popups
+  // stay sandboxed, so this is the one way to the site with its cookies. R4.15, D34 (option D)
+  return { kind: "external", url: target.href, label: (anchor.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160) };
 }
 
 function isRelativeReference(raw: string): boolean {
@@ -85,6 +85,7 @@ function pathWithin(target: URL, siteRoot: string): string | null {
 export interface AnchorHandlers {
   document(path: string): void;
   file(path: string, download: boolean, name: string | null): void;
+  external(url: string, label: string): void;
   newTab(url: string): void;
 }
 
@@ -101,11 +102,10 @@ export function installAnchorInterception(doc: Document, handlers: AnchorHandler
       const root = siteRoot ? new URL(siteRoot, doc.baseURI).href : siteBase;
       const decision = decideAnchor(anchor, doc.baseURI, siteBase, root, embedded);
       if (decision.kind === "default") return;
-      // A modified click on a link to another site keeps the browser's meaning (a background tab, a window).
-      if (decision.kind === "new-tab" && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
       event.preventDefault();
       if (decision.kind === "document") handlers.document(decision.path);
       else if (decision.kind === "file") handlers.file(decision.path, decision.download, decision.name);
+      else if (decision.kind === "external") handlers.external(decision.url, decision.label);
       else if (decision.kind === "new-tab") handlers.newTab(decision.url);
     },
     true,

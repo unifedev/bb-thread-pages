@@ -398,7 +398,7 @@ export const navigationOpenExternal = spec({
   validateResult: openedResult,
   doc: {
     params: "`{ url, label? }` — http or https only.",
-    result: "`{ opened: true }`. Called during the reader's click, the URL opens in a new tab with no dialog; called without one, the host asks the reader first, naming the destination origin. An ordinary `<a href=\"https://…\">` needs neither: it opens in a new tab by itself.",
+    result: "`{ opened: true }`. The confirmation names the destination origin; the site then opens in a new tab as itself. An ordinary `<a href=\"https://…\">` in your page goes through this automatically.",
   },
 });
 

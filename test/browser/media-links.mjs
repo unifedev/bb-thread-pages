@@ -87,14 +87,34 @@ async function expectDownload(what, click, name, bytes) {
   }
 }
 
-await expectPage("A106 a link with no target opens a new tab, no dialog", () => inner.locator("#plain").click(), async (_, url) => ({ pass: url.startsWith("https://example.com"), why: url }));
-await expectPage("A106 a target=_blank link opens a new tab, no dialog", () => inner.locator("#blank").click(), async (_, url) => ({ pass: /wikipedia\.org/.test(url), why: url }));
-await expectPage("A107 window.open on a click opens a window on the site's own origin", () => inner.locator("#wopen").click(), async (popup, url) => {
+// Option D: a link to another site asks in the shell's dialog, then the shell opens the site as itself.
+async function expectConfirmedPage(what, click, expected) {
+  const before = frame().url();
+  try {
+    await click();
+    const summary = await shell.locator("dialog[open] p").textContent({ timeout: 4000 });
+    await sleep(500); // the confirm button is armed after 400 ms
+    const [popup] = await Promise.all([context.waitForEvent("page", { timeout: 6000 }), shell.locator("dialog[open] button[value=confirm]").click()]);
+    // The shell reserves the tab during the Confirm click (about:blank), then sends it to the site.
+    await popup.waitForURL((url) => url.protocol === "https:", { timeout: 10000 }).catch(() => undefined);
+    await popup.waitForLoadState("domcontentloaded").catch(() => undefined);
+    const url = popup.url();
+    const origin = await popup.evaluate(() => self.origin).catch((error) => `ERR ${error.message}`);
+    await popup.close();
+    const stayed = frame()?.url() === before && shell.url() === shellUrl;
+    ok(what, url.startsWith(expected) && origin === new URL(expected).origin && stayed, `dialog: "${summary}"; ${url}, origin ${origin} (unsandboxed); page stayed: ${stayed}`);
+  } catch (error) {
+    ok(what, false, String(error.message).split("\n")[0]);
+  }
+}
+await expectConfirmedPage("A106 a link with no target asks, then opens the site as itself in a new tab", () => inner.locator("#plain").click(), "https://example.com");
+await expectConfirmedPage("A106 a target=_blank link asks, then opens the site as itself in a new tab", () => inner.locator("#blank").click(), "https://www.wikipedia.org");
+await expectPage("A107 window.open on a click opens a window that stays sandboxed (origin null)", () => inner.locator("#wopen").click(), async (popup, url) => {
   const origin = await popup.evaluate(() => self.origin).catch((error) => `ERR ${error.message}`);
-  return { pass: url.startsWith("https://example.org") && origin === "https://example.org", why: `${url} origin ${origin}` };
+  return { pass: url.startsWith("https://example.org") && origin === "null", why: `${url} origin ${origin}` };
 });
 ok("A107 fixture verdict", /PASS/.test(await verdict("A107", 5000)), await verdict("A107", 100));
-await expectPage("A108 navigation.openExternal on a click: no dialog", () => inner.locator("#oext").click(), async (_, url) => ({ pass: url.startsWith("https://example.net"), why: url }));
+await expectConfirmedPage("A108 navigation.openExternal on a click asks, then opens", () => inner.locator("#oext").click(), "https://example.net");
 await expectDownload("A110 a blob: download the page builds is saved", () => inner.locator("#csv").click(), "rows.csv");
 await expectDownload("A111 an own file with download is saved under the attribute's name", () => inner.locator("#dl").click(), "Fixture 10 clip.mp4", 2497769);
 {
@@ -190,7 +210,8 @@ await sleep(2000);
     try { out.push(`token:${String(window.__shellPopup.document.querySelector("script[data-config]"))}`); } catch (error) { out.push(`token:${error.name}`); }
     return out.join(" ");
   });
-  ok("A117 a popup of the host's shell cannot be reached from the page", /document:SecurityError/.test(reach) && /token:SecurityError/.test(reach), reach);
+  const popupOrigin = await popup.evaluate(() => self.origin).catch((error) => `ERR ${error.message}`);
+  ok("A117 a popup of the host's shell cannot be reached from the page, and is itself sandboxed", /document:SecurityError/.test(reach) && /token:SecurityError/.test(reach) && popupOrigin === "null", `${reach}; popup origin ${popupOrigin}`);
   await popup.close();
 }
 if (process.env.PROBE_SVG === "1") {
@@ -202,10 +223,12 @@ if (process.env.PROBE_SVG === "1") {
     await popup.waitForLoadState("load").catch(() => undefined);
     await sleep(1500);
     const title = await popup.evaluate(() => document.querySelector("title")?.textContent ?? "").catch((error) => `EVAL ${error.message}`);
-    ok("FINDING a popup can open an agent-written SVG on the host's origin, where it reads the shell (bb's raw file route serves SVG unsandboxed)", null, `title: ${title}`);
+    const origin = await popup.evaluate(() => self.origin).catch((error) => `ERR ${error.message}`);
+    const token = /^probe:[A-Za-z0-9_-]{12}$/.test(title);
+    ok("X37 an agent-written SVG opened by the page gets no host authority (popup origin null, no token)", origin === "null" && !token, `origin ${origin}; title: ${title}`);
     await popup.close();
   } catch (error) {
-    ok("FINDING probe", null, String(error.message).split("\n")[0]);
+    ok("X37 SVG probe", false, String(error.message).split("\n")[0]);
   }
 }
 
