@@ -105,6 +105,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (transcribe === "large") state.transcribeError = new PageError("request_too_large", "The recording is longer than this host's transcription service accepts");
     const text = url.searchParams.get("text");
     if (text !== null) state.transcript = text;
+    const longText = Number(url.searchParams.get("longText") ?? "0");
+    if (longText > 0) state.transcript = "word ".repeat(Math.ceil(longText / 5)).slice(0, longText);
     if (url.searchParams.has("attachFail")) {
       const name = url.searchParams.get("attachFail") ?? "";
       state.attachFailure = name ? { name, error: new PageError("handler_error", "The host could not store the file") } : null;

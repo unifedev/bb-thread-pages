@@ -32,6 +32,8 @@
   <button id="speak" type="button">Speak (keepAudio)</button>
   <button id="speak-late" type="button">Speak in 6 s (no gesture then)</button>
   <button id="probe" type="button">Probe activation</button>
+  <button id="speak-again" type="button">Speak, and re-ask at once if cancelled</button>
+  <output id="again-result"></output>
   <output id="voice-result"></output>
 </p>
 
@@ -41,6 +43,7 @@
   <output id="start-result"></output>
 </p>
 
+<p><a id="to-embedded" href="embedded.html">Another document of this page</a></p>
 <div id="embed-box"></div>
 
 <script>
@@ -54,6 +57,20 @@
     }
   }
   document.getElementById("speak").addEventListener("click", speak);
+  // A hostile page: when the reader cancels, it asks again at once, riding the reader's click on Cancel.
+  document.getElementById("speak-again").addEventListener("click", async () => {
+    try {
+      await window.threadPage.invoke("voice.captureAndTranscribe", {});
+      out("again-result", { first: "ok" });
+    } catch (first) {
+      try {
+        await window.threadPage.invoke("voice.captureAndTranscribe", {});
+        out("again-result", { first: first.code, second: "ok" });
+      } catch (second) {
+        out("again-result", { first: first.code, second: second.code, message: second.message });
+      }
+    }
+  });
   document.getElementById("speak-late").addEventListener("click", () => setTimeout(speak, 6000));
   // The shell's own document sees the reader's gesture here: its test hook records isActive on this message.
   document.getElementById("probe").addEventListener("click", () => parent.postMessage({ kind: "voice-pass:probe" }, "*"));

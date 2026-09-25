@@ -94,6 +94,8 @@ async function output(id, frame = pageFrame(), timeout = 15_000) {
 async function clearOutput(id, frame = pageFrame()) {
   await frame.evaluate((which) => (document.getElementById(which).textContent = ""), id);
 }
+/** A press in the shell's chrome is not the reader acting in the page: the bar waits until its activation lapses. */
+const settle = () => sleep(5_500);
 async function recordAndFinish(ms = 1_300) {
   await bar.waitFor({ state: "visible", timeout: 10_000 });
   await sleep(ms);
@@ -155,20 +157,36 @@ const sentAudio = (await callsOf("voice.transcribe"))[0];
 ok("A123 the recording went to the transcriber once, with the page's context", sentAudio && sentAudio.args[0].prompt === "the page asked" && sentAudio.args[0].size > 0, JSON.stringify(sentAudio?.args[0]));
 ok("A120 the shell records in this engine", Boolean(sentAudio), sentAudio?.args[0].mimeType);
 
+// A page that re-asks the moment the reader cancels, riding the click on Cancel, gets no bar. R3.32a
+await settle();
+await pageFrame().locator("#speak-again").click();
+await bar.waitFor({ state: "visible", timeout: 10_000 });
+await sleep(1_200);
+await shell.locator('[data-rec="cancel"]').click();
+const again = await output("again-result");
+ok("R3.32a after the reader clicks Cancel, the page re-asking at once opens no bar", again?.first === "cancelled" && again?.second === "unavailable" && !(await barOpen()), JSON.stringify(again));
+
 // Escape and Cancel. A122
-for (const how of ["Escape", "Cancel"]) {
+for (const how of ["Escape", "Cancel", "Escape in the page"]) {
   await clearOutput("voice-result");
+  await settle();
   await pageFrame().locator("#speak").click();
   await bar.waitFor({ state: "visible", timeout: 10_000 });
   await sleep(1_200);
   if (how === "Escape") await shell.keyboard.press("Escape");
-  else await shell.locator('[data-rec="cancel"]').click();
+  else if (how === "Cancel") await shell.locator('[data-rec="cancel"]').click();
+  else {
+    // The reader went back to the page while recording: Escape there cancels too.
+    await pageFrame().locator("#notes").focus();
+    await shell.keyboard.press("Escape");
+  }
   const cancelled = await output("voice-result");
   ok(`A122 ${how} rejects with cancelled and sends nothing`, cancelled && cancelled.code === "cancelled" && (await callsOf("voice.transcribe")).length === 1, JSON.stringify(cancelled));
 }
 
 // One at a time, questions included, and Too short. A122a
 await clearOutput("voice-result");
+await settle();
 await pageFrame().locator("#speak").click();
 await bar.waitFor({ state: "visible", timeout: 10_000 });
 const second = await pageFrame().evaluate(() => window.threadPage.invoke("voice.captureAndTranscribe", {}).then(() => "ok", (error) => error.code));
@@ -234,6 +252,7 @@ await pageFrame().evaluate(() => {
   field.addEventListener("input", () => window.__events.push("input"));
   field.addEventListener("change", () => window.__events.push("change"));
 });
+await settle();
 await pageFrame().locator('button[aria-label="Dictate"]').first().click();
 await recordAndFinish();
 await sleep(300);
@@ -290,6 +309,7 @@ for (const failing of [false, true]) {
   await pageFrame().evaluate(() => {
     document.getElementById("notes").value = "";
   });
+  await settle();
   await pageFrame().locator("#voice").click();
   await recordAndFinish(1_400);
   const files = await pageFrame().evaluate(() => [...document.getElementById("voice").files].map((file) => `${file.name} ${file.type} ${file.size}`));
@@ -299,7 +319,16 @@ for (const failing of [false, true]) {
   const expected = failing ? /recording-\d{8}-\d{6}\.(webm|ogg|m4a)[^\n]*\n  Transcript missing/ : /recording-\d{8}-\d{6}\.(webm|ogg|m4a)[^\n]*\n  Transcript: there/;
   ok(`A133 on desktop the audio input records in the shell's bar and the answer carries ${failing ? "that the transcript is missing" : "the transcript"}`, files.length === 1 && expected.test(message), `${files.join()} | ${message.slice(-300)}`);
 }
-await set("transcribe=ok");
+// A transcript longer than an answer carries is shortened and says so; the answer still goes. R4.24b
+await set("reset=1&transcribe=ok&longText=40000");
+await settle();
+await pageFrame().locator("#voice").click();
+await recordAndFinish(1_400);
+await pageFrame().locator("#send").click();
+await sleep(3_000);
+const longMessage = (await callsOf("sessions.send")).at(-1)?.args[1] ?? "";
+ok("R4.24b a very long transcript is shortened and marked, and the answer is delivered", /Transcript: word word[^\n]*… \(transcript shortened\)/.test(longMessage), `${longMessage.length} characters`);
+await set(`transcribe=ok&text=${TRANSCRIPT}`);
 
 // --- inside an embed (A131) ------------------------------------------------------------------------
 const inner = embedFrame();
@@ -309,11 +338,13 @@ const innerControls = await inner.evaluate(() => {
   return [...group.querySelectorAll("button")].filter((button) => !button.hidden).map((button) => button.getAttribute("aria-label"));
 });
 ok("A131 inside an embed a text area shows Dictate and no Attach", innerControls.join() === "Dictate", JSON.stringify(innerControls));
+await settle();
 await inner.locator('button[aria-label="Dictate"]').click();
 await recordAndFinish();
 await sleep(400);
 const innerValue = await inner.evaluate(() => document.getElementById("inner").value);
 ok("A131 dictation inside an embed works, through the embedding page's shell", innerValue === TRANSCRIPT, innerValue);
+await settle();
 await inner.locator("#inner-speak").click();
 await sleep(1_000);
 const innerVoice = await inner.evaluate(() => document.getElementById("inner-result").textContent);
@@ -370,6 +401,15 @@ const picker = shell.waitForEvent("filechooser", { timeout: 5_000 }).then(() => 
 await pageFrame().locator("#voice").click();
 ok("A133 with voice unavailable the audio input is a file picker", (await picker) && !(await barOpen()));
 await set("voice=on");
+
+// A bar open when the page's document changes is cancelled: it was not the new document's to finish. R3.32
+await open();
+await settle();
+await pageFrame().locator("#speak").click();
+await bar.waitFor({ state: "visible", timeout: 10_000 });
+await pageFrame().locator("#to-embedded").click();
+await sleep(2_500);
+ok("R3.32 a bar open when the page's document changes is cancelled", !(await barOpen()) && shell.url().includes("path=embedded.html"), shell.url());
 
 ok("no page errors in the shell", pageErrors.length === 0, pageErrors.join(" | "));
 await browser.close();
