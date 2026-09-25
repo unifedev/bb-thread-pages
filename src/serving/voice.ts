@@ -3,6 +3,7 @@ import { PageError, PUBLIC_MESSAGES } from "../domain/errors.ts";
 import { LIMITS } from "../domain/limits.ts";
 import type { SessionHost } from "../host/contract.ts";
 import type { VoiceStatus } from "../host/types.ts";
+import { shortenTranscript } from "../domain/submissions/parse.ts";
 import { UPLOAD_DIR, isSafeUploadName } from "../pages/layout.ts";
 import { acquireRate, readJsonBody, requireActionToken } from "./action-request.ts";
 import { isBuiltinHome } from "./builtin-home.ts";
@@ -111,6 +112,8 @@ export function transcribeRoute(serving: ServingContext) {
         ...(typeof prompt === "string" && prompt.trim() ? { prompt } : {}),
         ...(typeof language === "string" ? { language } : {}),
       });
+      // A recorded answer's transcript is shortened where it goes (R4.24b); text for the page is bounded like any result.
+      if (typeof envelope.upload === "string") return jsonResponse({ ok: true, text: shortenTranscript(text) });
       if (text.length > LIMITS.resultTextBytes) throw new PageError("response_too_large", "The transcript is too long");
       return jsonResponse({ ok: true, text });
     } catch (error) {

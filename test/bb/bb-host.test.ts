@@ -107,6 +107,19 @@ describe("bb adapter", () => {
     expect((fake.harness.inspection.sdk.callsTo("threads.send")[0]![0] as { input: unknown[] }).input).toHaveLength(2);
   });
 
+  it("tells what bb would not attach before anything is uploaded, and passes bb's own refusal on", async () => {
+    const { host } = hostWith({ projects: { attachments: { upload: async () => Promise.reject(Object.assign(new Error("Unsupported attachment type: application/x-foo"), { status: 400 })) } } as never });
+    const refusal = host.attachments!.refusal!;
+    expect(refusal({ name: "IMG_1.HEIC", size: 10, type: "image/heic" })).toMatchObject({ code: "invalid_params" });
+    expect(refusal({ name: "photo.heif", size: 10, type: "" })).toMatchObject({ code: "invalid_params" });
+    expect(refusal({ name: "big.png", size: 10 * 1024 * 1024 + 1, type: "image/png" })).toMatchObject({ code: "request_too_large" });
+    expect(refusal({ name: "big.log", size: 20 * 1024 * 1024, type: "text/plain" })).toBeNull();
+    await expect(host.attachments!.upload("proj_a", { name: "x.foo", mimeType: "application/x-foo", bytes: new Uint8Array(1) })).rejects.toMatchObject({
+      code: "handler_error",
+      message: "bb refused it: Unsupported attachment type: application/x-foo",
+    });
+  });
+
   it("marks read and unread through bb and reports the resulting mark", async () => {
     const { host, fake } = hostWith({
       threads: {

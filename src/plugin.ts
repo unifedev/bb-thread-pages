@@ -11,7 +11,7 @@ import type { SessionHost } from "./host/contract.ts";
 import { createAssembler } from "./pages/assemble.ts";
 import { createPageStore } from "./pages/page-store.ts";
 import { createCoreStorageSite, type SiteStrategy } from "./pages/site.ts";
-import { createHeldAttachments } from "./serving/attach-route.ts";
+import { createHeldAttachments, releaseHeld } from "./serving/attach-route.ts";
 import { createSelectionStore } from "./serving/bridge/selection-store.ts";
 import { createContributions, instructionFragments } from "./serving/contributions.ts";
 import { createGrantStore } from "./serving/grants.ts";
@@ -60,7 +60,8 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
     selections: createSelectionStore(),
     grants: createGrantStore(host),
     voice: createVoiceAvailability(host, now),
-    attachments: createHeldAttachments(),
+    // A grant that ran out holds attachments no call will carry: released, or logged. spec R5.79
+    attachments: createHeldAttachments((call) => void releaseHeld(serving, call.entries, "its upload grant ran out")),
     hostSessionUrl: bbSessionUrl,
     now,
   };

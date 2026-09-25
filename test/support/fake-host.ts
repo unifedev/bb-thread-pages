@@ -34,6 +34,8 @@ export interface FakeHostState {
   /** Attachments: a file name whose upload fails, how, and whether the host can remove what it stored. */
   attachFailure: { name: string; error: PageError } | null;
   attachments: { projectId: string; attachment: PromptAttachment }[];
+  /** Makes the next sessions.start fail on the host. */
+  startFailure: string | null;
 }
 
 export interface FakeHostOptions {
@@ -96,6 +98,7 @@ export function createFakeHost(options: FakeHostOptions = {}): { host: SessionHo
     transcribeError: null,
     attachFailure: null,
     attachments: [],
+    startFailure: null,
   };
   const record = (method: string, ...args: unknown[]) => state.calls.push({ method, args });
   const location = (id: string) => ({ hostId: HOST_ID, rootPath: `${ROOT}/${id}` });
@@ -121,6 +124,10 @@ export function createFakeHost(options: FakeHostOptions = {}): { host: SessionHo
       },
       async start(args: StartSessionArgs) {
         record("sessions.start", args);
+        if (state.startFailure === "fail") {
+          state.startFailure = null;
+          throw new PageError("unavailable", "the host could not start it");
+        }
         return { id: "thr_new" };
       },
       async stop(id) {
@@ -242,6 +249,12 @@ export function createFakeHost(options: FakeHostOptions = {}): { host: SessionHo
       ? {}
       : {
           attachments: {
+            // As bb's: images to 10 MB, no HEIC.
+            refusal(file: { name: string; size: number; type: string }) {
+              if (/heic$/i.test(file.type) || /\.heic$/i.test(file.name)) return new PageError("invalid_params", `“${file.name}” is a HEIC/HEIF image, which this host does not attach`);
+              if (file.type.startsWith("image/") && file.size > 10 * 1024 * 1024) return new PageError("request_too_large", `“${file.name}” is an image over 10 MB`);
+              return null;
+            },
             async upload(projectId: string, file: { name: string; mimeType: string; bytes: Uint8Array }) {
               record("attachments.upload", projectId, file.name, file.mimeType, file.bytes.byteLength);
               if (state.attachFailure && state.attachFailure.name === file.name) throw state.attachFailure.error;

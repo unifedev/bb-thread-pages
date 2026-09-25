@@ -57,3 +57,24 @@ export function excerpt(text: string, max = 80): string {
   const line = text.replace(/\s+/g, " ").trim();
   return line.length <= max ? line : `${line.slice(0, max - 1)}…`;
 }
+
+/** Every kind of quotation mark, and the characters that reorder or hide text. */
+const UNQUOTABLE = /["'`\u00ab\u00bb\u2018-\u201f\u2039\u203a\u300c-\u300f\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g;
+
+/**
+ * Text a confirmation quotes that the host did not write — a title, a file
+ * name. Quotation marks, control, bidi and zero-width characters are dropped,
+ * so it cannot close the quotes it sits in and continue in the host's voice.
+ * spec R3.18, R3.22a
+ */
+export function quotable(text: string, max = 70): string {
+  return excerpt(text.replace(UNQUOTABLE, ""), max) || "(untitled)";
+}
+
+/** A file name as a confirmation lists it: quotable, and shortened in the middle so its extension shows. spec R5.78 */
+export function quotableFileName(name: string, max = 48): string {
+  const clean = name.replace(UNQUOTABLE, "").replace(/\s+/g, " ").trim() || "(unnamed)";
+  if (clean.length <= max) return clean;
+  const extension = /\.[^.\s]{1,10}$/.exec(clean)?.[0] ?? "";
+  return `${clean.slice(0, Math.max(1, max - extension.length - 1))}…${extension}`;
+}

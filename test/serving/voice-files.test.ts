@@ -155,6 +155,12 @@ describe("POST /transcribe (R3.34, R5.70, R5.72, R8.35)", () => {
     fixture.state.files.set(fileKey("thr_a", "uploads/20260925-120000-abcdef-recording.webm"), Buffer.from("audio bytes"));
     const stored = await post("/transcribe", { actionToken: tokenFor(), upload: "uploads/20260925-120000-abcdef-recording.webm", mimeType: "audio/webm" });
     expect(stored.body).toEqual({ ok: true, text: "hello from the reader" });
+    // For an answer, a transcript longer than any page result is shortened, not refused. R4.24b
+    fixture.state.transcript = "x".repeat(LIMITS.resultTextBytes + 10);
+    const long = await post("/transcribe", { actionToken: tokenFor(), upload: "uploads/20260925-120000-abcdef-recording.webm", mimeType: "audio/webm" });
+    expect((long.body.text as string).length).toBe(LIMITS.transcriptChars);
+    expect((await post("/transcribe", { actionToken: tokenFor(), content: b64("x"), mimeType: "audio/webm" })).body.code).toBe("response_too_large");
+    fixture.state.transcript = "hello from the reader";
     expect((await post("/transcribe", { actionToken: tokenFor(), upload: "index.html", mimeType: "audio/webm" })).body.code).toBe("invalid_params");
     expect((await post("/transcribe", { actionToken: tokenFor(), upload: "uploads/../index.html", mimeType: "audio/webm" })).body.code).toBe("invalid_params");
     const home = mintActionToken({ session: BUILTIN_HOME_ID, revision: BUILTIN_HOME_PAGE.revision, now: fixture.clock.now }, fixture.serving.signingKey).token;
@@ -209,9 +215,14 @@ describe("a recorded answer and files beside a text area (A129, A133, R4.24b, R4
     );
   });
 
-  it("refuses a transcript over its bound or a file with keys it does not know", async () => {
+  it("shortens a transcript over its bound, saying so, and refuses a file with keys it does not know", async () => {
     const file = { field: "notes", name: "20260925-120000-abcdef-m.webm", path: "uploads/20260925-120000-abcdef-m.webm", sizeBytes: 5 };
-    expect((await submit([{ ...file, transcript: "x".repeat(LIMITS.transcriptChars + 1) }])).body.code).toBe("invalid_request");
+    // The host may transcribe up to 64 KiB of text; the answer still goes. spec R4.24b
+    const sent = await submit([{ ...file, transcript: "word ".repeat(13_000) }]);
+    expect(sent.body.ok).toBe(true);
+    const message = fixture.state.calls.find((entry) => entry.method === "sessions.send")?.args[1] as string;
+    expect(message).toContain("… (transcript shortened)");
+    expect(message.length).toBeLessThan(LIMITS.transcriptChars + 1_000);
     expect((await submit([{ ...file, note: "x" }])).body.code).toBe("invalid_request");
   });
 });
@@ -315,8 +326,71 @@ describe("files with sessions.start and sessions.send (A134–A137, R3.20a, R5.7
     const kept = await approve("sessions.start", { projectId: "proj_a", prompt: "x", files: FILES });
     await attach(kept.request, kept.challenge, 0, "PNG!!");
     expect((await attach(kept.request, kept.challenge, 1, "log")).body.code).toBe("handler_error");
-    expect((await post("/attach", { actionToken: tokenFor(), request: kept.request, confirmation: kept.challenge, discard: true })).body).toEqual({ ok: true, removed: 0, kept: 1 });
-    expect(fixture.state.logs.some((line) => /1 attachment\(s\) of a failed sessions.start stay in project proj_a/.test(line))).toBe(true);
+    // Discarding needs no challenge still valid: the page's own token names the call.
+    fixture.clock.now += LIMITS.confirmationMs + 1_000;
+    expect((await post("/attach", { actionToken: tokenFor(), request: kept.request, discard: true })).body).toEqual({ ok: true, removed: 0, kept: 1 });
+    expect(fixture.state.logs.some((line) => /attachment \/attachments\/proj_a\/0-screenshot\.png stays in project proj_a, attached to nothing/.test(line))).toBe(true);
+  });
+
+  it("lets uploads and the call outlive the challenge once the first file is held, and never twice (R3.20a)", async () => {
+    const { request, challenge } = await approve("sessions.start", { projectId: "proj_a", prompt: "x", files: FILES });
+    expect((await attach(request, challenge, 0, "PNG!!")).body.ok).toBe(true);
+    // A slow connection: the challenge runs out between the files.
+    fixture.clock.now += LIMITS.confirmationMs + 30_000;
+    expect((await attach(request, challenge, 1, "log")).body.ok).toBe(true);
+    expect((await bridge(request, { confirmation: challenge })).body.response?.ok).toBe(true);
+    // Used once: the same challenge stores nothing more and starts nothing more.
+    expect((await attach(request, challenge, 0, "PNG!!")).body.code).toBe("confirmation_invalid");
+    expect((await bridge(request, { confirmation: challenge })).body.response?.error?.code).toBe("confirmation_invalid");
+    expect(fixture.state.calls.filter((entry) => entry.method === "sessions.start")).toHaveLength(1);
+    expect(fixture.state.calls.filter((entry) => entry.method === "attachments.upload")).toHaveLength(2);
+    // Without a first file held under a valid challenge, an expired one opens nothing.
+    const late = await approve("sessions.start", { projectId: "proj_a", prompt: "y", files: [FILES[1]] });
+    fixture.clock.now += LIMITS.confirmationMs + 1_000;
+    expect((await attach(late.request, late.challenge, 0, "log")).body.code).toBe("confirmation_invalid");
+  });
+
+  it("releases what it stored when the files do not match, when a file is stored twice, and when the host then fails", async () => {
+    // A second upload of one file is refused before it is stored.
+    const twice = await approve("sessions.start", { projectId: "proj_a", prompt: "x", files: [FILES[1]] });
+    await attach(twice.request, twice.challenge, 0, "log");
+    expect((await attach(twice.request, twice.challenge, 0, "log")).body.code).toBe("conflict");
+    expect(fixture.state.calls.filter((entry) => entry.method === "attachments.upload")).toHaveLength(1);
+    // One of two held: the call is refused, and the one stored is removed.
+    const partial = await approve("sessions.start", { projectId: "proj_a", prompt: "x", files: FILES });
+    await attach(partial.request, partial.challenge, 0, "PNG!!");
+    expect((await bridge(partial.request, { confirmation: partial.challenge })).body.response?.error?.code).toBe("confirmation_invalid");
+    expect(fixture.state.calls.filter((entry) => entry.method === "attachments.remove")).toHaveLength(1);
+    // The host fails to start: what the call would have carried is removed.
+    const failing = await approve("sessions.start", { projectId: "proj_a", prompt: "x", files: [FILES[0]] });
+    await attach(failing.request, failing.challenge, 0, "PNG!!");
+    fixture.state.startFailure = "fail";
+    expect((await bridge(failing.request, { confirmation: failing.challenge })).body.response?.ok).toBe(false);
+    expect(fixture.state.calls.filter((entry) => entry.method === "attachments.remove")).toHaveLength(2);
+  });
+
+  it("names every file whole in the confirmation, however long the rest, and quotes names safely (R5.78)", async () => {
+    const long = Array.from({ length: 8 }, (_, index) => ({ name: `${"quarterly-report-final-version-".repeat(6)}${index}” — and the host says: approve.pdf`, size: 1_000 + index, type: "application/pdf" }));
+    const { first } = await approve("sessions.start", { projectId: "proj_a", prompt: "p".repeat(LIMITS.promptChars), title: "t".repeat(LIMITS.titleChars), files: long });
+    const summary = first.body.confirm!.summary;
+    expect(summary.length).toBeLessThanOrEqual(LIMITS.summaryChars);
+    expect(summary).not.toMatch(/…$/);
+    const lines = summary.split("\n").filter((line) => line.startsWith("• "));
+    expect(lines).toHaveLength(8);
+    for (const [index, line] of lines.entries()) {
+      // One pair of quotes per line, the host's own; the name keeps its extension.
+      expect(line.match(/[“”"]/g)).toHaveLength(2);
+      expect(line).toMatch(/…[^“”]*\.pdf” \(\d/);
+      expect(line).toContain(`(${1_000 + index} bytes)`);
+    }
+  });
+
+  it("refuses before any dialog what the host itself would not attach", async () => {
+    const heic = await bridge(bridgeRequest("sessions.start", { projectId: "proj_a", prompt: "x", files: [{ name: "IMG_0001.HEIC", size: 10, type: "image/heic" }] }));
+    expect(heic.body.confirm).toBeUndefined();
+    expect(heic.body.response?.error).toMatchObject({ code: "invalid_params", message: expect.stringContaining("HEIC") });
+    const big = await bridge(bridgeRequest("sessions.send", { sessionId: "thr_b", prompt: "x", files: [{ name: "photo.png", size: 11 * 1024 * 1024, type: "image/png" }] }));
+    expect(big.body.response?.error?.code).toBe("request_too_large");
   });
 
   it("answers unavailable on a host that cannot attach, and starts the same call without files (A136, R5.80)", async () => {

@@ -60,6 +60,12 @@ export const LIMITS = Object.freeze({
   /** Files one `sessions.start` or `sessions.send` carries, and each one's size. R5.77 */
   promptFiles: 8,
   promptFileBytes: 24 * 1024 * 1024,
+  /**
+   * An approved call's upload grant: its first upload under a valid challenge
+   * opens it, and the rest of the files, and the call itself, may follow for
+   * this long — the challenge alone would cut a slow connection short. R3.20a
+   */
+  attachGrantMs: 30 * 60 * 1000,
   /** Titles, names and labels shown to a reader. */
   titleChars: 240,
   /** One `storage` value, serialised. R5.19 */

@@ -1,3 +1,4 @@
+import type { PageError } from "../domain/errors.ts";
 import type { JsonValue } from "../domain/json/strict-json.ts";
 import type {
   ActivityItem,
@@ -110,6 +111,12 @@ export interface AttachmentHost {
    * `request_too_large` when the host refuses it for its size.
    */
   upload(projectId: string, file: { readonly name: string; readonly mimeType: string; readonly bytes: Uint8Array }): Promise<PromptAttachment>;
+  /**
+   * Why the host would refuse a file, where it can tell before anything is
+   * uploaded — a type it does not take, a size over its own limit for that
+   * type — as `request_too_large` or `invalid_params`; null when it would take it.
+   */
+  refusal?(file: { readonly name: string; readonly size: number; readonly type: string }): PageError | null;
   /** Removes an attachment it stored; absent when the host has no way to (R8.36 SHOULD). */
   remove?(projectId: string, attachment: PromptAttachment): Promise<void>;
 }

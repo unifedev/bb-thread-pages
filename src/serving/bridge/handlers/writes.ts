@@ -4,8 +4,9 @@ import { fingerprint } from "../../../domain/json/canonical.ts";
 import type { JsonValue } from "../../../domain/json/strict-json.ts";
 import { formatReplyMessage } from "../../../domain/submissions/message.ts";
 import type { SessionRecord, StartSessionArgs } from "../../../host/types.ts";
-import { approvedAttachments, checkPromptFiles, sizeLabel, targetProject } from "../../attach-route.ts";
-import { excerpt, handler, type HandlerContext } from "../handler.ts";
+import { approvedAttachments, checkPromptFiles, sizeLabel, targetProject, withAttachments } from "../../attach-route.ts";
+import { LIMITS } from "../../../domain/limits.ts";
+import { excerpt, handler, quotable, quotableFileName, type HandlerContext } from "../handler.ts";
 
 /** Writes to the page's own session, and the confirmed cross-session effects. spec 05 */
 
@@ -41,7 +42,30 @@ async function targetSession(context: HandlerContext, id: string): Promise<Sessi
 function filesLine(files: readonly PromptFile[] | undefined): string {
   if (!files || files.length === 0) return "";
   const count = files.length === 1 ? "1 file" : `${files.length} files`;
-  return `\nWith ${count}:\n${files.map((file) => `• “${excerpt(file.name, 60)}” (${sizeLabel(file.size)})`).join("\n")}`;
+  return `\nWith ${count}:\n${files.map((file) => `• “${quotableFileName(file.name)}” (${sizeLabel(file.size)})`).join("\n")}`;
+}
+
+/** What the rest of a summary needs at least, beside its file list. */
+const SUMMARY_HEAD_MIN = 160;
+
+/** A file list too long to show whole in a confirmation is refused before any dialog. spec R5.78 */
+function checkFilesFit(files: readonly PromptFile[] | undefined): void {
+  if (filesLine(files).length + SUMMARY_HEAD_MIN > LIMITS.summaryChars) {
+    throw new PageError("request_too_large", "The files cannot all be named in the confirmation; send fewer at a time");
+  }
+}
+
+/**
+ * A summary whose file list is always whole: the other parts — the prompt,
+ * titles, names — are shortened until it fits, never the list. spec R5.78
+ */
+function fitSummary(head: (length: number) => string, files: readonly PromptFile[] | undefined): string {
+  const list = filesLine(files);
+  for (const length of [80, 48, 28, 16, 8]) {
+    const summary = `${head(length)}${list}`;
+    if (summary.length <= LIMITS.summaryChars) return summary;
+  }
+  throw new PageError("request_too_large", "The files cannot all be named in the confirmation; send fewer at a time");
 }
 
 export const sessionsSend = handler<SessionsSendParams, unknown>({
@@ -49,19 +73,24 @@ export const sessionsSend = handler<SessionsSendParams, unknown>({
   async refuse(params, context) {
     if (params.sessionId === context.session.id) throw new PageError("invalid_params", "Use session.reply to answer this page's own session");
     await targetSession(context, params.sessionId);
-    checkPromptFiles(params.files, context.serving.host.attachments !== undefined);
+    checkPromptFiles(params.files, context.serving.host.attachments);
+    checkFilesFit(params.files);
     if (params.files && params.files.length > 0) await targetProject(context.serving, "sessions.send", params);
   },
   async summarize(params, context) {
     const target = await targetSession(context, params.sessionId);
-    return `Send to “${excerpt(target.title, 60)}”: “${excerpt(params.prompt)}”${params.mode === "steer" ? " (interrupting its current turn)" : ""}${filesLine(params.files)}`;
+    const steer = params.mode === "steer" ? " (interrupting its current turn)" : "";
+    return fitSummary((length) => `Send to “${quotable(target.title, Math.min(60, length))}”: “${excerpt(params.prompt, length)}”${steer}`, params.files);
   },
   async execute(params, context) {
     const { serving } = context;
-    const attachments = params.files && params.files.length > 0
-      ? approvedAttachments(serving, context.session.id, context.requestId, await targetProject(serving, "sessions.send", params), params.files)
-      : [];
-    const sent = attachments.length > 0 ? await serving.host.sessions.send(params.sessionId, params.prompt, params.mode, attachments) : await serving.host.sessions.send(params.sessionId, params.prompt, params.mode);
+    if (!params.files || params.files.length === 0) {
+      const sent = await serving.host.sessions.send(params.sessionId, params.prompt, params.mode);
+      return { result: { sessionId: params.sessionId, delivery: sent.delivery, duplicate: false } };
+    }
+    const projectId = await targetProject(serving, "sessions.send", params);
+    const attachments = await approvedAttachments(serving, context.session.id, context.requestId, projectId, params.files);
+    const sent = await withAttachments(serving, attachments, projectId, () => serving.host.sessions.send(params.sessionId, params.prompt, params.mode, attachments));
     return { result: { sessionId: params.sessionId, delivery: sent.delivery, duplicate: false } };
   },
 });
@@ -96,20 +125,24 @@ async function resolveStart(params: SessionsStartParams, context: HandlerContext
 export const sessionsStart = handler<SessionsStartParams, unknown>({
   method: "sessions.start",
   async refuse(params, context) {
-    checkPromptFiles(params.files, context.serving.host.attachments !== undefined);
+    checkPromptFiles(params.files, context.serving.host.attachments);
+    checkFilesFit(params.files);
     await resolveStart(params, context);
   },
   async summarize(params, context) {
     const { projectName, environmentLabel } = await resolveStart(params, context);
     const runtime = [params.providerId, params.model, params.reasoningLevel].filter(Boolean).join(" · ") || "the project's default provider and model";
     // Several buttons often share a prompt's opening, so a title leads when there is one.
-    const what = params.title ? `Start “${excerpt(params.title, 60)}” in ${projectName}` : `Start a session in ${projectName}`;
-    return `${what}: “${excerpt(params.prompt)}” — using ${runtime}, in ${environmentLabel}${filesLine(params.files)}`;
+    return fitSummary((length) => {
+      const project = excerpt(projectName, Math.max(24, length));
+      const what = params.title ? `Start “${quotable(params.title, Math.min(60, length))}” in ${project}` : `Start a session in ${project}`;
+      return `${what}: “${excerpt(params.prompt, length)}” — using ${excerpt(runtime, Math.max(24, length))}, in ${excerpt(environmentLabel, Math.max(32, length))}`;
+    }, params.files);
   },
   async execute(params, context) {
     const { args } = await resolveStart(params, context);
-    const attachments = approvedAttachments(context.serving, context.session.id, context.requestId, params.projectId, params.files);
-    const started = await context.serving.host.sessions.start(attachments.length > 0 ? { ...args, attachments } : args);
+    const attachments = await approvedAttachments(context.serving, context.session.id, context.requestId, params.projectId, params.files);
+    const started = await withAttachments(context.serving, attachments, params.projectId, () => context.serving.host.sessions.start(attachments.length > 0 ? { ...args, attachments } : args));
     return { result: { sessionId: started.id } };
   },
 });

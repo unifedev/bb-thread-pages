@@ -81,7 +81,7 @@ export function parseSubmission(value: unknown): Submission | null {
         file.sizeBytes < 0 ||
         file.sizeBytes > LIMITS.uploadFileBytes ||
         Object.keys(file).some((key) => !["field", "name", "path", "sizeBytes", "transcript"].includes(key)) ||
-        (file.transcript !== undefined && file.transcript !== null && (typeof file.transcript !== "string" || file.transcript.length > LIMITS.transcriptChars))
+        (file.transcript !== undefined && file.transcript !== null && typeof file.transcript !== "string")
       ) {
         return null;
       }
@@ -90,7 +90,7 @@ export function parseSubmission(value: unknown): Submission | null {
         name: file.name,
         path: file.path,
         sizeBytes: file.sizeBytes,
-        ...(file.transcript !== undefined ? { transcript: file.transcript as string | null } : {}),
+        ...(file.transcript !== undefined ? { transcript: typeof file.transcript === "string" ? shortenTranscript(file.transcript) : null } : {}),
       });
     }
   }
@@ -115,4 +115,15 @@ function valueLength(value: AnswerValue): number {
   if (typeof value === "boolean") return 1;
   if (typeof value === "string") return value.length;
   return value.reduce((sum, item) => sum + item.length, 0);
+}
+
+export const TRANSCRIPT_SHORTENED = " … (transcript shortened)";
+
+/**
+ * A transcript within its bound: a long one is cut and says so, never the
+ * reason a whole answer fails after its files were uploaded. spec R4.24b
+ */
+export function shortenTranscript(text: string): string {
+  if (text.length <= LIMITS.transcriptChars) return text;
+  return `${text.slice(0, LIMITS.transcriptChars - TRANSCRIPT_SHORTENED.length)}${TRANSCRIPT_SHORTENED}`;
 }

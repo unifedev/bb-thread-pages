@@ -14,7 +14,7 @@ import type { LoadedPage } from "../../../pages/page-store.ts";
 import type { KernelConfig } from "../../../runtime/shared/protocol.ts";
 import { loadUnlessUnwritten } from "../../empty-page.ts";
 import { eligibleSession } from "../../session-access.ts";
-import { excerpt, handler, type HandlerContext } from "../handler.ts";
+import { excerpt, handler, quotable, type HandlerContext } from "../handler.ts";
 
 /**
  * Other sessions' pages: the one conditional read an embed is built on, and
@@ -122,15 +122,6 @@ export const pagesRead = handler<PagesReadParams, unknown>({
     return { result: { pages } };
   },
 });
-
-/**
- * A session's title as the grant dialog quotes it. Titles are agent-chosen, so
- * every kind of quotation mark is dropped: a title cannot close the quotes it
- * sits in and continue the sentence in the host's voice. spec R3.18
- */
-function quotable(title: string): string {
-  return excerpt(title.replace(/["'`\u00ab\u00bb\u2018-\u201f\u2039\u203a\u300c-\u300f]/g, ""), 70) || "(untitled)";
-}
 
 function openToken(params: PagesAnswerParams, context: HandlerContext): AnswerToken {
   const token = verifyAnswerToken(params.answerToken, context.serving.signingKey, context.serving.now());

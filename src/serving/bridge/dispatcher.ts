@@ -4,7 +4,9 @@ import type { JsonValue } from "../../domain/json/strict-json.ts";
 import { LIMITS } from "../../domain/limits.ts";
 import { challengeMatches, mintChallenge, openChallenge } from "../../domain/tokens/confirmation.ts";
 import type { ContributedSpec } from "../../domain/capabilities/contributed.ts";
+import { fingerprint } from "../../domain/json/canonical.ts";
 import { acquireRate, requireActionToken } from "../action-request.ts";
+import { FILE_METHODS, grantCovers } from "../attach-route.ts";
 import { BUILTIN_HOME_PAGE, BUILTIN_HOME_REFUSAL, BUILTIN_HOME_SESSION, SESSIONLESS_CAPABILITIES, isBuiltinHome } from "../builtin-home.ts";
 import type { ServingContext } from "../context.ts";
 import { ContributedError, combinedLookup } from "../contributions.ts";
@@ -104,7 +106,10 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
           return { status: 401, body: { confirm: { requestId: request.id, summary: payload.summary, challenge } } };
         }
         const challenge = openChallenge(envelope.confirmation, serving.signingKey, serving.now());
-        if (!challenge || !challengeMatches(challenge, binding)) {
+        // A call whose approved files are all held may outlive its challenge: its upload grant, opened
+        // under that challenge, says the reader approved exactly this call. spec R3.20a
+        const covered = FILE_METHODS.has(request.method) && grantCovers(serving, { session: token.session, revision: token.revision, requestId: request.id, method: request.method, paramsHash: fingerprint(invocation.params as JsonValue) });
+        if (!covered && (!challenge || !challengeMatches(challenge, binding))) {
           throw new PageError("confirmation_invalid", "The confirmation is expired or does not match this request");
         }
       }

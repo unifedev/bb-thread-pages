@@ -296,13 +296,25 @@ function promptInput(text: string, attachments: readonly PromptAttachment[]) {
   ];
 }
 
+/** bb's attachment store keeps images to this size. */
+export const BB_ATTACHMENT_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/** The message bb's API gave with a refusal, bounded; null when there is none worth showing. */
+function bbMessage(error: unknown): string | null {
+  const record = asRecord(error);
+  const body = asRecord(record?.body);
+  const text = typeof body?.message === "string" ? body.message : errorText(error);
+  const line = text.replace(/\s+/g, " ").trim();
+  return line ? line.slice(0, 200) : null;
+}
+
 const VOICE_NOT_CONFIGURED = "Voice transcription is not set up on this bb.";
 
 /**
  * bb's own transcriber, the one its composer uses: `system.transcribeVoice`
  * posts the audio to `/api/v1/system/voice-transcription`, whose service is
- * `BB_TRANSCRIPTION` (5 MB with the default Codex service, 25 MB with OpenAI,
- * 10 s per attempt, 2 attempts). The server calls it for the shell, so the
+ * `BB_TRANSCRIPTION` (20 MB with the default Codex service — 5 MB before
+ * bb a67f21bab — 25 MB with OpenAI; 10 s per attempt, 2 attempts). The server calls it for the shell, so the
  * recording travels shell → this plugin → bb on the reader's own origin and
  * credential (the plugin route), which is also how a host without bb would
  * serve it. bb takes no language: a hint rides at the head of the context.
@@ -359,6 +371,17 @@ function audioExtension(mimeType: string): string {
  */
 export function createBbAttachments(bb: BbPluginApi): AttachmentHost {
   return {
+    // bb's own attachment store keeps images to 10 MB and does not take HEIC or HEIF.
+    refusal(file) {
+      const type = file.type.split(";")[0]?.trim().toLowerCase() ?? "";
+      if (/^image\/hei[cf](-sequence)?$/.test(type) || /\.hei[cf]$/i.test(file.name)) {
+        return new PageError("invalid_params", `“${file.name}” is a HEIC/HEIF image, which bb does not attach; convert it to JPEG or PNG first`);
+      }
+      if (type.startsWith("image/") && file.size > BB_ATTACHMENT_IMAGE_BYTES) {
+        return new PageError("request_too_large", `“${file.name}” is an image over ${BB_ATTACHMENT_IMAGE_BYTES / (1024 * 1024)} MB, the most bb attaches`);
+      }
+      return null;
+    },
     async upload(projectId, file) {
       try {
         const stored = await bb.sdk.projects.attachments.upload({
@@ -375,9 +398,11 @@ export function createBbAttachments(bb: BbPluginApi): AttachmentHost {
           sizeBytes: stored.sizeBytes,
         };
       } catch (error) {
-        if (isTooLarge(error) || /\b(too large|exceeds)\b/i.test(errorText(error))) throw new PageError("request_too_large", "The host refused the file for its size", { cause: error });
+        // bb's own words reach the reader: they say what it refused and why.
+        const said = bbMessage(error);
+        if (isTooLarge(error) || /\b(too large|exceeds)\b/i.test(errorText(error))) throw new PageError("request_too_large", said ? `bb refused it: ${said}` : "bb refused the file for its size", { cause: error });
         if (isNotFound(error)) throw new PageError("not_found", "That project is not available", { cause: error });
-        throw new PageError("handler_error", "The host could not store the file", { cause: error });
+        throw new PageError("handler_error", said ? `bb refused it: ${said}` : "bb could not store the file", { cause: error });
       }
     },
   };
