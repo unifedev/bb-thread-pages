@@ -55,9 +55,12 @@ function portOf(url: URL): string {
 
 /**
  * Whether `target` is this host: a `getbb.app` name whatever its port, or the
- * same server as one of `own` under another name — the same host and port, or
- * any loopback name on the same port. The URL parser has already folded case,
- * numeric IPv4 forms and punycode, so a look-alike stays another site. spec R5.32a
+ * same server as one of `own` under another name — the same host and port, or,
+ * when the reader is on loopback, **any** host on that port: a LAN address of an
+ * all-interfaces bind, or a DNS name that resolves to 127.0.0.1 (`lvh.me`,
+ * `*.nip.io`), reaches the same server and cannot be told apart by name. The URL
+ * parser has already folded case, numeric IPv4 forms and punycode, so a
+ * look-alike stays another site. spec R5.32a
  */
 export function isOwnHost(target: URL, own: readonly string[]): boolean {
   const host = hostKey(target.hostname);
@@ -72,7 +75,7 @@ export function isOwnHost(target: URL, own: readonly string[]): boolean {
     }
     if (portOf(mine) !== port) return false;
     const other = hostKey(mine.hostname);
-    return other === host || (isLoopback(other) && isLoopback(host));
+    return other === host || isLoopback(other);
   });
 }
 

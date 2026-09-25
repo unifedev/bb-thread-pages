@@ -243,8 +243,10 @@ describe("navigation", () => {
     for (const url of ["http://127.0.0.1:38886/x", "http://localhost:38886/", "http://LOCALHOST.:38886/", "http://app.localhost:38886/", "http://127.1.2.3:38886/", "http://2130706433:38886/", "http://[::1]:38886/", "http://[::ffff:127.0.0.1]:38886/", "http://0.0.0.0:38886/", "https://127.0.0.1:38886/"]) {
       expect(isOwnHost(new URL(url), loopback), url).toBe(true);
     }
+    // A reader on loopback: any host on this port may be this server (an all-interfaces bind, a DNS name for 127.0.0.1).
+    for (const url of ["http://10.0.0.5:38886/", "http://lvh.me:38886/x.svg", "http://127.0.0.1.nip.io:38886/", "http://[::]:38886/"]) expect(isOwnHost(new URL(url), loopback), url).toBe(true);
     // Another port on this machine is another server; the page may be pointed at a local tool on purpose.
-    for (const url of ["http://localhost:8000/", "http://127.0.0.1/", "http://10.0.0.5:38886/"]) expect(isOwnHost(new URL(url), loopback), url).toBe(false);
+    for (const url of ["http://localhost:8000/", "http://127.0.0.1/", "http://lvh.me:8000/"]) expect(isOwnHost(new URL(url), loopback), url).toBe(false);
     // The LAN address the reader used, and only that one.
     expect(isOwnHost(new URL("http://192.168.1.20:38886/"), ["http://192.168.1.20:38886"])).toBe(true);
     expect(isOwnHost(new URL("http://192.168.1.21:38886/"), ["http://192.168.1.20:38886"])).toBe(false);
