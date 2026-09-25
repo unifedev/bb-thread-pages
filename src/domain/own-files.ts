@@ -34,16 +34,16 @@ export function shellFetchLimit(path: string): number {
 /**
  * Files the shell opens in a new tab at the host's own address. Only types
  * that cannot run script there: the tab is on the host's origin with the
- * reader's credential, so an SVG, XML or unknown type is downloaded instead.
- * HTML is included because the host serves it sandboxed (bb:
- * `content-security-policy: sandbox allow-scripts` on every `.html` file). D33
+ * reader's credential, so an SVG, XML, HTML or unknown type is downloaded
+ * instead. HTML is excluded even though bb sandboxes `.html`: it serves `.htm`
+ * (and any other name its MIME table maps to `text/html`) unsandboxed, and a
+ * part or an upload is not a document the shell would open in place. D33
  */
 const OPENABLE: ReadonlySet<string> = new Set([
   ...IMAGES,
   "pdf",
   "mp4", "m4v", "webm", "mov", "ogv", "ogg", "oga", "mp3", "m4a", "aac", "wav", "flac", "opus",
   "txt", "md", "csv", "tsv", "json", "log", "vtt", "srt",
-  "html", "htm",
 ]);
 
 export function isOpenableInTab(path: string): boolean {

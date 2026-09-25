@@ -27,8 +27,8 @@ describe("the rules for a page's own files", () => {
   });
 
   it("opens in a tab only what cannot run script on the host's origin (D33)", () => {
-    for (const path of ["a.pdf", "a.MP4", "b.png", "notes.txt", "uploads/report.html"]) expect(isOpenableInTab(path), path).toBe(true);
-    for (const path of ["a.svg", "a.xml", "a.xhtml", "a.xsl", "archive.zip", "noextension"]) expect(isOpenableInTab(path), path).toBe(false);
+    for (const path of ["a.pdf", "a.MP4", "b.png", "notes.txt"]) expect(isOpenableInTab(path), path).toBe(true);
+    for (const path of ["a.svg", "a.xml", "a.xhtml", "a.xsl", "archive.zip", "noextension", "_evil.htm", "_parts/x.HTM", "uploads/20260925-x.htm", "uploads/report.html", "_part.html", "a.HTML", "a.shtml"]) expect(isOpenableInTab(path), path).toBe(false);
   });
 
   it("fetches up to the host's own read limit, lower for images (D37)", () => {
