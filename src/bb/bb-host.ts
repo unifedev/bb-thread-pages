@@ -1,8 +1,8 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { PageError, PUBLIC_MESSAGES, errorText } from "../domain/errors.ts";
 import type { JsonValue } from "../domain/json/strict-json.ts";
-import type { ContributorAnswer, ContributorHost, SessionHost } from "../host/contract.ts";
-import type { ActivityItem, ProjectRecord, ProviderChoice, SessionRecord, StorageLocation } from "../host/types.ts";
+import type { AttachmentHost, ContributorAnswer, ContributorHost, SessionHost, VoiceHost } from "../host/contract.ts";
+import type { ActivityItem, ProjectRecord, PromptAttachment, ProviderChoice, SessionRecord, StorageLocation } from "../host/types.ts";
 import { joinPath } from "../pages/layout.ts";
 import { LIMITS } from "../domain/limits.ts";
 import { activityItemsOf, asRecord, questionOf, sessionStateOf } from "./activity.ts";
@@ -93,13 +93,13 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
           }),
         );
       },
-      async send(id, text, mode) {
+      async send(id, text, mode, attachments = []) {
         const before = await getThread(id);
         const wasWorking = before ? sessionStateOf(before, false) === "working" : false;
         const sent = await bb.sdk.threads.send({
           threadId: id,
           mode: mode === "steer" ? "steer-if-active" : "queue-if-active",
-          input: [{ type: "text", text, mentions: [] }],
+          input: promptInput(text, attachments),
         });
         if (sent.delivery === "queued") return { delivery: "queued" };
         return { delivery: mode === "steer" && wasWorking ? "steered" : "started" };
@@ -107,7 +107,8 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
       async start(args) {
         const spawned = await bb.sdk.threads.spawn({
           projectId: args.projectId,
-          prompt: args.prompt,
+          // The composer's own shape when files ride along: text first, then each attachment. spec R5.76
+          ...(args.attachments && args.attachments.length > 0 ? { input: promptInput(args.prompt, args.attachments) } : { prompt: args.prompt }),
           ...(args.title ? { title: args.title } : {}),
           ...(args.providerId ? { providerId: args.providerId } : {}),
           ...(args.model ? { model: args.model } : {}),
@@ -277,8 +278,109 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
     origin: { public: publicOrigin },
     log: bb.log,
     contributors: createBbContributors(bb),
+    voice: createBbVoice(bb),
+    attachments: createBbAttachments(bb),
   };
   return host;
+}
+
+/** A prompt as bb's composer sends it: the text, then each attachment as a local image or file. */
+function promptInput(text: string, attachments: readonly PromptAttachment[]) {
+  return [
+    { type: "text" as const, text, mentions: [] },
+    ...attachments.map((attachment) =>
+      attachment.kind === "image"
+        ? { type: "localImage" as const, path: attachment.path }
+        : { type: "localFile" as const, path: attachment.path, name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes },
+    ),
+  ];
+}
+
+const VOICE_NOT_CONFIGURED = "Voice transcription is not set up on this bb.";
+
+/**
+ * bb's own transcriber, the one its composer uses: `system.transcribeVoice`
+ * posts the audio to `/api/v1/system/voice-transcription`, whose service is
+ * `BB_TRANSCRIPTION` (5 MB with the default Codex service, 25 MB with OpenAI,
+ * 10 s per attempt, 2 attempts). The server calls it for the shell, so the
+ * recording travels shell → this plugin → bb on the reader's own origin and
+ * credential (the plugin route), which is also how a host without bb would
+ * serve it. bb takes no language: a hint rides at the head of the context.
+ * spec R8.35, R5.70, R5.72, D38
+ */
+export function createBbVoice(bb: BbPluginApi): VoiceHost {
+  return {
+    async status() {
+      try {
+        const config = await bb.sdk.system.config();
+        return config.voiceTranscriptionEnabled ? { available: true } : { available: false, reason: VOICE_NOT_CONFIGURED };
+      } catch (error) {
+        bb.log.warn(`voice: bb did not say whether transcription is configured: ${errorText(error)}`);
+        return { available: false, reason: "This bb cannot say whether voice transcription is set up right now." };
+      }
+    },
+    async transcribe(audio) {
+      if (audio.bytes.byteLength === 0) throw new PageError("invalid_request", "The recording is empty");
+      if (audio.bytes.byteLength > LIMITS.transcriptionBytes) throw new PageError("request_too_large", "The recording is larger than this host can transcribe");
+      const mimeType = audio.mimeType || "audio/webm";
+      const file = new File([Buffer.from(audio.bytes)], `voice-input.${audioExtension(mimeType)}`, { type: mimeType });
+      const context = [audio.language ? `Language: ${audio.language}.` : "", audio.prompt ?? ""].filter(Boolean).join("\n");
+      try {
+        const answer = await bb.sdk.system.transcribeVoice({ file, ...(context ? { prompt: context } : {}) });
+        return { text: typeof answer.text === "string" ? answer.text : "" };
+      } catch (error) {
+        const text = errorText(error);
+        if (isTooLarge(error) || /\bexceeds\b.*\blimit\b/i.test(text)) {
+          throw new PageError("request_too_large", "The recording is longer than this host's transcription service accepts", { cause: error });
+        }
+        if (/not_configured|No loaded plugin registers|requires OPENAI_API_KEY/i.test(text)) throw new PageError("unavailable", VOICE_NOT_CONFIGURED, { cause: error });
+        if (/timeout|timed out/i.test(text)) throw new PageError("unavailable", "Transcription took too long; try a shorter recording", { cause: error });
+        throw new PageError("unavailable", "The recording could not be transcribed", { cause: error });
+      }
+    },
+  };
+}
+
+function audioExtension(mimeType: string): string {
+  const type = mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (type === "audio/mp4" || type === "audio/x-m4a" || type === "audio/aac") return "m4a";
+  if (type === "audio/ogg") return "ogg";
+  if (type === "audio/mpeg") return "mp3";
+  if (type === "audio/wav" || type === "audio/x-wav") return "wav";
+  return "webm";
+}
+
+/**
+ * bb's project attachments, the ones its composer uploads: the prompt then
+ * carries each as a `localImage` or `localFile` item. bb (0.43) has no route
+ * to remove an attachment, so `remove` is absent and a call whose upload fails
+ * part-way leaves the earlier files in the project's attachment store,
+ * attached to nothing; the route logs them. spec R8.36, R5.79, D40
+ */
+export function createBbAttachments(bb: BbPluginApi): AttachmentHost {
+  return {
+    async upload(projectId, file) {
+      try {
+        const stored = await bb.sdk.projects.attachments.upload({
+          projectId,
+          clientFile: new Blob([Buffer.from(file.bytes)], { type: file.mimeType }),
+          filename: file.name,
+          mimeType: file.mimeType,
+        });
+        return {
+          kind: stored.type === "localImage" ? "image" : "file",
+          path: stored.path,
+          name: stored.name,
+          mimeType: stored.mimeType ?? file.mimeType,
+          sizeBytes: stored.sizeBytes,
+        };
+      } catch (error) {
+        if (isTooLarge(error) || /\b(too large|exceeds)\b/i.test(errorText(error))) throw new PageError("request_too_large", "The host refused the file for its size", { cause: error });
+        if (isNotFound(error)) throw new PageError("not_found", "That project is not available", { cause: error });
+        throw new PageError("handler_error", "The host could not store the file", { cause: error });
+      }
+    },
+  };
 }
 
 /** bb marks a thread unread when it asked for attention after the reader last looked. */

@@ -13,8 +13,10 @@ export const LIMITS = Object.freeze({
   uploadFileBytes: 24 * 1024 * 1024,
   /** Files per form submission; extras are ignored visibly. R4.23 */
   uploadsPerForm: 8,
-  /** Submission JSON body, excluding uploaded bytes. */
+  /** Submission JSON body, excluding uploaded bytes and transcripts. */
   submissionBodyBytes: 64 * 1024,
+  /** One recording's transcript carried in an answer beside its file. R4.24b */
+  transcriptChars: 16_000,
   /** Answers per submission, and characters per answer value. */
   answersPerSubmission: 64,
   answerValueChars: 8_000,
@@ -42,6 +44,22 @@ export const LIMITS = Object.freeze({
   promptChars: 32 * 1024,
   /** `session.reply` result, serialised. */
   resultTextBytes: 64 * 1024,
+  /**
+   * Voice: a recording's length (default and range), the context sent with it,
+   * and the shortest recording that is sent. R5.70, R5.71
+   */
+  voiceDefaultSeconds: 120,
+  voiceMaxSeconds: 600,
+  voicePromptChars: 1000,
+  voiceMinMs: 1000,
+  /**
+   * The most audio the plugin passes to the host's transcriber: bb's own cap
+   * (25 MB, OpenAI). bb's default service takes 5 MB, and says so itself. R5.72
+   */
+  transcriptionBytes: 25 * 1024 * 1024,
+  /** Files one `sessions.start` or `sessions.send` carries, and each one's size. R5.77 */
+  promptFiles: 8,
+  promptFileBytes: 24 * 1024 * 1024,
   /** Titles, names and labels shown to a reader. */
   titleChars: 240,
   /** One `storage` value, serialised. R5.19 */
@@ -133,9 +151,11 @@ export const LIMITS = Object.freeze({
   /** Bridge envelope identifiers. */
   requestIdChars: 96,
   methodNameChars: 96,
-  tokenChars: 4_096,
+  /** Signed tokens; a challenge carries its summary, which may name eight files. */
+  tokenChars: 8_192,
   errorMessageChars: 512,
-  summaryChars: 512,
+  /** A confirmation's summary; room to name every file of a call with its size. R5.78 */
+  summaryChars: 1024,
   /** Sizes of lists a capability may return. */
   projectsMax: 200,
   providersMax: 64,

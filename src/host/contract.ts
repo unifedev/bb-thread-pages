@@ -5,12 +5,14 @@ import type {
   FileContent,
   HostLogger,
   ProjectRecord,
+  PromptAttachment,
   ProviderChoice,
   SendMode,
   SessionListQuery,
   SessionRecord,
   StartSessionArgs,
   StorageLocation,
+  VoiceStatus,
   WriteOutcome,
 } from "./types.ts";
 
@@ -25,7 +27,8 @@ export interface SessionHost {
     /** null when the session does not exist. */
     get(id: string): Promise<SessionRecord | null>;
     list(query: SessionListQuery): Promise<SessionRecord[]>;
-    send(id: string, text: string, mode: SendMode): Promise<{ delivery: Delivery }>;
+    /** `attachments` only on a host with `attachments` (R8.36). */
+    send(id: string, text: string, mode: SendMode, attachments?: readonly PromptAttachment[]): Promise<{ delivery: Delivery }>;
     start(args: StartSessionArgs): Promise<{ id: string }>;
     stop(id: string): Promise<void>;
     archive(id: string): Promise<void>;
@@ -77,6 +80,38 @@ export interface SessionHost {
    * without an extension system conforms without it. spec R8.30–R8.32
    */
   readonly contributors?: ContributorHost;
+  /**
+   * Transcribe these bytes. Optional: without it voice answers `unavailable`
+   * and text areas show no Dictate. spec R8.35
+   */
+  readonly voice?: VoiceHost;
+  /**
+   * Attach these files to a prompt in this project. Optional: without it a
+   * `sessions.start` or `sessions.send` carrying files answers `unavailable`.
+   * spec R8.36
+   */
+  readonly attachments?: AttachmentHost;
+}
+
+export interface VoiceHost {
+  /** Whether a transcription service is configured now; asked before anything is recorded. spec R5.69 */
+  status(): Promise<VoiceStatus>;
+  /**
+   * The host's transcript of one recording. Throws a `PageError`:
+   * `request_too_large` over the host's size limit, `unavailable` otherwise.
+   * spec R5.70, R5.72
+   */
+  transcribe(audio: { readonly bytes: Uint8Array; readonly mimeType: string; readonly prompt?: string; readonly language?: string }): Promise<{ text: string }>;
+}
+
+export interface AttachmentHost {
+  /**
+   * Stores one file as an attachment of the project. Throws a `PageError`:
+   * `request_too_large` when the host refuses it for its size.
+   */
+  upload(projectId: string, file: { readonly name: string; readonly mimeType: string; readonly bytes: Uint8Array }): Promise<PromptAttachment>;
+  /** Removes an attachment it stored; absent when the host has no way to (R8.36 SHOULD). */
+  remove?(projectId: string, attachment: PromptAttachment): Promise<void>;
 }
 
 /** A contributor's answer to one call, as it crosses from the contributor. spec R5.41b */

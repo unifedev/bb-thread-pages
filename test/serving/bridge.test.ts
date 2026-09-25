@@ -49,7 +49,7 @@ describe("reads", () => {
     expect(result.session).toEqual({ id: "thr_a", title: "Session thr_a", projectId: "proj_a" });
     expect(result.page).toEqual({ revision: revisionOf(PAGE), readOnly: false });
     expect(result.capabilities.map((entry) => entry.method)).toContain("sessions.start");
-    expect(result.capabilities.map((entry) => entry.method)).not.toContain("voice.captureAndTranscribe");
+    expect(result.capabilities).toContainEqual(expect.objectContaining({ method: "voice.captureAndTranscribe", effect: "device", confirmation: "required" }));
   });
 
   it("session.activity refuses a session id and answers for the owner only", async () => {
@@ -115,7 +115,6 @@ describe("reads", () => {
 describe("protocol errors", () => {
   it("reports unknown_method, stale_page, invalid envelopes and bad tokens with codes", async () => {
     expect((await call("fixture.nonexistentMethod", {})).body.response?.error?.code).toBe("unknown_method");
-    expect((await call("voice.captureAndTranscribe", {})).body.response?.error?.code).toBe("unknown_method");
     const stale = await call("context.get", null, { revision: "8".repeat(64) });
     expect(stale.body.response?.error?.code).toBe("stale_page");
     const badToken = await fixture.post(`${ROUTE_BASE}/bridge`, { actionToken: "nope", request: { v: 1, id: "tp-x", method: "context.get", params: null, pageRevision: revisionOf(PAGE) } });

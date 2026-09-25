@@ -55,6 +55,58 @@ describe("bb adapter", () => {
     expect(calls[1]![0]).toMatchObject({ environment: { type: "reuse", environmentId: "env_9" }, providerId: "codex", title: "T" });
   });
 
+  // Spec 1.5: bb's transcriber and project attachments. R8.35, R8.36, D38, D40
+  it("asks bb whether voice is configured, and transcribes through system.transcribeVoice with the context", async () => {
+    let configured = true;
+    const { host, fake } = hostWith({
+      system: {
+        config: async () => ({ voiceTranscriptionEnabled: configured }) as never,
+        transcribeVoice: async () => ({ text: "spoken words" }),
+      },
+    });
+    expect(await host.voice!.status()).toEqual({ available: true });
+    configured = false;
+    expect(await host.voice!.status()).toEqual({ available: false, reason: "Voice transcription is not set up on this bb." });
+    expect(await host.voice!.transcribe({ bytes: new Uint8Array([1, 2, 3]), mimeType: "audio/ogg;codecs=opus", prompt: "the text so far", language: "fr" })).toEqual({ text: "spoken words" });
+    const [args] = fake.harness.inspection.sdk.callsTo("system.transcribeVoice")[0] as [{ file: File; prompt: string }];
+    expect(args.file.type).toBe("audio/ogg;codecs=opus");
+    expect(args.file.name).toBe("voice-input.ogg");
+    expect(args.file.size).toBe(3);
+    expect(args.prompt).toBe("Language: fr.\nthe text so far");
+  });
+
+  it("turns bb's transcription failures into request_too_large or unavailable", async () => {
+    const failing = (message: string, status = 400) => hostWith({ system: { transcribeVoice: async () => Promise.reject(Object.assign(new Error(message), { status })) } }).host;
+    await expect(failing("Audio file exceeds the 5MB limit for plugin-served transcription").voice!.transcribe({ bytes: new Uint8Array([1]), mimeType: "audio/webm" })).rejects.toMatchObject({ code: "request_too_large" });
+    await expect(failing("No loaded plugin registers AI service \"codex\" for voice transcription", 501).voice!.transcribe({ bytes: new Uint8Array([1]), mimeType: "audio/webm" })).rejects.toMatchObject({ code: "unavailable", message: "Voice transcription is not set up on this bb." });
+    await expect(failing("Voice transcription timed out", 504).voice!.transcribe({ bytes: new Uint8Array([1]), mimeType: "audio/webm" })).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("uploads project attachments and carries them beside the prompt as bb's composer does", async () => {
+    const { host, fake } = hostWith({
+      projects: {
+        attachments: {
+          upload: async (args: { filename?: string; mimeType?: string }) => ({ type: args.mimeType?.startsWith("image/") ? "localImage" : "localFile", path: `att/${args.filename}`, name: args.filename ?? "", mimeType: args.mimeType, sizeBytes: 4 }) as never,
+        },
+      } as never,
+      threads: { spawn: async () => ({ id: "thr_new" }) as never, send: async () => ({ delivery: "started" }) as never, get: async () => null as never },
+    });
+    const image = await host.attachments!.upload("proj_a", { name: "shot.png", mimeType: "image/png", bytes: new Uint8Array(4) });
+    const log = await host.attachments!.upload("proj_a", { name: "build.log", mimeType: "text/plain", bytes: new Uint8Array(4) });
+    expect(image).toEqual({ kind: "image", path: "att/shot.png", name: "shot.png", mimeType: "image/png", sizeBytes: 4 });
+    expect(host.attachments!.remove).toBeUndefined();
+    await host.sessions.start({ projectId: "proj_a", prompt: "look", environment: { kind: "project-default" }, attachments: [image, log] });
+    const spawned = fake.harness.inspection.sdk.callsTo("threads.spawn")[0]![0] as Record<string, unknown>;
+    expect(spawned.prompt).toBeUndefined();
+    expect(spawned.input).toEqual([
+      { type: "text", text: "look", mentions: [] },
+      { type: "localImage", path: "att/shot.png" },
+      { type: "localFile", path: "att/build.log", name: "build.log", mimeType: "text/plain", sizeBytes: 4 },
+    ]);
+    await host.sessions.send("thr_b", "and this", "queue", [log]);
+    expect((fake.harness.inspection.sdk.callsTo("threads.send")[0]![0] as { input: unknown[] }).input).toHaveLength(2);
+  });
+
   it("marks read and unread through bb and reports the resulting mark", async () => {
     const { host, fake } = hostWith({
       threads: {

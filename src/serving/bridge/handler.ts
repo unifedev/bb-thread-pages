@@ -32,6 +32,13 @@ export interface GrantRequest {
 
 export interface CapabilityHandler<P = unknown, R = unknown> {
   readonly method: string;
+  /**
+   * `recording-bar`: confirmed by the reader's Done in the shell's recording
+   * bar, not a dialog. The dispatcher answers the call with the validated
+   * parameters for the shell to record with; the shell then records,
+   * transcribes and answers the page itself. spec R3.32, R5.68, D38
+   */
+  readonly confirmedBy?: "recording-bar";
   refuse?(params: P, context: HandlerContext): Promise<void>;
   summarize?(params: P, context: HandlerContext): Promise<string>;
   /**

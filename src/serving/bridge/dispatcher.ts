@@ -87,6 +87,14 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
 
       await entry?.refuse?.(invocation.params, context);
 
+      // Voice is confirmed by the reader's Done in the shell's own recording bar, not by a dialog:
+      // the shell gets the validated parameters, records and transcribes. No challenge is issued,
+      // so none is ever accepted for it. spec R3.32, R5.68
+      if (entry?.confirmedBy === "recording-bar") {
+        if (envelope.confirmation !== null) throw new PageError("confirmation_invalid", "This capability is confirmed in the recording bar, not by a challenge");
+        return { status: 401, body: { record: { requestId: request.id, params: invocation.params as JsonValue } } };
+      }
+
       // Contributed capabilities are never confirmed; their specs say so. spec R5.50
       if (invocation.spec.confirmed && entry) {
         const binding = { session: token.session, revision: token.revision, requestId: request.id, method: request.method, params: invocation.params as JsonValue };

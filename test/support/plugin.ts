@@ -1,7 +1,7 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createPlugin } from "../../src/plugin.ts";
 import type { ServingContext } from "../../src/serving/context.ts";
-import { createFakeHost, type FakeHostState } from "./fake-host.ts";
+import { createFakeHost, type FakeHostOptions, type FakeHostState } from "./fake-host.ts";
 
 export const ROUTE_BASE = "/api/v1/plugins/thread-pages/http";
 
@@ -17,9 +17,9 @@ export interface PluginFixture {
   dispose(): Promise<void>;
 }
 
-export async function loadPlugin(settings: Record<string, string | number | boolean> = {}): Promise<PluginFixture> {
+export async function loadPlugin(settings: Record<string, string | number | boolean> = {}, hostOptions: FakeHostOptions = {}): Promise<PluginFixture> {
   const fake = createFakePluginHost({ pluginId: "thread-pages", settings });
-  const { host, state } = createFakeHost();
+  const { host, state } = createFakeHost(hostOptions);
   const clock = { now: 1_700_000_000_000 };
   const serving = await createPlugin(fake.bb, { host, now: () => clock.now });
   return {

@@ -11,12 +11,14 @@ import type { SessionHost } from "./host/contract.ts";
 import { createAssembler } from "./pages/assemble.ts";
 import { createPageStore } from "./pages/page-store.ts";
 import { createCoreStorageSite, type SiteStrategy } from "./pages/site.ts";
+import { createHeldAttachments } from "./serving/attach-route.ts";
 import { createSelectionStore } from "./serving/bridge/selection-store.ts";
 import { createContributions, instructionFragments } from "./serving/contributions.ts";
 import { createGrantStore } from "./serving/grants.ts";
 import type { ServingContext } from "./serving/context.ts";
 import { registerRoutes } from "./serving/routes.ts";
 import { loadSigningKey } from "./serving/signing-key.ts";
+import { createVoiceAvailability } from "./serving/voice.ts";
 
 /**
  * The composition root: the only file that knows every package. Builds the
@@ -57,6 +59,8 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
     replies: createOutcomeMemory(),
     selections: createSelectionStore(),
     grants: createGrantStore(host),
+    voice: createVoiceAvailability(host, now),
+    attachments: createHeldAttachments(),
     hostSessionUrl: bbSessionUrl,
     now,
   };

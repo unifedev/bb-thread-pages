@@ -5,14 +5,34 @@ import type { HostLogger } from "../host/types.ts";
 
 /** Response helpers and the two content security policies. spec R2.41–R2.43, 03 */
 
+/**
+ * Every response refuses the powerful features. The page document keeps the
+ * microphone refused too: only the shell records (R3.30).
+ */
+export const PERMISSIONS_POLICY = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
+/**
+ * The shell alone may use the microphone, for its own recording bar; it
+ * delegates nothing to the page frame, whose `allow` never names it. Every
+ * other feature stays refused. spec R3.31, D38
+ */
+export const SHELL_PERMISSIONS_POLICY = "camera=(), microphone=(self), geolocation=(), payment=(), usb=()";
+
 export function baseHeaders(contentType: string): Headers {
   return new Headers({
     "cache-control": "no-store, max-age=0",
     "content-type": contentType,
     "referrer-policy": "no-referrer",
     "x-content-type-options": "nosniff",
-    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    "permissions-policy": PERMISSIONS_POLICY,
   });
+}
+
+/** The trusted shell's headers: its nonce policy, and the microphone for itself. */
+export function shellHeaders(nonce: string): Headers {
+  const headers = baseHeaders("text/html; charset=utf-8");
+  headers.set("content-security-policy", shellCsp(nonce));
+  headers.set("permissions-policy", SHELL_PERMISSIONS_POLICY);
+  return headers;
 }
 
 /** The trusted shell: nothing runs but our nonced script and style. */

@@ -12,8 +12,9 @@ import { BUILTIN_HOME_ID, BUILTIN_HOME_PAGE, BUILTIN_HOME_TITLE } from "./builti
 import type { ServingContext } from "./context.ts";
 import { describeGrants } from "./grants.ts";
 import { pageUrl } from "./context.ts";
-import { baseHeaders, documentCsp, failureResponse, shellCsp } from "./responses.ts";
+import { baseHeaders, documentCsp, failureResponse, shellHeaders } from "./responses.ts";
 import { renderShell } from "./shell-html.ts";
+import { voiceConfig } from "./voice.ts";
 
 export const STALE_HOME_NOTICE = "Home pointed at a session that no longer exists — this is the built-in home page";
 
@@ -70,11 +71,12 @@ export function homeRoute(serving: ServingContext) {
           grants: await describeGrants(serving.host, serving.grants, BUILTIN_HOME_ID),
           maxUploadBytes: LIMITS.uploadFileBytes,
           maxUploads: LIMITS.uploadsPerForm,
+          voice: await voiceConfig(serving),
+          transcribeUrl: `${serving.routeBase}/transcribe`,
+          attachUrl: `${serving.routeBase}/attach`,
         },
       });
-      const headers = baseHeaders("text/html; charset=utf-8");
-      headers.set("content-security-policy", shellCsp(nonce));
-      return new Response(html, { status: 200, headers });
+      return new Response(html, { status: 200, headers: shellHeaders(nonce) });
     } catch (error) {
       return failureResponse(error, serving.host.log, "GET /home", true);
     }
@@ -93,7 +95,8 @@ export function homeDocumentRoute(serving: ServingContext) {
       if (ifNoneMatchMatches(context.req.header("if-none-match"), etagFor(BUILTIN_HOME_PAGE.revision))) {
         return new Response(null, { status: 304, headers });
       }
-      const config: KernelConfig = { pageRevision: BUILTIN_HOME_PAGE.revision, stale: false, siteRoot: null };
+      // No session storage, so no uploads: text areas there offer Dictate only. spec R4.60
+      const config: KernelConfig = { pageRevision: BUILTIN_HOME_PAGE.revision, stale: false, siteRoot: null, uploads: false };
       return new Response(injectKernel(BUILTIN_HOME_PAGE.html, { kernel: KERNEL_RUNTIME, config, baseHref: null }), { status: 200, headers });
     } catch (error) {
       return failureResponse(error, serving.host.log, "GET /home-document", true);

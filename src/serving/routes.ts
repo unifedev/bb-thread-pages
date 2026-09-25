@@ -1,4 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { attachRoute } from "./attach-route.ts";
 import { createDispatcher } from "./bridge/dispatcher.ts";
 import { ALL_HANDLERS } from "./bridge/handlers/index.ts";
 import { bridgeRoute } from "./bridge-route.ts";
@@ -10,6 +11,7 @@ import { homeDocumentRoute, homeRoute } from "./home-route.ts";
 import { shellRoute } from "./shell-route.ts";
 import { submitRoute } from "./submit-route.ts";
 import { uploadRoute } from "./upload-route.ts";
+import { transcribeRoute } from "./voice.ts";
 
 /**
  * The route table. spec 02 §Routes
@@ -28,4 +30,7 @@ export function registerRoutes(bb: BbPluginApi, serving: ServingContext): void {
   bb.http.route("POST", "/bridge", bridgeRoute(dispatch), { auth: "local" });
   bb.http.route("POST", "/chrome-action", chromeActionRoute(serving), { auth: "local" });
   bb.http.route("POST", "/document-session", documentSessionRoute(serving), { auth: "local" });
+  // Spec 1.5: the shell's recordings, and the files of an approved sessions.start or sessions.send. D38, D40
+  bb.http.route("POST", "/transcribe", transcribeRoute(serving), { auth: "local" });
+  bb.http.route("POST", "/attach", attachRoute(serving), { auth: "local" });
 }

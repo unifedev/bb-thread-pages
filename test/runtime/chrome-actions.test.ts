@@ -30,6 +30,9 @@ const config: ShellConfig = {
   grants: [],
   maxUploadBytes: 1024,
   maxUploads: 2,
+  voice: { available: true, reason: null },
+  transcribeUrl: "/transcribe",
+  attachUrl: "/attach",
 };
 
 function fixture(options: { pinned?: boolean; unread?: boolean; stale?: boolean } = {}) {

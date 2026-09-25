@@ -52,7 +52,37 @@ dialog{margin:auto;max-width:min(30rem,calc(100vw - 2rem));padding:1.15rem 1.25r
 dialog::backdrop{background:rgb(0 0 0 / .45)}dialog h2{margin:0 0 .5rem;font-size:1rem}dialog p{margin:0 0 1rem;color:var(--muted);overflow-wrap:anywhere}
 dialog .row{display:flex;gap:.5rem;justify-content:flex-end}dialog button{padding:.4rem .8rem;border:1px solid var(--line);border-radius:.4rem;color:var(--ink);background:var(--bg);cursor:pointer}
 dialog button[value=confirm]{color:#fff;background:var(--accent);border-color:var(--accent)}
+dialog p{white-space:pre-line}
+/* The recording bar: shell chrome over the stage, where the page cannot draw. spec R3.32 */
+.rec{position:absolute;left:50%;bottom:max(.75rem,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:3;width:min(34rem,calc(100% - 1.5rem));display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto;grid-template-areas:"mic wave time cancel done" "status status status status status";align-items:center;gap:.35rem .6rem;padding:.6rem .75rem;border:1px solid var(--line);border-radius:.75rem;background:var(--surface);color:var(--ink);box-shadow:0 10px 30px rgb(0 0 0 / .2);outline:none}
+.rec[hidden]{display:none}.rec:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.rec svg{width:16px;height:16px;flex:none}
+.rec-mic{grid-area:mic;display:inline-flex;color:var(--muted)}.rec[data-state=recording] .rec-mic{color:var(--warn)}
+@media(prefers-reduced-motion:no-preference){.rec[data-state=recording] .rec-mic{animation:tp-pulse 1.4s ease-in-out infinite}}
+.rec-wave{grid-area:wave;display:block;width:100%;height:28px;color:var(--accent)}
+.rec-time{grid-area:time;color:var(--muted);font-variant-numeric:tabular-nums}
+.rec-status{grid-area:status;min-height:1.1em;color:var(--muted);font-size:.8rem}.rec[data-state=short] .rec-status{color:var(--warn);font-weight:600}
+.rec-btn{display:inline-flex;align-items:center;gap:.3rem;padding:.35rem .7rem;border:1px solid var(--line);border-radius:.4rem;color:var(--ink);background:var(--bg);cursor:pointer;font:inherit}
+.rec-btn[data-rec=cancel]{grid-area:cancel}.rec-btn[data-rec=done]{grid-area:done;color:#fff;background:var(--accent);border-color:var(--accent)}
+.rec-btn:disabled{opacity:.5;cursor:default}
+@media(max-width:26rem){.rec{grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"mic wave time" "status status status" "cancel cancel done"}.rec-btn{justify-content:center}}
 `;
+
+/** Line icons for the recording bar, drawn in the text colour. */
+const ICON = (path: string) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${path}</svg>`;
+const MIC_ICON = ICON('<path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/>');
+const CANCEL_ICON = ICON('<path d="M6 6l12 12M18 6L6 18"/>');
+const DONE_ICON = ICON('<path d="M5 12.5l4.5 4.5L19 7"/>');
+
+/** The recording bar, hidden until a recording is asked for. spec R3.32, R5.68 */
+const RECORDER = `<section class="rec" data-shell-recorder hidden tabindex="-1" aria-label="Voice recording" aria-describedby="tp-rec-status">
+    <span class="rec-mic">${MIC_ICON}</span>
+    <canvas class="rec-wave" width="400" height="56" aria-hidden="true"></canvas>
+    <span class="rec-time" data-rec-time aria-hidden="true">0:00</span>
+    <span class="rec-status" id="tp-rec-status" data-rec-status role="status" aria-live="polite"></span>
+    <button type="button" class="rec-btn" data-rec="cancel">${CANCEL_ICON}Cancel</button>
+    <button type="button" class="rec-btn" data-rec="done">${DONE_ICON}Done</button>
+  </section>`;
 
 function initialStatus(config: ShellConfig): string {
   if (config.stale) return "Offline copy — read-only";
@@ -94,7 +124,8 @@ export function renderShell(view: ShellView): string {
     ${acts}
     <button type="button" class="reload" data-shell-reload aria-label="Reload updated page">Reload</button>
   </header>
-  <div class="stage"><iframe title="${title}" sandbox="${PAGE_SANDBOX}" allow="${PAGE_FRAME_ALLOW}" referrerpolicy="no-referrer"></iframe></div>
+  <div class="stage"><iframe title="${title}" sandbox="${PAGE_SANDBOX}" allow="${PAGE_FRAME_ALLOW}" referrerpolicy="no-referrer"></iframe>
+  ${RECORDER}</div>
 </div>
 <dialog aria-labelledby="tp-confirm-title">
   <form method="dialog">

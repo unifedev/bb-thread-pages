@@ -40,9 +40,15 @@ function request(method: string, params: unknown, id = "tp-1") {
 }
 
 describe("capability registry", () => {
-  it("exposes exactly the spec 05 surface, with voice deferred", () => {
+  it("exposes exactly the spec 05 surface, voice listed as confirmed (spec 1.5, R5.74)", () => {
     expect(capabilityRegistry.list().map((entry) => entry.method)).toEqual(SPEC_NAMES);
-    expect(capabilityRegistry.descriptors().map((entry) => entry.method)).not.toContain("voice.captureAndTranscribe");
+    expect(capabilityRegistry.descriptors().find((entry) => entry.method === "voice.captureAndTranscribe")).toEqual({
+      method: "voice.captureAndTranscribe",
+      effect: "device",
+      confirmation: "required",
+      maxRequestBytes: LIMITS.capabilityPayloadBytes,
+      maxResponseBytes: LIMITS.capabilityPayloadBytes,
+    });
     expect(capabilityRegistry.descriptors().find((entry) => entry.method === "sessions.start")).toEqual({
       method: "sessions.start",
       effect: "cross-session-write",
@@ -85,11 +91,24 @@ describe("bridge requests", () => {
     expect(() => resolveInvocation(overBuiltIn, capabilityRegistry, REV)).toThrow(expect.objectContaining({ code: "request_too_large" }));
   });
 
-  it("refuses stale revisions before looking at the method, and unknown or deferred methods", () => {
+  it("refuses stale revisions before looking at the method, and unknown methods", () => {
     const stale = decodeBridgeRequest(request("context.get", null));
     expect(() => resolveInvocation(stale, capabilityRegistry, "d".repeat(64))).toThrow(expect.objectContaining({ code: "stale_page" }));
     expect(() => resolveInvocation(decodeBridgeRequest(request("fixture.nonexistentMethod", {})), capabilityRegistry, REV)).toThrow(expect.objectContaining({ code: "unknown_method" }));
-    expect(() => resolveInvocation(decodeBridgeRequest(request("voice.captureAndTranscribe", {})), capabilityRegistry, REV)).toThrow(expect.objectContaining({ code: "unknown_method" }));
+  });
+
+  // Spec 1.5: the ranges are decided (R5.70), and files are described, never carried, in the JSON (R5.75).
+  it("validates voice parameters with their ranges and defaults, and files as the shell describes them", () => {
+    const voice = (params: unknown) => resolveInvocation(decodeBridgeRequest(request("voice.captureAndTranscribe", params)), capabilityRegistry, REV);
+    expect(voice({}).params).toEqual({ maxDurationSeconds: LIMITS.voiceDefaultSeconds, keepAudio: false });
+    expect(voice({ language: "pt-BR", prompt: "x".repeat(1000), maxDurationSeconds: 600, keepAudio: true }).params).toMatchObject({ language: "pt-BR", maxDurationSeconds: 600, keepAudio: true });
+    for (const bad of [{ maxDurationSeconds: 0 }, { maxDurationSeconds: 601 }, { prompt: "x".repeat(1001) }, { language: "not a tag" }, { keepAudio: "yes" }, { other: 1 }]) {
+      expect(() => voice(bad), JSON.stringify(bad).slice(0, 40)).toThrow(expect.objectContaining({ code: "invalid_params" }));
+    }
+    const start = (params: unknown) => resolveInvocation(decodeBridgeRequest(request("sessions.start", params)), capabilityRegistry, REV);
+    expect(start({ projectId: "proj_a", prompt: "go", files: [{ name: "a.png", size: 3, type: "image/png" }] }).params).toMatchObject({ files: [{ name: "a.png", size: 3, type: "image/png" }] });
+    expect(() => start({ projectId: "proj_a", prompt: "go", files: [{ name: "a.png", size: 3 }] })).toThrow(expect.objectContaining({ code: "invalid_params" }));
+    expect(() => start({ projectId: "proj_a", prompt: "go", files: [{ name: "a.png", size: 3, type: "", bytes: "…" }] })).toThrow(expect.objectContaining({ code: "invalid_params" }));
   });
 
   // 1.0.0 renamed the whole page-facing surface at once. A page written

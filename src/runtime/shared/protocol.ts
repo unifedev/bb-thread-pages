@@ -14,6 +14,11 @@ export interface BridgeRequestMessage {
   method: string;
   params: unknown;
   pageRevision: string;
+  /**
+   * The files a `sessions.start` or `sessions.send` carries, by structured
+   * clone beside the JSON parameters, never inside them. spec R5.75
+   */
+  files?: File[];
 }
 
 export type BridgeResponseMessage =
@@ -23,7 +28,12 @@ export type BridgeResponseMessage =
 export interface SubmitFile {
   field: string;
   file: File;
+  /** A recording the shell transcribes at submit: an audio capture input's file, or audio attached to a text area. spec R4.24b */
+  transcribe?: boolean;
 }
+
+/** What the kernel asks the shell's recorder for: text for a text area, or a file for an audio capture input. spec R4.58, R4.24a */
+export type RecordPurpose = "dictate" | "audio";
 
 export interface SubmitAnswer {
   name: string;
@@ -45,6 +55,8 @@ export type KernelMessage =
   | { kind: "thread-page:open-file"; path: string; download: boolean; name: string | null }
   /** An own media file too large to carry: the shell fetches it and hands the bytes back. spec R4.25a, D37 */
   | { kind: "thread-page:file-request"; id: string; path: string }
+  /** Dictate, or an audio capture input: open the shell's recording bar. spec R4.58, R4.24a, D38 */
+  | { kind: "thread-page:record"; id: string; purpose: RecordPurpose; prompt?: string }
   | BridgeRequestMessage;
 
 export type ShellMessage =
@@ -58,7 +70,15 @@ export type ShellMessage =
   /** The answer to a file request: the file's bytes, or why they cannot come. D37 */
   | { kind: "thread-page:file"; id: string; ok: true; blob: Blob }
   | { kind: "thread-page:file"; id: string; ok: false; error: string }
+  /** Whether the reader can record here, so Dictate is shown only where it works. spec R4.59 */
+  | { kind: "thread-page:voice"; available: boolean }
+  /** A recording's outcome: the transcript for Dictate, the file for an audio capture input. */
+  | RecordedMessage
   | BridgeResponseMessage;
+
+export type RecordedMessage =
+  | { kind: "thread-page:recorded"; id: string; ok: true; text?: string; file?: File }
+  | { kind: "thread-page:recorded"; id: string; ok: false; code: BridgeErrorCode; message: string };
 
 /** Carried in the kernel script's `data-config` attribute. */
 export interface KernelConfig {
@@ -68,6 +88,8 @@ export interface KernelConfig {
   siteRoot?: string | null;
   /** The document is shown inside another page: its channel leads to that page's kernel. spec R4.48 */
   embedded?: boolean;
+  /** Whether its forms can upload; false on the built-in home, which has no session storage. spec R4.60 */
+  uploads?: boolean;
 }
 
 /** Carried in the shell script's `data-config` attribute. The document fields change when another document of the page opens. */
@@ -116,6 +138,16 @@ export interface ShellConfig {
   grants: { sessionId: string; title: string }[];
   maxUploadBytes: number;
   maxUploads: number;
+  /**
+   * Voice on this host, as it stood when the shell was served: whether a
+   * transcription service is configured, and why not. The shell adds what
+   * only the reader's browser can tell (R8.37). spec R5.69, R8.35
+   */
+  voice: { available: boolean; reason: string | null };
+  /** Where the shell sends a recording to be transcribed. spec R3.34 */
+  transcribeUrl: string;
+  /** Where the shell stores the approved files of a `sessions.start` or `sessions.send`. spec R5.76 */
+  attachUrl: string;
 }
 
 /** What the shell's status says while a page does not exist yet, in chrome the page cannot touch. spec R6.19 */
@@ -139,11 +171,17 @@ export function isValidRequestId(value: unknown): value is string {
   return typeof value === "string" && ID_PATTERN.test(value);
 }
 
+/** A structured-clone `File`, however many realms away. */
+export function isFileLike(value: unknown): value is File {
+  return typeof value === "object" && value !== null && typeof (value as File).size === "number" && typeof (value as File).name === "string" && typeof (value as File).arrayBuffer === "function";
+}
+
 /** The shell checks every request before it leaves the reader's browser. */
 export function isBridgeRequest(value: unknown, pageRevision: string): value is BridgeRequestMessage {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ["v", "id", "method", "params", "pageRevision"]) &&
+    (hasExactKeys(value, ["v", "id", "method", "params", "pageRevision"]) ||
+      (hasExactKeys(value, ["v", "id", "method", "params", "pageRevision", "files"]) && Array.isArray(value.files) && value.files.every(isFileLike))) &&
     value.v === BRIDGE_VERSION &&
     isValidRequestId(value.id) &&
     typeof value.method === "string" &&

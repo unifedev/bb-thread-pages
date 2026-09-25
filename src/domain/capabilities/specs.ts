@@ -267,11 +267,29 @@ export const storageSet = spec({
 
 const sessionTarget = s.object({ sessionId: entityId("Session id") });
 
+/**
+ * The files a `sessions.start` or `sessions.send` carries, as the shell read
+ * them from the `File`s it holds: the page passes the files themselves, never
+ * this list, and their bytes never ride in the JSON payload. The count and
+ * size limits are checked by the handler, so a call over them is
+ * `request_too_large` rather than `invalid_params`. spec R5.75, R5.77, R3.20a
+ */
+export const promptFile = s.object({
+  name: s.string({ min: 1, max: 255, pattern: /^[^\u0000-\u001f\u007f]+$/, label: "File name" }),
+  size: s.integer(0, Number.MAX_SAFE_INTEGER, "File size"),
+  type: s.string({ max: 255, pattern: /^[^\u0000-\u001f\u007f]*$/, label: "File type" }),
+});
+export type PromptFile = s.Infer<typeof promptFile>;
+const promptFiles = s.optional(s.array(promptFile, 256, "Files"));
+const FILES_DOC = `\`files\` is a \`FileList\`, an array of \`File\`, or an \`<input type="file">\` (the files chosen in it): at most ${LIMITS.promptFiles} files of at most ${mebibytes(LIMITS.promptFileBytes)} each, else \`request_too_large\` before any dialog.`;
+const FILES_NOTES = `With \`files\`, the confirmation names every file with its size, nothing is uploaded before the reader confirms, and each file becomes a native attachment of the prompt in the target project — an image the model sees as an image. If an upload fails nothing is started or sent, and the call rejects naming the file (\`request_too_large\` when the host refused it for its size, \`handler_error\` otherwise). A host that cannot attach files answers \`unavailable\`; the same call without \`files\` still works.`;
+
 export type SessionsSendParams = s.Infer<typeof sessionsSendParams>;
 const sessionsSendParams = s.object({
   sessionId: entityId("Session id"),
   prompt,
   mode: s.withDefault(s.literal(["queue", "steer"], "Mode"), "queue"),
+  files: promptFiles,
 });
 
 export const sessionsSend = spec({
@@ -283,9 +301,9 @@ export const sessionsSend = spec({
   validateParams: params(sessionsSendParams),
   validateResult: result(s.object({ sessionId: entityId("Session id"), delivery: s.literal(["started", "queued", "steered"]), duplicate: s.boolean() })),
   doc: {
-    params: "`{ sessionId, prompt, mode? }` — `mode` `queue` (default) or `steer`.",
+    params: `\`{ sessionId, prompt, mode?, files? }\` — \`mode\` \`queue\` (default) or \`steer\`. ${FILES_DOC}`,
     result: "`{ sessionId, delivery, duplicate }`.",
-    notes: "Refuses this page's own session with `invalid_params`; use `session.reply` for that.",
+    notes: `Refuses this page's own session with \`invalid_params\`; use \`session.reply\` for that. The files go to the target session's project. ${FILES_NOTES}`,
   },
 });
 
@@ -301,6 +319,7 @@ const sessionsStartParams = s.object({
     s.union(s.literal(["project-default"]), s.object({ sameAs: entityId("Session id") }), "Environment"),
     "project-default" as const,
   ),
+  files: promptFiles,
 });
 
 export const sessionsStart = spec({
@@ -312,10 +331,9 @@ export const sessionsStart = spec({
   validateParams: params(sessionsStartParams),
   validateResult: result(s.object({ sessionId: entityId("Session id") })),
   doc: {
-    params: "`{ projectId, prompt, title?, providerId?, model?, reasoningLevel?, environment? }`.",
+    params: `\`{ projectId, prompt, title?, providerId?, model?, reasoningLevel?, environment?, files? }\`. ${FILES_DOC}`,
     result: "`{ sessionId }`.",
-    notes:
-      "Defaults when you say nothing: the project's default environment, the project's default provider, model and reasoning level. Say otherwise with `providerId`/`model`/`reasoningLevel` from `providers.list`, or `environment: { sameAs: sessionId }` to run in the same environment as another session. The started session is a visible root owned by the reader, never a child of this page's session.",
+    notes: `Defaults when you say nothing: the project's default environment, the project's default provider, model and reasoning level. Say otherwise with \`providerId\`/\`model\`/\`reasoningLevel\` from \`providers.list\`, or \`environment: { sameAs: sessionId }\` to run in the same environment as another session. The started session is a visible root owned by the reader, never a child of this page's session. The files go to \`projectId\`. ${FILES_NOTES}`,
   },
 });
 
@@ -544,21 +562,32 @@ export const projectsCreate = spec({
   doc: { params: "`{ selectionToken, name? }`.", result: "`{ project: { id, name, kind } }`.", notes: "An expired, reused or foreign token fails with `not_found`." },
 });
 
+export type VoiceParams = s.Infer<typeof voiceParams>;
+const voiceParams = s.object({
+  language: s.optional(s.string({ min: 2, max: 35, pattern: /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/, label: "Language" })),
+  prompt: s.optional(s.string({ max: LIMITS.voicePromptChars, label: "Prompt" })),
+  maxDurationSeconds: s.withDefault(s.integer(1, LIMITS.voiceMaxSeconds, "Duration"), LIMITS.voiceDefaultSeconds),
+  keepAudio: s.withDefault(s.boolean(), false),
+});
+
+/**
+ * Confirmed by the shell's recording bar, not a dialog: the bar's Done is the
+ * reader's approval. `audio` is added by the shell, as a Blob beside the JSON
+ * result, only when `keepAudio` asks for it. spec R5.68–R5.74, D38
+ */
 export const voiceCaptureAndTranscribe = spec({
   method: "voice.captureAndTranscribe",
-  description: "Record and transcribe the reader's voice through trusted chrome.",
+  description: "Record the reader in the top bar's recording bar and return the host's transcript.",
   effect: "device",
   confirmed: true,
-  implemented: false,
-  validateParams: params(
-    s.object({
-      language: s.optional(s.string({ min: 2, max: 64, pattern: /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/, label: "Language" })),
-      prompt: s.optional(s.string({ max: 1000, label: "Prompt" })),
-      maxDurationSeconds: s.withDefault(s.integer(1, 120, "Duration"), 120),
-    }),
-  ),
+  implemented: true,
+  validateParams: params(voiceParams),
   validateResult: result(s.object({ text: s.string({ max: LIMITS.resultTextBytes, label: "Transcript" }) })),
-  doc: { params: "`{ language?, prompt?, maxDurationSeconds? }`.", result: "`{ text }`.", notes: "Deferred: the contract exists, the host reports `unknown_method`." },
+  doc: {
+    params: `\`{ language?, prompt?, maxDurationSeconds?, keepAudio? }\` — \`language\` a language tag such as \`en\` or \`pt-BR\`, a hint; \`prompt\` at most ${LIMITS.voicePromptChars} characters of context (names, terms, what came before); \`maxDurationSeconds\` 1 to ${LIMITS.voiceMaxSeconds}, default ${LIMITS.voiceDefaultSeconds}; \`keepAudio\` default false.`,
+    result: "`{ text }`, the host's transcript; with `keepAudio: true` also `audio`, a `Blob` of the recording whose `type` is the recording's (such as `audio/webm;codecs=opus`). The Blob is not JSON and does not count against the payload limit.",
+    notes: `No dialog: the top bar's recording bar is the confirmation — a live waveform, Cancel and Done — and nothing leaves the reader's device until they press Done. It opens only while the reader has just pressed something in your page, so call this from a click or key handler, and one at a time. At \`maxDurationSeconds\` recording stops and the bar waits for Done or Cancel. Cancel, Escape, and a Done before ${LIMITS.voiceMinMs / 1000} s (the bar says *Too short*) reject with \`cancelled\`. \`unavailable\`, with the reason, when the host has no transcription configured, when the reader's browser or app cannot record (the bb desktop app's in-app browser tab cannot), when the microphone was refused, when the call came without the reader's action or while another question is open, or when transcription failed; \`request_too_large\` when the recording is over the host's limit (on bb 5 MB with its default transcription service, 25 MB with OpenAI; each attempt 10 s, 2 attempts). Listed in \`context.get\` wherever the host implements it, even when voice cannot work for this reader; not available inside an embed.`,
+  },
 });
 
 export const ALL_CAPABILITIES = Object.freeze([

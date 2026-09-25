@@ -2,7 +2,7 @@ import type { SessionState } from "../../src/domain/capabilities/specs.ts";
 import { PageError } from "../../src/domain/errors.ts";
 import type { JsonValue } from "../../src/domain/json/strict-json.ts";
 import type { ContributorAnswer, ContributorCall, SessionHost } from "../../src/host/contract.ts";
-import type { ActivityItem, ProjectRecord, ProviderChoice, SessionRecord, StartSessionArgs } from "../../src/host/types.ts";
+import type { ActivityItem, ProjectRecord, PromptAttachment, ProviderChoice, SessionRecord, StartSessionArgs } from "../../src/host/types.ts";
 import { revisionOf } from "../../src/domain/revision.ts";
 import { joinPath } from "../../src/pages/layout.ts";
 
@@ -27,6 +27,22 @@ export interface FakeHostState {
   /** Installed contributors: a declaration and how each call is answered. */
   contributors: { id: string; declaration: unknown; answer: (call: ContributorCall) => Promise<ContributorAnswer> }[];
   contributorCalls: { id: string; call: ContributorCall }[];
+  /** Voice: whether a service is configured, what it answers, or how it fails. */
+  voiceConfigured: boolean;
+  transcript: string;
+  transcribeError: PageError | null;
+  /** Attachments: a file name whose upload fails, how, and whether the host can remove what it stored. */
+  attachFailure: { name: string; error: PageError } | null;
+  attachments: { projectId: string; attachment: PromptAttachment }[];
+}
+
+export interface FakeHostOptions {
+  /** The host can transcribe (R8.35). Default true. */
+  voice?: boolean;
+  /** The host can attach files to a prompt (R8.36). Default true. */
+  attachments?: boolean;
+  /** The host can remove an attachment it stored. Default true. */
+  removable?: boolean;
 }
 
 export const HOST_ID = "host_test";
@@ -58,7 +74,7 @@ export function fileKey(session: string, relativePath: string): string {
   return joinPath(`${ROOT}/${session}`, relativePath);
 }
 
-export function createFakeHost(): { host: SessionHost; state: FakeHostState } {
+export function createFakeHost(options: FakeHostOptions = {}): { host: SessionHost; state: FakeHostState } {
   const state: FakeHostState = {
     sessions: new Map(),
     files: new Map(),
@@ -75,6 +91,11 @@ export function createFakeHost(): { host: SessionHost; state: FakeHostState } {
     pickedFolder: "/Users/bart/proj",
     contributors: [],
     contributorCalls: [],
+    voiceConfigured: true,
+    transcript: "hello from the reader",
+    transcribeError: null,
+    attachFailure: null,
+    attachments: [],
   };
   const record = (method: string, ...args: unknown[]) => state.calls.push({ method, args });
   const location = (id: string) => ({ hostId: HOST_ID, rootPath: `${ROOT}/${id}` });
@@ -93,8 +114,9 @@ export function createFakeHost(): { host: SessionHost; state: FakeHostState } {
         );
         return all.slice(query.offset, query.offset + query.limit);
       },
-      async send(id, text, mode) {
-        record("sessions.send", id, text, mode);
+      async send(id, text, mode, attachments) {
+        if (attachments) record("sessions.send", id, text, mode, attachments);
+        else record("sessions.send", id, text, mode);
         return { delivery: state.sendDelivery };
       },
       async start(args: StartSessionArgs) {
@@ -201,6 +223,48 @@ export function createFakeHost(): { host: SessionHost; state: FakeHostState } {
         return entry.answer(call);
       },
     },
+    ...(options.voice === false
+      ? {}
+      : {
+          voice: {
+            async status() {
+              record("voice.status");
+              return state.voiceConfigured ? { available: true as const } : { available: false as const, reason: "Voice transcription is not set up on this host." };
+            },
+            async transcribe(audio: { bytes: Uint8Array; mimeType: string; prompt?: string; language?: string }) {
+              record("voice.transcribe", { size: audio.bytes.byteLength, mimeType: audio.mimeType, prompt: audio.prompt, language: audio.language });
+              if (state.transcribeError) throw state.transcribeError;
+              return { text: state.transcript };
+            },
+          },
+        }),
+    ...(options.attachments === false
+      ? {}
+      : {
+          attachments: {
+            async upload(projectId: string, file: { name: string; mimeType: string; bytes: Uint8Array }) {
+              record("attachments.upload", projectId, file.name, file.mimeType, file.bytes.byteLength);
+              if (state.attachFailure && state.attachFailure.name === file.name) throw state.attachFailure.error;
+              const attachment: PromptAttachment = {
+                kind: file.mimeType.startsWith("image/") ? "image" : "file",
+                path: `/attachments/${projectId}/${state.attachments.length}-${file.name}`,
+                name: file.name,
+                mimeType: file.mimeType,
+                sizeBytes: file.bytes.byteLength,
+              };
+              state.attachments.push({ projectId, attachment });
+              return attachment;
+            },
+            ...(options.removable === false
+              ? {}
+              : {
+                  async remove(projectId: string, attachment: PromptAttachment) {
+                    record("attachments.remove", projectId, attachment.path);
+                    state.attachments = state.attachments.filter((entry) => entry.attachment.path !== attachment.path);
+                  },
+                }),
+          },
+        }),
     log: {
       debug: (message) => state.logs.push(`debug ${message}`),
       info: (message) => state.logs.push(`info ${message}`),

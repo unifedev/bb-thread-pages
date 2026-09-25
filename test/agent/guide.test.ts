@@ -22,7 +22,7 @@ describe("the authoring guide", () => {
       expect(coreGuide).toContain(spec.doc.params);
       if (spec.confirmed && spec.implemented) expect(coreGuide).toContain(`\`${spec.method}\` — ${spec.effect} · confirmed in trusted chrome`);
     }
-    expect(coreGuide).toContain("`voice.captureAndTranscribe` — device · not implemented on this host: unknown_method");
+    expect(coreGuide).toContain("`voice.captureAndTranscribe` — device · confirmed in trusted chrome");
   });
 
   it("states every limit as a number", () => {

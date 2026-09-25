@@ -2,6 +2,7 @@ import type { CapabilityHandler } from "../handler.ts";
 import { navigationOpenExternal, pagesOpen, sessionsOpenHost } from "./navigation.ts";
 import { pagesAnswer, pagesRead } from "./pages.ts";
 import { contextGet, projectsList, providersList, sessionActivity, sessionsSnapshot, storageGet, storageSet } from "./reads.ts";
+import { voiceCaptureAndTranscribe } from "./voice.ts";
 import { projectsBrowse, projectsCreate, sessionReply, sessionsArchive, sessionsMarkRead, sessionsSend, sessionsStart, sessionsStop } from "./writes.ts";
 
 /** Every implemented capability's handler. The dispatcher checks this list against the registry at load. */
@@ -26,4 +27,5 @@ export const ALL_HANDLERS: readonly CapabilityHandler[] = [
   pagesAnswer,
   sessionsOpenHost,
   navigationOpenExternal,
+  voiceCaptureAndTranscribe,
 ] as CapabilityHandler[];

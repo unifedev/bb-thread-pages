@@ -8,9 +8,10 @@ import { describeGrants } from "./grants.ts";
 import { homeUrl } from "./context.ts";
 import { documentPathFrom } from "./document-access.ts";
 import { EMPTY_REVISION, loadUnlessUnwritten } from "./empty-page.ts";
-import { baseHeaders, failureResponse, shellCsp } from "./responses.ts";
+import { failureResponse, shellHeaders } from "./responses.ts";
 import { renderShell } from "./shell-html.ts";
 import { eligibleSession, sessionIdFrom } from "./session-access.ts";
+import { voiceConfig } from "./voice.ts";
 
 /**
  * `GET /page?session=<id>[&path=<document>]` — the shell for one page, open at
@@ -63,11 +64,12 @@ export function shellRoute(serving: ServingContext) {
           grants: await describeGrants(serving.host, serving.grants, id),
           maxUploadBytes: LIMITS.uploadFileBytes,
           maxUploads: LIMITS.uploadsPerForm,
+          voice: await voiceConfig(serving),
+          transcribeUrl: `${serving.routeBase}/transcribe`,
+          attachUrl: `${serving.routeBase}/attach`,
         },
       });
-      const headers = baseHeaders("text/html; charset=utf-8");
-      headers.set("content-security-policy", shellCsp(nonce));
-      return new Response(html, { status: 200, headers });
+      return new Response(html, { status: 200, headers: shellHeaders(nonce) });
     } catch (error) {
       return failureResponse(error, serving.host.log, "GET /page", true);
     }

@@ -15,7 +15,8 @@ export function submitRoute(serving: ServingContext) {
   return async (context: Context): Promise<Response> => {
     let release: (() => void) | null = null;
     try {
-      const body = await readJsonBody(context, LIMITS.submissionBodyBytes);
+      // Transcripts ride beside their files and are bounded on their own. spec R4.24b
+      const body = await readJsonBody(context, LIMITS.submissionBodyBytes + LIMITS.uploadsPerForm * LIMITS.transcriptChars * 3);
       const submission = parseSubmission(body);
       if (!submission) throw new PageError("invalid_request", "Invalid submission");
       const token = requireActionToken(serving, submission.actionToken);

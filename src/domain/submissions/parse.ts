@@ -16,6 +16,11 @@ export interface SubmissionFile {
   readonly name: string;
   readonly path: string;
   readonly sizeBytes: number;
+  /**
+   * A recording's transcript, made by the shell at submit (R4.24b): the text,
+   * or null when it could not be made. Absent for every other file.
+   */
+  readonly transcript?: string | null;
 }
 
 export interface Submission {
@@ -74,11 +79,19 @@ export function parseSubmission(value: unknown): Submission | null {
         typeof file.sizeBytes !== "number" ||
         !Number.isSafeInteger(file.sizeBytes) ||
         file.sizeBytes < 0 ||
-        file.sizeBytes > LIMITS.uploadFileBytes
+        file.sizeBytes > LIMITS.uploadFileBytes ||
+        Object.keys(file).some((key) => !["field", "name", "path", "sizeBytes", "transcript"].includes(key)) ||
+        (file.transcript !== undefined && file.transcript !== null && (typeof file.transcript !== "string" || file.transcript.length > LIMITS.transcriptChars))
       ) {
         return null;
       }
-      files.push({ field: file.field, name: file.name, path: file.path, sizeBytes: file.sizeBytes });
+      files.push({
+        field: file.field,
+        name: file.name,
+        path: file.path,
+        sizeBytes: file.sizeBytes,
+        ...(file.transcript !== undefined ? { transcript: file.transcript as string | null } : {}),
+      });
     }
   }
 

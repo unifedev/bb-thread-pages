@@ -46,12 +46,28 @@ export type Delivery = "started" | "queued" | "steered";
 export interface StartSessionArgs {
   readonly projectId: string;
   readonly prompt: string;
+  /** Files stored as the project's attachments, carried beside the prompt's text. spec R5.76 */
+  readonly attachments?: readonly PromptAttachment[];
   readonly title?: string;
   readonly providerId?: string;
   readonly model?: string;
   readonly reasoningLevel?: string;
   readonly environment: { readonly kind: "project-default" } | { readonly kind: "reuse"; readonly environmentId: string };
 }
+
+/** A file stored as one of a project's attachments, ready to ride with a prompt. spec R5.76, R8.36 */
+export interface PromptAttachment {
+  /** `image` goes to the model as an image; `file` as a file it can read. */
+  readonly kind: "image" | "file";
+  /** The host's own reference to the stored attachment. */
+  readonly path: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+}
+
+/** Whether the host can transcribe now, and if not, why, in words for the reader. spec R5.69, R8.35 */
+export type VoiceStatus = { readonly available: true } | { readonly available: false; readonly reason: string };
 
 export interface ActivityItem {
   readonly kind: string;

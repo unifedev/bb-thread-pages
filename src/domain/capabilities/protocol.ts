@@ -48,6 +48,10 @@ export type BridgeTransport =
         readonly kind?: "grant";
         readonly grant?: { readonly sessionId: string; readonly title: string };
       };
+    }
+  | {
+      /** Confirmed by the shell's recording bar: record with these, validated, parameters. spec R5.68 */
+      readonly record: { readonly requestId: string; readonly params: JsonValue };
     };
 
 /** A host-validated destination the trusted shell navigates to. spec R5.29–R5.34 */

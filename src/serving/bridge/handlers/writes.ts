@@ -1,9 +1,10 @@
-import type { SessionsSendParams, SessionsStartParams } from "../../../domain/capabilities/specs.ts";
+import type { PromptFile, SessionsSendParams, SessionsStartParams } from "../../../domain/capabilities/specs.ts";
 import { PageError } from "../../../domain/errors.ts";
 import { fingerprint } from "../../../domain/json/canonical.ts";
 import type { JsonValue } from "../../../domain/json/strict-json.ts";
 import { formatReplyMessage } from "../../../domain/submissions/message.ts";
 import type { SessionRecord, StartSessionArgs } from "../../../host/types.ts";
+import { approvedAttachments, checkPromptFiles, sizeLabel, targetProject } from "../../attach-route.ts";
 import { excerpt, handler, type HandlerContext } from "../handler.ts";
 
 /** Writes to the page's own session, and the confirmed cross-session effects. spec 05 */
@@ -33,18 +34,34 @@ async function targetSession(context: HandlerContext, id: string): Promise<Sessi
   return target;
 }
 
+/**
+ * The files of a call, one per line with its size, so the reader approves
+ * exactly what leaves. spec R5.24, R5.27a, R5.78
+ */
+function filesLine(files: readonly PromptFile[] | undefined): string {
+  if (!files || files.length === 0) return "";
+  const count = files.length === 1 ? "1 file" : `${files.length} files`;
+  return `\nWith ${count}:\n${files.map((file) => `• “${excerpt(file.name, 60)}” (${sizeLabel(file.size)})`).join("\n")}`;
+}
+
 export const sessionsSend = handler<SessionsSendParams, unknown>({
   method: "sessions.send",
   async refuse(params, context) {
     if (params.sessionId === context.session.id) throw new PageError("invalid_params", "Use session.reply to answer this page's own session");
     await targetSession(context, params.sessionId);
+    checkPromptFiles(params.files, context.serving.host.attachments !== undefined);
+    if (params.files && params.files.length > 0) await targetProject(context.serving, "sessions.send", params);
   },
   async summarize(params, context) {
     const target = await targetSession(context, params.sessionId);
-    return `Send to “${excerpt(target.title, 60)}”: “${excerpt(params.prompt)}”${params.mode === "steer" ? " (interrupting its current turn)" : ""}`;
+    return `Send to “${excerpt(target.title, 60)}”: “${excerpt(params.prompt)}”${params.mode === "steer" ? " (interrupting its current turn)" : ""}${filesLine(params.files)}`;
   },
-  async execute(params, { serving }) {
-    const sent = await serving.host.sessions.send(params.sessionId, params.prompt, params.mode);
+  async execute(params, context) {
+    const { serving } = context;
+    const attachments = params.files && params.files.length > 0
+      ? approvedAttachments(serving, context.session.id, context.requestId, await targetProject(serving, "sessions.send", params), params.files)
+      : [];
+    const sent = attachments.length > 0 ? await serving.host.sessions.send(params.sessionId, params.prompt, params.mode, attachments) : await serving.host.sessions.send(params.sessionId, params.prompt, params.mode);
     return { result: { sessionId: params.sessionId, delivery: sent.delivery, duplicate: false } };
   },
 });
@@ -79,6 +96,7 @@ async function resolveStart(params: SessionsStartParams, context: HandlerContext
 export const sessionsStart = handler<SessionsStartParams, unknown>({
   method: "sessions.start",
   async refuse(params, context) {
+    checkPromptFiles(params.files, context.serving.host.attachments !== undefined);
     await resolveStart(params, context);
   },
   async summarize(params, context) {
@@ -86,11 +104,12 @@ export const sessionsStart = handler<SessionsStartParams, unknown>({
     const runtime = [params.providerId, params.model, params.reasoningLevel].filter(Boolean).join(" · ") || "the project's default provider and model";
     // Several buttons often share a prompt's opening, so a title leads when there is one.
     const what = params.title ? `Start “${excerpt(params.title, 60)}” in ${projectName}` : `Start a session in ${projectName}`;
-    return `${what}: “${excerpt(params.prompt)}” — using ${runtime}, in ${environmentLabel}`;
+    return `${what}: “${excerpt(params.prompt)}” — using ${runtime}, in ${environmentLabel}${filesLine(params.files)}`;
   },
   async execute(params, context) {
     const { args } = await resolveStart(params, context);
-    const started = await context.serving.host.sessions.start(args);
+    const attachments = approvedAttachments(context.serving, context.session.id, context.requestId, params.projectId, params.files);
+    const started = await context.serving.host.sessions.start(attachments.length > 0 ? { ...args, attachments } : args);
     return { result: { sessionId: started.id } };
   },
 });
