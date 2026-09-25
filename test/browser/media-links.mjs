@@ -241,10 +241,49 @@ if (process.env.PROBE_SVG === "1") {
   }
 }
 
+// --- a refused tab for an own file (iPhone Safari, 1.6.0): the shell asks, then opens in its own click ---
+// The shell's window.open is wrapped to return null, as a browser that refused the popup would.
+{
+  await shell.evaluate(() => { const real = window.open.bind(window); let calls = 0; window.__realOpen = real; window.open = (...args) => (calls++ === 0 ? null : real(...args)); });
+  try {
+    await inner.locator("#pdf").click();
+    const summary = await shell.locator("dialog[open] p").textContent({ timeout: 4000 });
+    await sleep(500);
+    const seen = [];
+    const onResponse = (response) => { if (response.url().endsWith("files/report.pdf") && response.request().isNavigationRequest()) seen.push(response.status()); };
+    context.on("response", onResponse);
+    const [popup] = await Promise.all([context.waitForEvent("page", { timeout: 6000 }), shell.locator("dialog[open] button[value=confirm]").click()]);
+    await sleep(1200);
+    context.off("response", onResponse);
+    await popup.close().catch(() => undefined);
+    ok("A112b a refused tab for an own file: the shell asks, then opens it inside its Open click", /Open “report\.pdf” in a new tab\?/.test(summary) && seen.includes(200) && shell.url() === shellUrl, `dialog: "${summary}"; responses: ${seen.join(",")}`);
+  } catch (error) {
+    ok("A112b a refused tab for an own file: the shell asks, then opens it inside its Open click", false, String(error.message).split("\n")[0]);
+  }
+  await shell.evaluate(() => { window.open = window.__realOpen; });
+}
+
 const stats = await (await context.request.get(`${BASE}/__stats`)).json().catch(() => ({}));
 const bare = Object.entries(stats).filter(([key]) => key.startsWith("gated /api/v1/threads/"));
 if (GATED) ok("no own-file request from the frame hit the gate (nothing depends on a credential it lacks)", bare.length === 0, JSON.stringify(bare));
 ok("no page errors in the shell", pageErrors.length === 0, pageErrors.join(" | "));
+// Last, because it leaves the shell: a tab refused even inside the Open click opens the file in place; Back returns.
+{
+  await shell.evaluate(() => { window.open = () => null; });
+  try {
+    await inner.locator("#txt").click();
+    await shell.locator("dialog[open] p").waitFor({ timeout: 4000 });
+    await sleep(500);
+    await Promise.all([shell.waitForURL((url) => url.href.endsWith("files/notes.txt"), { timeout: 8000 }), shell.locator("dialog[open] button[value=confirm]").click()]);
+    const text = await shell.evaluate(() => document.body.innerText.slice(0, 40));
+    await shell.goBack();
+    await shell.waitForURL((url) => url.href === shellUrl, { timeout: 8000 });
+    await inner.locator("#verdict table").waitFor({ timeout: 15000 });
+    ok("A112c refused twice: the file opens in place of the shell, and Back returns to the page", text.startsWith("Fixture 10"), `showed: "${text}"; back at the page`);
+  } catch (error) {
+    ok("A112c refused twice: the file opens in place of the shell, and Back returns to the page", false, String(error.message).split("\n")[0]);
+  }
+}
 await browser.close();
 const failed = results.filter((result) => result.pass === false);
 console.log(`\n${engine} ${BASE}${GATED ? " (gated)" : ""}: ${results.filter((r) => r.pass === true).length} pass, ${failed.length} fail`);

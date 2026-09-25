@@ -41,7 +41,8 @@ describe("the rules for a page's own files", () => {
 describe("the shell and a page's own files", () => {
   function shell() {
     document.body.innerHTML = "";
-    const open = vi.fn(() => null);
+    // A browser that allows the window returns it; the shell then drops its opener.
+    const open = vi.fn(() => ({ opener: window }) as unknown as Window);
     window.open = open as never;
     const clicks: { href: string; download: string }[] = [];
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
@@ -60,7 +61,7 @@ describe("the shell and a page's own files", () => {
       { href: `${FILES}media/clip%20one.mp4`, download: "Thanks for Alua.mp4" },
       { href: `${FILES}clip.mp4`, download: "clip.mp4" },
     ]);
-    expect(open).toHaveBeenCalledWith(`${FILES}report.pdf`, "_blank", "noopener,noreferrer");
+    expect(open).toHaveBeenCalledWith(`${FILES}report.pdf`, "_blank");
     restore();
   });
 
@@ -74,7 +75,45 @@ describe("the shell and a page's own files", () => {
     files.open("x.pdf", "yes", "../../evil.sh");
     expect(clicks).toEqual([{ href: `${FILES}drawing.svg`, download: "drawing.svg" }]);
     expect(open).toHaveBeenCalledTimes(1);
-    expect(open).toHaveBeenCalledWith(`${FILES}x.pdf`, "_blank", "noopener,noreferrer");
+    expect(open).toHaveBeenCalledWith(`${FILES}x.pdf`, "_blank");
+    restore();
+  });
+
+  // iPhone Safari over bb Connect, 1.6.0: the page's click reached the shell too late for a popup. D33
+  it("asks in its own dialog when the browser refuses the tab, and opens it inside that Open click", async () => {
+    const { clicks, restore } = shell();
+    const results: (Window | null)[] = [null, { opener: window } as unknown as Window];
+    const open = vi.fn(() => results.shift() ?? null);
+    window.open = open as never;
+    const asked: string[] = [];
+    const confirmer = { confirm: vi.fn(async (summary: string, onGesture?: () => void) => { asked.push(summary); onGesture?.(); return true; }) };
+    const assign = vi.fn();
+    const win = { open: (...args: unknown[]) => open(...(args as [])), location: { assign }, document } as unknown as Window & typeof globalThis;
+    createOwnFiles(win, config, vi.fn() as never, confirmer).open("media/Full size.jpg", false, null);
+    await flush();
+    expect(asked).toEqual(["Open “Full size.jpg” in a new tab?"]);
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenLastCalledWith(`${FILES}media/Full%20size.jpg`, "_blank");
+    expect(assign).not.toHaveBeenCalled();
+    expect(clicks).toEqual([]);
+    restore();
+  });
+
+  it("opens the file in place when the tab is refused even inside the Open click, and does nothing when declined", async () => {
+    const { restore } = shell();
+    const open = vi.fn(() => null);
+    const assign = vi.fn();
+    const win = { open, location: { assign }, document } as unknown as Window & typeof globalThis;
+    const confirmer = { confirm: vi.fn(async (_summary: string, onGesture?: () => void) => { onGesture?.(); return true; }) };
+    createOwnFiles(win, config, vi.fn() as never, confirmer).open("report.pdf", false, null);
+    await flush();
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(assign).toHaveBeenCalledWith(`${FILES}report.pdf`);
+    const declined = { confirm: vi.fn(async () => false) };
+    const assign2 = vi.fn();
+    createOwnFiles({ open: vi.fn(() => null), location: { assign: assign2 }, document } as unknown as Window & typeof globalThis, config, vi.fn() as never, declined).open("report.pdf", false, null);
+    await flush();
+    expect(assign2).not.toHaveBeenCalled();
     restore();
   });
 

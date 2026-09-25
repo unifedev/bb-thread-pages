@@ -109,7 +109,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       scroll = { x, y };
     },
     onGranted: (grant) => grantsChrome?.add(grant),
-    ownFiles: createOwnFiles(win, config, request),
+    ownFiles: createOwnFiles(win, config, request, confirmer),
     ...(fetchImpl ? { fetchImpl } : {}),
   });
   const homeLink = win.document.querySelector<HTMLAnchorElement>("a.home");

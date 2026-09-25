@@ -2,6 +2,7 @@ import { isDocumentPath } from "../../domain/document-path.ts";
 import { baseName, downloadName, encodeFilePath, isOpenableInTab, isOwnFilePath, shellFetchLimit } from "../../domain/own-files.ts";
 import { mebibytes } from "../../domain/limits.ts";
 import { isValidRequestId, type ShellConfig, type ShellMessage } from "../shared/protocol.ts";
+import type { Confirmer } from "./confirm.ts";
 
 /**
  * The page's own files, acted on by the shell from its own origin, which
@@ -25,7 +26,59 @@ export interface OwnFiles {
   fetchFor(port: MessagePort, id: unknown, path: unknown): Promise<void>;
 }
 
-export function createOwnFiles(win: Window & typeof globalThis, config: ShellConfig, fetchImpl: typeof fetch): OwnFiles {
+const OPEN_WORDING = { heading: "Open this file?", confirmLabel: "Open", cancelLabel: "Cancel" };
+
+/** A file name for the shell's own question: the host-validated path's last segment, bounded. */
+function shownName(path: string): string {
+  const name = baseName(path).replace(/[\u0000-\u001f\u007f“”"]/g, "");
+  return name.length <= 60 ? name : `${name.slice(0, 59)}…`;
+}
+
+/**
+ * `confirmer`: the shell's trusted dialog, for when the browser refuses the
+ * window because the reader's click did not reach the shell — measured on iPhone
+ * Safari over bb Connect (1.6.0): the page's click arrives as a message, too
+ * late for a popup. Its Open button is a click of the shell's own.
+ */
+export function createOwnFiles(win: Window & typeof globalThis, config: ShellConfig, fetchImpl: typeof fetch, confirmer?: Confirmer): OwnFiles {
+  /** Opens a tab, or null when the browser refused it. Not `noopener`, which always returns null; the opener is dropped instead. */
+  function tryOpen(url: string): Window | null {
+    let opened: Window | null = null;
+    try {
+      opened = win.open(url, "_blank");
+    } catch {
+      opened = null;
+    }
+    if (opened) {
+      try {
+        opened.opener = null;
+      } catch {
+        // The tab is ours; a browser that refuses this still gave it no script to run (passive types only).
+      }
+    }
+    return opened;
+  }
+
+  /**
+   * A tab now; if refused, the shell's own question, whose Open click opens it;
+   * if that is refused too, the file in place of the shell — Back returns.
+   */
+  function openTab(url: string, path: string): void {
+    if (tryOpen(url)) return;
+    if (!confirmer) {
+      win.location.assign(url);
+      return;
+    }
+    let opened = false;
+    void confirmer
+      .confirm(`Open “${shownName(path)}” in a new tab?`, () => {
+        opened = tryOpen(url) !== null;
+      }, OPEN_WORDING)
+      .then((approved) => {
+        if (approved && !opened) win.location.assign(url);
+      });
+  }
+
   function urlOf(path: string): string | null {
     return config.filesUrl ? `${config.filesUrl}${encodeFilePath(path)}` : null;
   }
@@ -54,11 +107,7 @@ export function createOwnFiles(win: Window & typeof globalThis, config: ShellCon
         save(url, (typeof name === "string" ? downloadName(name) : null) ?? baseName(path));
         return;
       }
-      try {
-        win.open(url, "_blank", "noopener,noreferrer");
-      } catch {
-        // A refused window leaves the page as it was.
-      }
+      openTab(url, path);
     },
 
     async fetchFor(port, id, path) {
