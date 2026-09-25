@@ -232,8 +232,22 @@ describe("navigation", () => {
 
   it("confirms external navigation naming the origin", async () => {
     const { first, second } = await confirmed("navigation.openExternal", { url: "https://example.com/path?q=1", label: "Docs" });
-    expect(first.body.confirm?.summary).toBe("Leave this page and open “Docs” at https://example.com");
+    expect(first.body.confirm?.summary).toBe("Open “Docs” (https://example.com) in a new tab?");
     expect(second.body.navigate).toEqual({ kind: "external", url: "https://example.com/path?q=1" });
+  });
+
+  // Host addresses have their own capabilities; the shell must never open one unsandboxed. spec R5.32a, A118
+  it("refuses this host's own origin and any getbb.app origin, before any dialog, with invalid_params", async () => {
+    fixture.state.publicOrigin = "https://reader.example";
+    for (const url of ["https://reader.example/api/v1/threads/thr_a/thread-storage/files/x.svg", "https://bart.getbb.app/", "https://getbb.app/login", "https://A.GetBB.app/x"]) {
+      const answer = await call("navigation.openExternal", { url });
+      expect(answer.body.confirm, url).toBeUndefined();
+      expect(answer.body.response?.error, url).toMatchObject({ code: "invalid_params", message: expect.stringContaining("pages.open") });
+    }
+    // Look-alikes are other sites, and are asked about as usual.
+    for (const url of ["https://notgetbb.app/", "https://getbb.app.example.com/", "https://reader.example:8443/"]) {
+      expect((await call("navigation.openExternal", { url })).body.confirm?.summary, url).toMatch(/in a new tab\?$/);
+    }
   });
 });
 

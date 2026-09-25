@@ -587,10 +587,15 @@ On the reader's click:
 
 - **Links.** Any \`<a href="https://…">\` works, whatever its \`target\`: the host
   intercepts the click and routes it through \`navigation.openExternal\`, which
-  **asks the reader** in the top bar's dialog, naming the destination, and then
-  opens the site in a **new tab** as itself, signed in as the reader is. Your
-  page is never replaced. Call \`navigation.openExternal\` yourself from script
-  for the same thing.
+  **asks the reader** in the top bar's dialog — *Open “label” (https://site) in
+  a new tab?* — and then opens the site in a **new tab** as itself, signed in
+  as the reader is. Your page is never replaced. Call
+  \`navigation.openExternal\` yourself from script for the same thing.
+- **This host's own addresses are not "another site".**
+  \`navigation.openExternal\` refuses them — any URL on the host's origin, and
+  any \`getbb.app\` address — with \`invalid_params\`, before any dialog, and so
+  does a link to one. Open another page with \`pages.open\` and a session with
+  \`sessions.openHost\`; link your own files relatively.
 - **\`window.open(url)\`** from a click handler opens a window, with no dialog —
   but that window **stays sandboxed**: the site in it has no cookies and no
   storage, as in a frame. Fine for a plain page or a document you built;

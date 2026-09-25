@@ -58,7 +58,7 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
     if (spec.implemented && !byMethod.has(spec.method)) throw new Error(`No handler for capability ${spec.method}`);
   }
 
-  return async function dispatch(body: unknown): Promise<DispatchResult> {
+  return async function dispatch(body: unknown, requestOrigins: readonly string[] = []): Promise<DispatchResult> {
     let requestId: unknown;
     let release: (() => void) | null = null;
     try {
@@ -83,7 +83,7 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
           });
       const page = home ? BUILTIN_HOME_PAGE : await serving.pages.load(token.session, token.path);
       if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
-      const context: HandlerContext = { serving, session, page, requestId: request.id };
+      const context: HandlerContext = { serving, session, page, requestId: request.id, requestOrigins };
 
       await entry?.refuse?.(invocation.params, context);
 

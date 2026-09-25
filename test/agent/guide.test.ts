@@ -96,6 +96,8 @@ describe("the authoring guide", () => {
     const affordances = section(coreGuide, "## Links, windows, downloads and full screen", "## Other sites in a frame");
     expect(affordances).toMatch(/\*\*asks the reader\*\* in the top bar's dialog/);
     expect(affordances).toMatch(/that window \*\*stays sandboxed\*\*/);
+    expect(affordances).toMatch(/\*Open “label” \(https:\/\/site\) in\s+a new tab\?\*/);
+    expect(affordances).toMatch(/refuses them[\s\S]*`invalid_params`, before any dialog/);
     expect(affordances).toContain("**`mailto:` and `tel:`**");
     expect(affordances).toContain("`URL.createObjectURL(blob)`");
     expect(affordances).toContain("`element.requestFullscreen()`");

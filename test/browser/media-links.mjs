@@ -185,6 +185,15 @@ await sleep(2000);
   ok("A108 openExternal without a click shows the host's confirmation", Boolean(dialog) && late === "cancelled", `dialog: ${dialog}; result: ${late}`);
 }
 
+// --- openExternal refuses this host's own origin (R5.32a, A118) ------------------------
+{
+  const answer = await frame().evaluate(async (url) => {
+    try { await window.threadPage.invoke("navigation.openExternal", { url }); return "opened"; } catch (error) { return `${error.code}: ${error.message}`; }
+  }, `${BASE}/api/v1/threads/${SESSION}/thread-storage/files/files/drawing.svg`);
+  const dialog = await shell.locator("dialog[open]").count();
+  ok("A118 navigation.openExternal refuses this host's own origin, before any dialog", answer.startsWith("invalid_params") && dialog === 0, `${answer.slice(0, 90)}; dialog: ${dialog}`);
+}
+
 // --- hostile page ---------------------------------------------------------------------
 {
   const result = await frame().evaluate(() => {

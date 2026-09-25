@@ -14,6 +14,8 @@ export interface HandlerContext {
   readonly session: SessionRecord;
   readonly page: LoadedPage;
   readonly requestId: string;
+  /** The origins the reader reached this host at, as the request shows them (its URL and `Origin`). */
+  readonly requestOrigins?: readonly string[];
 }
 
 export interface HandlerOutcome<R> {

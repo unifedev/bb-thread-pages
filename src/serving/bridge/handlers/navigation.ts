@@ -34,11 +34,32 @@ export const sessionsOpenHost = handler<{ sessionId: string }, unknown>({
   },
 });
 
+/** bb Connect's addresses: whatever the reader reaches this host at over the internet. */
+const HOSTED_DOMAIN = "getbb.app";
+
+export const OWN_ORIGIN_REFUSAL = "navigation.openExternal does not open this host's own addresses; open a page with pages.open and a session with sessions.openHost";
+
 export const navigationOpenExternal = handler<OpenExternalParams, unknown>({
   method: "navigation.openExternal",
+  /**
+   * Never this host: the shell opens the URL unsandboxed, with the reader's
+   * credential, and the host serves files a page chose on its own origin
+   * (spec R5.32a, X37). Host addresses have their own capabilities.
+   */
+  async refuse(params, { serving, requestOrigins }) {
+    const target = new URL(params.url);
+    const hostname = target.hostname.toLowerCase();
+    const own = new Set(requestOrigins ?? []);
+    const published = await serving.host.origin.public().catch(() => null);
+    if (published) own.add(new URL(published).origin);
+    if (hostname === HOSTED_DOMAIN || hostname.endsWith(`.${HOSTED_DOMAIN}`) || own.has(target.origin)) {
+      throw new PageError("invalid_params", OWN_ORIGIN_REFUSAL);
+    }
+  },
+  // The page stays; the site opens beside it. spec R5.33
   async summarize(params) {
     const origin = new URL(params.url).origin;
-    return params.label ? `Leave this page and open “${excerpt(params.label, 60)}” at ${origin}` : `Leave this page and open ${origin}`;
+    return params.label ? `Open “${excerpt(params.label, 60)}” (${origin}) in a new tab?` : `Open ${origin} in a new tab?`;
   },
   async execute(params) {
     return { result: { opened: true }, navigate: { kind: "external", url: new URL(params.url).href } };

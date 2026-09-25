@@ -398,7 +398,7 @@ export const navigationOpenExternal = spec({
   validateResult: openedResult,
   doc: {
     params: "`{ url, label? }` — http or https only.",
-    result: "`{ opened: true }`. The confirmation names the destination origin; the site then opens in a new tab as itself. An ordinary `<a href=\"https://…\">` in your page goes through this automatically.",
+    result: "`{ opened: true }`. The confirmation names the destination origin; the site then opens in a new tab as itself. An ordinary `<a href=\"https://…\">` in your page goes through this automatically. This host's own origin and any getbb.app address are refused with `invalid_params`: use `pages.open` or `sessions.openHost`.",
   },
 });
 
