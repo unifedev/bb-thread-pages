@@ -16,7 +16,11 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
   the window **stays sandboxed** on an opaque origin: it holds nothing of the
   host's, whatever URL it shows.
 - A link to another site keeps 1.5.0's path: `navigation.openExternal`, the
-  reader confirms, and the shell opens the site as itself. No-dialog links wait
+  reader confirms — now *Open “label” (origin) in a new tab?*, since the page
+  stays — and the shell opens the site as itself. `navigation.openExternal`
+  refuses this host's own origin and any `getbb.app` address with
+  `invalid_params`: host addresses go through `pages.open` and
+  `sessions.openHost`. No-dialog links wait
   until bb serves no file of a page unsandboxed on its origin (spec R8.33,
   X37).
 - `mailto:` and `tel:` open a popup of the reader's handler, never in place of
@@ -29,7 +33,16 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
   by the shell from its own origin, with the reader's credential: `download`
   saves it under the attribute's name; otherwise it opens in a new tab at the
   host's file address. Only passive types open in a tab; an SVG, XML or unknown
-  type is downloaded instead. A relative link that climbs out of the page root
+  type is downloaded instead. When the browser gives no window and the top bar
+  still has focus a moment later (iPhone Safari over bb Connect), it asks
+  *Open “file” in a new tab?* and opens it from that click; refused again, the
+  file opens in place and Back returns. A `null` from `window.open` alone is not
+  taken as a refusal: the bb app and its in-app browser open the URL
+  themselves and return `null`.
+- Safari (Mac and iPhone) does not play a video opened in its own tab over bb
+  Connect: its player needs byte ranges, which bb does not serve (#4339), and
+  over Connect the size is not sent either. The guide says to show video in
+  the page. A relative link that climbs out of the page root
   does nothing.
 
 ### Full screen (D35)

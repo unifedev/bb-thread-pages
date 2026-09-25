@@ -116,6 +116,7 @@ describe("the authoring guide", () => {
     expect(files).toContain("*fetched by the shell*");
     expect(files).toMatch(/\*\*an SVG, XML or any other type is downloaded instead\*\*/);
     expect(files).toContain('`<a href="clip.mp4" download="Our clip.mp4">`');
+    expect(files).toMatch(/\*\*Safari does not play a video opened in its own tab\*\*[\s\S]*bb #4339/);
     expect(coreGuide).toContain(`| Large media fetched for the reader | up to ${LIMITS.shellFetchBytes / (1024 * 1024)} MiB per file`);
 
     for (const stale of ["frame-src 'none'", "a frame with a URL is blocked", "a page has no popups", "What the sandbox silences", "with no dialog,\n  whatever its", "popups-to-escape"]) {

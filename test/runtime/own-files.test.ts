@@ -79,42 +79,61 @@ describe("the shell and a page's own files", () => {
     restore();
   });
 
-  // iPhone Safari over bb Connect, 1.6.0: the page's click reached the shell too late for a popup. D33
-  it("asks in its own dialog when the browser refuses the tab, and opens it inside that Open click", async () => {
-    const { clicks, restore } = shell();
-    const results: (Window | null)[] = [null, { opener: window } as unknown as Window];
-    const open = vi.fn(() => results.shift() ?? null);
-    window.open = open as never;
+  // null from window.open is not a refusal: the bb app opens the URL itself and denies the window
+  // (get-bb/bb desktop-window-factory.ts). Only a shell that keeps focus asks. D33
+  function fakeWindow(opens: (Window | null)[], focus: { visible: boolean; focused: boolean }) {
+    const open = vi.fn(() => opens.shift() ?? null);
+    const assign = vi.fn();
+    const doc = { get visibilityState() { return focus.visible ? "visible" : "hidden"; }, hasFocus: () => focus.focused };
+    const win = { open, location: { assign }, document: doc, setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms) } as unknown as Window & typeof globalThis;
+    return { win, open, assign };
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const tab = { opener: null } as unknown as Window;
+
+  it("asks in its own dialog when window.open gave nothing and the shell kept focus, and opens inside that Open click", async () => {
+    const { win, open, assign } = fakeWindow([null, tab], { visible: true, focused: true });
     const asked: string[] = [];
     const confirmer = { confirm: vi.fn(async (summary: string, onGesture?: () => void) => { asked.push(summary); onGesture?.(); return true; }) };
-    const assign = vi.fn();
-    const win = { open: (...args: unknown[]) => open(...(args as [])), location: { assign }, document } as unknown as Window & typeof globalThis;
-    createOwnFiles(win, config, vi.fn() as never, confirmer).open("media/Full size.jpg", false, null);
-    await flush();
+    createOwnFiles(win, config, vi.fn() as never, confirmer, 0).open("media/Full size.jpg", false, null);
+    await settle();
     expect(asked).toEqual(["Open “Full size.jpg” in a new tab?"]);
     expect(open).toHaveBeenCalledTimes(2);
     expect(open).toHaveBeenLastCalledWith(`${FILES}media/Full%20size.jpg`, "_blank");
     expect(assign).not.toHaveBeenCalled();
-    expect(clicks).toEqual([]);
-    restore();
+  });
+
+  it("does not ask when window.open gave nothing but the shell lost focus: an embedder opened it", async () => {
+    for (const focus of [{ visible: true, focused: false }, { visible: false, focused: true }]) {
+      const { win, open, assign } = fakeWindow([null], focus);
+      const confirmer = { confirm: vi.fn(async () => true) };
+      createOwnFiles(win, config, vi.fn() as never, confirmer, 0).open("report.pdf", false, null);
+      await settle();
+      expect(confirmer.confirm, JSON.stringify(focus)).not.toHaveBeenCalled();
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(assign).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not ask when a window was returned", async () => {
+    const { win, open } = fakeWindow([tab], { visible: true, focused: true });
+    const confirmer = { confirm: vi.fn(async () => true) };
+    createOwnFiles(win, config, vi.fn() as never, confirmer, 0).open("report.pdf", false, null);
+    await settle();
+    expect(open).toHaveBeenCalledWith(`${FILES}report.pdf`, "_blank");
+    expect(confirmer.confirm).not.toHaveBeenCalled();
   });
 
   it("opens the file in place when the tab is refused even inside the Open click, and does nothing when declined", async () => {
-    const { restore } = shell();
-    const open = vi.fn(() => null);
-    const assign = vi.fn();
-    const win = { open, location: { assign }, document } as unknown as Window & typeof globalThis;
-    const confirmer = { confirm: vi.fn(async (_summary: string, onGesture?: () => void) => { onGesture?.(); return true; }) };
-    createOwnFiles(win, config, vi.fn() as never, confirmer).open("report.pdf", false, null);
-    await flush();
-    expect(open).toHaveBeenCalledTimes(2);
-    expect(assign).toHaveBeenCalledWith(`${FILES}report.pdf`);
-    const declined = { confirm: vi.fn(async () => false) };
-    const assign2 = vi.fn();
-    createOwnFiles({ open: vi.fn(() => null), location: { assign: assign2 }, document } as unknown as Window & typeof globalThis, config, vi.fn() as never, declined).open("report.pdf", false, null);
-    await flush();
-    expect(assign2).not.toHaveBeenCalled();
-    restore();
+    const refused = fakeWindow([], { visible: true, focused: true });
+    createOwnFiles(refused.win, config, vi.fn() as never, { confirm: vi.fn(async (_s: string, onGesture?: () => void) => { onGesture?.(); return true; }) }, 0).open("report.pdf", false, null);
+    await settle();
+    expect(refused.open).toHaveBeenCalledTimes(2);
+    expect(refused.assign).toHaveBeenCalledWith(`${FILES}report.pdf`);
+    const declined = fakeWindow([], { visible: true, focused: true });
+    createOwnFiles(declined.win, config, vi.fn() as never, { confirm: vi.fn(async () => false) }, 0).open("report.pdf", false, null);
+    await settle();
+    expect(declined.assign).not.toHaveBeenCalled();
   });
 
   it("does nothing on the built-in home, which has no files", () => {

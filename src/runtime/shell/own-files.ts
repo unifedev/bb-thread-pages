@@ -34,14 +34,17 @@ function shownName(path: string): string {
   return name.length <= 60 ? name : `${name.slice(0, 59)}…`;
 }
 
+/** How long an embedder has to take focus after handling a popup itself, before a refusal is assumed. */
+const OPEN_SETTLE_MS = 400;
+
 /**
  * `confirmer`: the shell's trusted dialog, for when the browser refuses the
- * window because the reader's click did not reach the shell — measured on iPhone
+ * window because the reader's click did not reach the shell — seen on iPhone
  * Safari over bb Connect (1.6.0): the page's click arrives as a message, too
  * late for a popup. Its Open button is a click of the shell's own.
  */
-export function createOwnFiles(win: Window & typeof globalThis, config: ShellConfig, fetchImpl: typeof fetch, confirmer?: Confirmer): OwnFiles {
-  /** Opens a tab, or null when the browser refused it. Not `noopener`, which always returns null; the opener is dropped instead. */
+export function createOwnFiles(win: Window & typeof globalThis, config: ShellConfig, fetchImpl: typeof fetch, confirmer?: Confirmer, settleMs = OPEN_SETTLE_MS): OwnFiles {
+  /** Opens a tab and returns it, or null. Not `noopener`, which always returns null; the opener is dropped instead. */
   function tryOpen(url: string): Window | null {
     let opened: Window | null = null;
     try {
@@ -60,23 +63,43 @@ export function createOwnFiles(win: Window & typeof globalThis, config: ShellCon
   }
 
   /**
-   * A tab now; if refused, the shell's own question, whose Open click opens it;
-   * if that is refused too, the file in place of the shell — Back returns.
+   * Whether the shell still has the reader's attention. `null` from
+   * `window.open` does not mean refused: the bb app and its in-app browser
+   * open the URL themselves and deny the window
+   * (get-bb/bb apps/desktop/src/desktop-window-factory.ts,
+   * `setWindowOpenHandler` → `openExternalUrl`, `{ action: "deny" }`;
+   * desktop-browser-view.ts likewise). Whatever opened it takes focus; a
+   * browser that silently blocked the popup leaves it here.
+   */
+  function stillHere(): boolean {
+    const doc = win.document;
+    return doc.visibilityState === "visible" && (typeof doc.hasFocus !== "function" || doc.hasFocus());
+  }
+
+  /**
+   * A tab now. If `window.open` gave nothing and, a moment later, the shell
+   * still has focus, it asks in its own dialog, whose Open click opens the
+   * tab; if that is refused too, the file opens in place of the shell and Back
+   * returns.
    */
   function openTab(url: string, path: string): void {
     if (tryOpen(url)) return;
-    if (!confirmer) {
-      win.location.assign(url);
-      return;
-    }
-    let opened = false;
-    void confirmer
-      .confirm(`Open “${shownName(path)}” in a new tab?`, () => {
-        opened = tryOpen(url) !== null;
-      }, OPEN_WORDING)
-      .then((approved) => {
-        if (approved && !opened) win.location.assign(url);
-      });
+    win.setTimeout(() => {
+      if (!stillHere()) return;
+      if (!confirmer) {
+        win.location.assign(url);
+        return;
+      }
+      let opened = false;
+      void confirmer
+        .confirm(`Open “${shownName(path)}” in a new tab?`, () => {
+          opened = tryOpen(url) !== null;
+        }, OPEN_WORDING)
+        .then((approved) => {
+          // A refused tab inside a click of our own: the file in place, as long as nothing else opened it.
+          if (approved && !opened && stillHere()) win.location.assign(url);
+        });
+    }, settleMs);
   }
 
   function urlOf(path: string): string | null {

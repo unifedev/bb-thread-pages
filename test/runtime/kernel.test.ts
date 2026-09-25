@@ -371,8 +371,8 @@ describe("anchors", () => {
       expect(decideAnchor(link, documentUrl, base), target).toEqual({ kind: "external", url: "https://example.com/", label: "E" });
     }
     // The reader's own handlers, and files the page built. D34
-    expect(decideAnchor(anchor("mailto:a@b.c"), documentUrl, base)).toEqual({ kind: "new-tab", url: "mailto:a@b.c" });
-    expect(decideAnchor(anchor("tel:+48123"), documentUrl, base)).toEqual({ kind: "new-tab", url: "tel:+48123" });
+    expect(decideAnchor(anchor("mailto:a@b.c"), documentUrl, base)).toEqual({ kind: "handler", url: "mailto:a@b.c" });
+    expect(decideAnchor(anchor("tel:+48123"), documentUrl, base)).toEqual({ kind: "handler", url: "tel:+48123" });
     const mail = anchor("mailto:a@b.c");
     mail.setAttribute("target", "_blank");
     expect(decideAnchor(mail, documentUrl, base)).toEqual({ kind: "default" });

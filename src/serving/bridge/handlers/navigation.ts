@@ -37,7 +37,7 @@ export const sessionsOpenHost = handler<{ sessionId: string }, unknown>({
 /** bb Connect's addresses: whatever the reader reaches this host at over the internet. */
 const HOSTED_DOMAIN = "getbb.app";
 
-export const OWN_ORIGIN_REFUSAL = "navigation.openExternal does not open this host's own addresses; open a page with pages.open and a session with sessions.openHost";
+const OWN_ORIGIN_REFUSAL = "navigation.openExternal does not open this host's own addresses; open a page with pages.open and a session with sessions.openHost";
 
 export const navigationOpenExternal = handler<OpenExternalParams, unknown>({
   method: "navigation.openExternal",

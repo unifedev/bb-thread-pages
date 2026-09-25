@@ -138,7 +138,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
         void bridge.invoke("navigation.openExternal", label ? { url, label } : { url }).catch(() => undefined);
       },
       // A popup of the reader's handler (mailto:, tel:), inside the click; it stays sandboxed. D34
-      newTab: (url) => {
+      handler: (url) => {
         try {
           win.open(url, "_blank", "noopener,noreferrer");
         } catch {

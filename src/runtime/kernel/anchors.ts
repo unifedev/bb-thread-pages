@@ -22,7 +22,7 @@ export type AnchorDecision =
   | { kind: "document"; path: string }
   | { kind: "file"; path: string; download: boolean; name: string | null }
   | { kind: "external"; url: string; label: string }
-  | { kind: "new-tab"; url: string }
+  | { kind: "handler"; url: string }
   | { kind: "block" };
 
 /** Schemes handed to the reader's own handlers: a mail client, a phone, a message app. D34 */
@@ -51,7 +51,7 @@ export function decideAnchor(anchor: HTMLAnchorElement, documentUrl: string, sit
   // A file the page built: saved with `download`, or shown in a window of its own; never in place of the page.
   if (target.protocol === "blob:" || target.protocol === "data:") return download || (!inPlace && target.protocol === "blob:") ? { kind: "default" } : { kind: "block" };
   // Handed to the reader's handler as a popup, so a browser with no handler shows its error there, not in place of the page.
-  if (HANDLER_SCHEMES.has(target.protocol)) return inPlace ? { kind: "new-tab", url: target.href } : { kind: "default" };
+  if (HANDLER_SCHEMES.has(target.protocol)) return inPlace ? { kind: "handler", url: target.href } : { kind: "default" };
   if (target.protocol !== "http:" && target.protocol !== "https:") return { kind: "block" };
   // A relative reference that climbs out of the page root names no file of this page: refused (R1.4, R1.5).
   if (siteRoot && isRelativeReference(raw) && !target.href.startsWith(siteRoot)) return { kind: "block" };
@@ -86,7 +86,8 @@ export interface AnchorHandlers {
   document(path: string): void;
   file(path: string, download: boolean, name: string | null): void;
   external(url: string, label: string): void;
-  newTab(url: string): void;
+  /** A `mailto:`, `tel:` or `sms:` link with no target of its own: a popup of the reader's handler. */
+  handler(url: string): void;
 }
 
 export function installAnchorInterception(doc: Document, handlers: AnchorHandlers, siteRoot: string | null = null, embedded = false): void {
@@ -106,7 +107,7 @@ export function installAnchorInterception(doc: Document, handlers: AnchorHandler
       if (decision.kind === "document") handlers.document(decision.path);
       else if (decision.kind === "file") handlers.file(decision.path, decision.download, decision.name);
       else if (decision.kind === "external") handlers.external(decision.url, decision.label);
-      else if (decision.kind === "new-tab") handlers.newTab(decision.url);
+      else if (decision.kind === "handler") handlers.handler(decision.url);
     },
     true,
   );

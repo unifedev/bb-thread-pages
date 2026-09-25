@@ -83,8 +83,8 @@ export interface ResolveOutcome {
  * once bb serves a sandboxed page its own files by URL over every origin
  * (get-bb/bb #1632, #3617, #4339; docs/B1-OWN-FILES.md in the specification).
  */
-export const DEFERRED_ATTRIBUTE_PREFIX = "data-thread-page-";
-export const DEFERRED_STAMP_ATTRIBUTE = "data-thread-page-stamp";
+const DEFERRED_ATTRIBUTE_PREFIX = "data-thread-page-";
+const DEFERRED_STAMP_ATTRIBUTE = "data-thread-page-stamp";
 
 /**
  * Which references may be deferred: media, images, posters and text tracks —

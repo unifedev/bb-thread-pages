@@ -216,7 +216,15 @@ address, with the reader's credential:
   name (the file's own name when the attribute is empty).
 - A link to another \`.html\` document of the page opens it in the page (see
   *Several documents*); with \`download\` it is downloaded.
-- A relative link that climbs out of your page root does nothing.`;
+- A relative link that climbs out of your page root does nothing.
+- If the browser gives no tab and the reader is still on your page, the top
+  bar asks — *Open “file” in a new tab?* — and opens it from that click.
+- **Safari does not play a video opened in its own tab** over the host's
+  remote address (Mac and iPhone): its player needs byte-range responses, which
+  bb does not serve yet (bb #4339), and over bb Connect the size is not sent
+  either. Show a video in the page with \`<video src="clip.mp4" controls>\`,
+  where it plays and has its own full-screen control; offer the file with
+  \`download\` rather than as a tab.`;
 
 const keepingCurrent = () => `## Keeping a page current
 

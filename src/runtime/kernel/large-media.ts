@@ -16,7 +16,7 @@
  * grant (#3617) and ranged reads of thread storage (#4339). The same trigger
  * as pages/inline.ts; see docs/B1-OWN-FILES.md in the specification.
  */
-export const DEFERRED_ATTRIBUTES = ["src", "poster"] as const;
+const DEFERRED_ATTRIBUTES = ["src", "poster"] as const;
 const MARKER = "data-thread-page-";
 /** Set on an element whose file could not come, with the reason, so the author can see it in devtools. */
 export const UNAVAILABLE_ATTRIBUTE = "data-thread-page-unavailable";

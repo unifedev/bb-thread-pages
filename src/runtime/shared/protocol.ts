@@ -183,11 +183,6 @@ export function isScrollMessage(value: Record<string, unknown>): value is { kind
   return value.kind === "thread-page:scroll" && typeof value.x === "number" && typeof value.y === "number" && Number.isFinite(value.x) && Number.isFinite(value.y) && value.x >= 0 && value.y >= 0;
 }
 
-/** A request id for a file request, from the kernel. */
-export function isFileRequest(value: Record<string, unknown>): value is { kind: "thread-page:file-request"; id: string; path: string } {
-  return value.kind === "thread-page:file-request" && isValidRequestId(value.id) && typeof value.path === "string";
-}
-
 export function makeFailure(id: unknown, code: BridgeErrorCode, message: string): BridgeResponseMessage {
   return { v: 1, id: isValidRequestId(id) ? id : "invalid", ok: false, error: { code, message: message.slice(0, 512) || "Request failed" } };
 }
