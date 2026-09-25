@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Embedded</title>
+<style>body{font:14px system-ui,sans-serif;margin:.5rem} textarea{display:block;width:380px;height:90px}</style></head>
+<body>
+<form data-title="Embedded form"><label>Inside an embed <textarea name="inner" id="inner"></textarea></label><button>Send</button></form>
+<button id="inner-speak" type="button">Voice inside</button><output id="inner-result"></output>
+<script>
+  document.getElementById("inner-speak").addEventListener("click", async () => {
+    try { await window.threadPage.invoke("voice.captureAndTranscribe", {}); document.getElementById("inner-result").textContent = "ok"; }
+    catch (error) { document.getElementById("inner-result").textContent = error.code; }
+  });
+</script>
+</body>
+</html>

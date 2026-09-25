@@ -52,3 +52,34 @@ Results of 25 September 2026, option D (popups sandboxed, links confirmed):
 Chromium and WebKit, 23 of 23 plain and 25 of 25 gated over https. With
 popups that escaped the sandbox, the same probe read a token in both engines.
 
+
+## Voice, text areas and files (spec 1.5)
+
+`voice.mjs` needs no bb either: `serve.ts` serves `pages/voice` as one
+session's page over the in-memory host, whose transcriber answers a fixed text
+and whose attachments are kept in memory. `/__set` switches voice off and on,
+makes transcription or one file's upload fail, and `/__stats` lists what reached
+the host (transcriptions, attachments, starts, sends).
+
+    SESSION=thr_voice node test/browser/serve.ts test/browser/pages/voice 8795
+    PLAYWRIGHT=<…>/playwright/index.mjs ENGINE=chromium BASE=http://localhost:8795 node test/browser/voice.mjs
+
+Fake microphones: Chromium with `--use-fake-device-for-media-stream
+--use-fake-ui-for-media-stream` (and `channel: "chromium"`), Firefox with
+`media.navigator.streams.fake` and `media.navigator.permission.disabled`, WebKit
+with `grantPermissions(["microphone"])`. An init script opens the layer's
+shadow root for inspection and, in the shell, records its own
+`navigator.userActivation.isActive` whenever the page posts a probe.
+
+Playwright's `evaluate` — and the checks behind a locator's click — run with a
+simulated user gesture in the frame they touch, and the browser propagates it to
+the shell. The activation checks therefore click by coordinates and evaluate
+nothing while they wait.
+
+Results of 25 September 2026 (Playwright 1.63; Chromium 153, Firefox 155,
+WebKit 26.6): 42 of 42 in each engine. In particular, a real click in the
+sandboxed page frame makes the **shell's** `navigator.userActivation.isActive`
+true in all three (User Activation v2 propagates to ancestors), it is false
+when nobody pressed anything, and a call from a timer six seconds after a click
+is refused. Firefox keeps the files of a script-built paste event to itself, so
+that one step is noted, not checked, there; a real paste carries them.

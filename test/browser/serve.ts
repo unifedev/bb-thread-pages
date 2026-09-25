@@ -22,6 +22,7 @@ import { createServer as createHttps } from "node:https";
 import { join, relative } from "node:path";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createPlugin } from "../../src/plugin.ts";
+import { PageError } from "../../src/domain/errors.ts";
 import { createFakeHost, fileKey, seedSession } from "../support/fake-host.ts";
 
 const SESSION = process.env.SESSION ?? "thr_fixture10";
@@ -39,9 +40,12 @@ const TYPES: Record<string, string> = {
 };
 
 const fake = createFakePluginHost({ pluginId: "thread-pages", settings: {} });
-const { host, state } = createFakeHost();
-await createPlugin(fake.bb, { host });
+const { host, state } = createFakeHost({ removable: process.env.REMOVABLE !== "0" });
+// `/__set` moves this clock on, so the host's answer about voice, kept a few seconds, is read again.
+let skew = 0;
+await createPlugin(fake.bb, { host, now: () => Date.now() + skew });
 state.publicOrigin = null;
+if (process.env.VOICE === "off") state.voiceConfigured = false;
 
 function load(): void {
   const walk = (dir: string): string[] => readdirSync(dir).flatMap((name) => (statSync(join(dir, name)).isDirectory() ? walk(join(dir, name)) : [join(dir, name)]));
@@ -85,8 +89,30 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   if (url.pathname === "/__stats") {
+    const watched = new Set(["voice.transcribe", "attachments.upload", "attachments.remove", "sessions.start", "sessions.send"]);
+    const calls = state.calls.filter((entry) => watched.has(entry.method)).map((entry) => ({ method: entry.method, args: entry.args }));
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ...counts, logs: state.logs.slice(-40) }));
+    response.end(JSON.stringify({ ...counts, calls, logs: state.logs.slice(-40) }));
+    return;
+  }
+  // Spec 1.5 switches for the voice pass: voice on or off, how transcription answers, which attachment fails.
+  if (url.pathname === "/__set") {
+    const voice = url.searchParams.get("voice");
+    if (voice) state.voiceConfigured = voice === "on";
+    const transcribe = url.searchParams.get("transcribe");
+    if (transcribe === "ok") state.transcribeError = null;
+    if (transcribe === "fail") state.transcribeError = new PageError("unavailable", "The recording could not be transcribed");
+    if (transcribe === "large") state.transcribeError = new PageError("request_too_large", "The recording is longer than this host's transcription service accepts");
+    const text = url.searchParams.get("text");
+    if (text !== null) state.transcript = text;
+    if (url.searchParams.has("attachFail")) {
+      const name = url.searchParams.get("attachFail") ?? "";
+      state.attachFailure = name ? { name, error: new PageError("handler_error", "The host could not store the file") } : null;
+    }
+    if (url.searchParams.has("reset")) state.calls.length = 0;
+    skew += 60_000;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true }));
     return;
   }
   if (gate && !/(?:^|;\s*)tp_gate=1/.test(cookie)) {
