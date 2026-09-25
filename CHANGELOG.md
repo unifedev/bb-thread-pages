@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.0 — unreleased — links, popups, own files, full screen, other sites, large media
+## 1.6.0 — 2026-09-25 — links, popups, own files, full screen, other sites, large media
 
 Implements spec 1.4 (`bartsoj/bb-thread-pages`, DECISIONS D33–D37). Existing
 pages keep working; `window.threadPage.version` and the bridge protocol stay
@@ -32,8 +32,9 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
 - A link to one of the page's own files that is not a document is carried out
   by the shell from its own origin, with the reader's credential: `download`
   saves it under the attribute's name; otherwise it opens in a new tab at the
-  host's file address. Only passive types open in a tab; an SVG, XML or unknown
-  type is downloaded instead. When the browser gives no window and the top bar
+  host's file address. Only passive types open in a tab; an SVG, XML, HTML
+  (`.htm`, parts and uploads are served unsandboxed by bb) or unknown type is
+  downloaded instead. When the browser gives no window and the top bar
   still has focus a moment later (iPhone Safari over bb Connect), it asks
   *Open “file” in a new tab?* and opens it from that click; refused again, the
   file opens in place and Back returns. A `null` from `window.open` alone is not
@@ -44,6 +45,14 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
   over Connect the size is not sent either. The guide says to show video in
   the page. A relative link that climbs out of the page root
   does nothing.
+
+- The shell fetches only the files the served document deferred to it (D37),
+  and the file name in its question is stripped of control, bidi and
+  zero-width characters.
+- `navigation.openExternal` refuses this host under any of its names: case and
+  trailing dots folded, every loopback name on its port, and — for a reader on
+  loopback — any host on that port (a LAN address or a DNS name for 127.0.0.1
+  is the same server), plus any `getbb.app` name.
 
 ### Full screen (D35)
 
