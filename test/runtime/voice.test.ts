@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LIMITS } from "../../src/domain/limits.ts";
 import { createConfirmer } from "../../src/runtime/shell/confirm.ts";
+import { createReaderGesture } from "../../src/runtime/shell/gesture.ts";
 import { createRelay } from "../../src/runtime/shell/relay.ts";
 import { createVoice, PREFERRED_DEVICE_KEY, VoiceFailure, type RecorderElements, type Voice } from "../../src/runtime/shell/voice.ts";
 import type { ShellConfig } from "../../src/runtime/shared/protocol.ts";
@@ -124,16 +125,16 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
   it("opens only on the reader's activation, one at a time, and never while a question is open", async () => {
     const without = recorderFixture();
     const work = vi.fn();
-    expect(await without.voice.capture({ maxDurationSeconds: 120, activated: false, purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/presses something/) });
+    expect(await without.voice.capture({ maxDurationSeconds: 120, refusal: "The recording bar opens only when the reader presses something in the page.", purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/presses something/) });
     expect(without.elements.bar.hidden).toBe(true);
     expect(without.getUserMedia).not.toHaveBeenCalled();
     without.deps.questionOpen.mockReturnValue(true);
-    expect(await without.voice.capture({ maxDurationSeconds: 120, activated: true, purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/Another question/) });
+    expect(await without.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/Another question/) });
     without.deps.questionOpen.mockReturnValue(false);
-    const first = without.voice.capture({ maxDurationSeconds: 120, activated: true, purpose: "capability" }, work);
+    const first = without.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "capability" }, work);
     await flush();
     expect(without.voice.isOpen()).toBe(true);
-    expect(await without.voice.capture({ maxDurationSeconds: 120, activated: true, purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable" });
+    expect(await without.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable" });
     without.elements.cancel.click();
     expect(await first).toMatchObject({ ok: false, code: "cancelled" });
     expect(work).not.toHaveBeenCalled();
@@ -142,7 +143,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
   it("refuses before opening when the host has no service or the microphone is blocked", async () => {
     const off = recorderFixture({ available: false });
     expect(await off.voice.usable()).toBe(false);
-    expect(await off.voice.capture({ maxDurationSeconds: 120, activated: true, purpose: "dictate" }, vi.fn())).toEqual({ ok: false, code: "unavailable", message: "Voice transcription is not set up on this bb." });
+    expect(await off.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "dictate" }, vi.fn())).toEqual({ ok: false, code: "unavailable", message: "Voice transcription is not set up on this bb." });
     const blocked = recorderFixture({ permission: "denied" });
     expect(await blocked.voice.usable()).toBe(false);
     expect(blocked.elements.bar.hidden).toBe(true);
@@ -153,7 +154,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
     window.localStorage.setItem(PREFERRED_DEVICE_KEY, "mic-2");
     const { voice, elements, deps, getUserMedia, tracks } = recorderFixture();
     const work = vi.fn(async (recording: { blob: Blob; type: string }) => `got ${recording.type} ${recording.blob.size}`);
-    const outcome = voice.capture({ maxDurationSeconds: 120, activated: true, purpose: "capability" }, work);
+    const outcome = voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "capability" }, work);
     await vi.advanceTimersByTimeAsync(0);
     expect(elements.bar.hidden).toBe(false);
     expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: "mic-2" } } });
@@ -176,7 +177,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
     vi.useFakeTimers();
     const short = recorderFixture();
     const work = vi.fn();
-    const outcome = short.voice.capture({ maxDurationSeconds: 120, activated: true, purpose: "dictate" }, work);
+    const outcome = short.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "dictate" }, work);
     await vi.advanceTimersByTimeAsync(300);
     short.elements.done.click();
     await vi.advanceTimersByTimeAsync(0);
@@ -186,7 +187,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
     expect(work).not.toHaveBeenCalled();
 
     const escaped = recorderFixture();
-    const pending = escaped.voice.capture({ maxDurationSeconds: 120, activated: true, purpose: "capability" }, work);
+    const pending = escaped.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "capability" }, work);
     await vi.advanceTimersByTimeAsync(2_000);
     escaped.events.dispatchEvent(Object.assign(new Event("keydown"), { key: "Escape", preventDefault() {} }));
     expect(await pending).toMatchObject({ ok: false, code: "cancelled" });
@@ -197,7 +198,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
     vi.useFakeTimers();
     const { voice, elements } = recorderFixture();
     const work = vi.fn(async () => "sent");
-    const outcome = voice.capture({ maxDurationSeconds: 2, activated: true, purpose: "capability" }, work);
+    const outcome = voice.capture({ maxDurationSeconds: 2, refusal: null, purpose: "capability" }, work);
     await vi.advanceTimersByTimeAsync(2_100);
     expect(FakeRecorder.created.at(-1)!.state).toBe("inactive");
     expect(elements.status.textContent).toMatch(/Reached 0:02/);
@@ -211,7 +212,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
     const { voice, deps } = recorderFixture({ getUserMedia: async () => Promise.reject(Object.assign(new Error("denied"), { name: "NotAllowedError" })) });
     const changes: boolean[] = [];
     voice.onChange((usable) => changes.push(usable));
-    expect(await voice.capture({ maxDurationSeconds: 120, activated: true, purpose: "dictate" }, vi.fn())).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/not allowed/) });
+    expect(await voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "dictate" }, vi.fn())).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/not allowed/) });
     await flush();
     expect(changes).toEqual([false]);
     expect(await voice.usable()).toBe(false);
@@ -240,6 +241,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
 function stubVoice(overrides: Partial<Voice> = {}) {
   const recording = { blob: new Blob(["rec"], { type: "audio/webm;codecs=opus" }), type: "audio/webm;codecs=opus", durationMs: 2_000 };
   const voice = {
+    cancel: vi.fn(),
     usable: vi.fn(async () => true),
     onChange: vi.fn(),
     isOpen: vi.fn(() => false),
@@ -256,14 +258,14 @@ function stubVoice(overrides: Partial<Voice> = {}) {
   return { voice: voice as unknown as Voice & typeof voice, recording };
 }
 
-function relayFixture(fetchImpl: (url: string, init: RequestInit) => Promise<Response>, voice?: Voice, readerActed = true) {
+function relayFixture(fetchImpl: (url: string, init: RequestInit) => Promise<Response>, voice?: Voice, refusal: string | null = null) {
   document.body.innerHTML = `<dialog><form method="dialog"><p></p><button type="button" value="cancel">Cancel</button><button type="button" value="confirm">Confirm</button></form></dialog>`;
   const dialog = document.querySelector("dialog")!;
   dialog.showModal = () => dialog.setAttribute("open", "");
   dialog.close = () => dialog.removeAttribute("open");
   const navigator = { inPlace: vi.fn(), reserveWindow: vi.fn(), external: vi.fn(), release: vi.fn() };
   const fetchMock = vi.fn(fetchImpl);
-  const relay = createRelay({ config, confirmer: createConfirmer(dialog), navigator, onDirty: vi.fn(), fetchImpl: fetchMock as never, ...(voice ? { voice } : {}), readerActed: () => readerActed, onStatus: vi.fn() });
+  const relay = createRelay({ config, confirmer: createConfirmer(dialog), navigator, onDirty: vi.fn(), fetchImpl: fetchMock as never, ...(voice ? { voice } : {}), readerRefusal: () => refusal, onStatus: vi.fn() });
   const sent: unknown[] = [];
   const port = { postMessage: (message: unknown) => sent.push(message) } as unknown as MessagePort;
   return { relay, dialog, fetchMock, sent, port };
@@ -278,7 +280,7 @@ describe("the relay and voice (R5.68, R5.73, R4.58, R4.24a)", () => {
     }, voice);
     fixture.relay.handle(fixture.port, { v: 1, id: "tp-1", method: "voice.captureAndTranscribe", params: { prompt: "ctx" }, pageRevision: REV });
     await flush();
-    expect(voice.capture).toHaveBeenCalledWith({ maxDurationSeconds: 30, activated: true, purpose: "capability" }, expect.any(Function));
+    expect(voice.capture).toHaveBeenCalledWith({ maxDurationSeconds: 30, refusal: null, purpose: "capability" }, expect.any(Function));
     expect(voice.transcribe).toHaveBeenCalledWith(expect.objectContaining({ type: "audio/webm;codecs=opus", prompt: "ctx", language: "en" }));
     expect(fixture.sent[0]).toEqual({ v: 1, id: "tp-1", ok: true, result: { text: "the reader said this" } });
     fixture.relay.handle(fixture.port, { v: 1, id: "tp-2", method: "voice.captureAndTranscribe", params: { keepAudio: true }, pageRevision: REV });
@@ -295,10 +297,10 @@ describe("the relay and voice (R5.68, R5.73, R4.58, R4.24a)", () => {
     const fixture = relayFixture(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as { request: { id: string } };
       return jsonResponse({ record: { requestId: body.request.id, params: { maxDurationSeconds: 120, keepAudio: false } } }, 401);
-    }, voice, false);
+    }, voice, "The top bar was used");
     fixture.relay.handle(fixture.port, { v: 1, id: "tp-1", method: "voice.captureAndTranscribe", params: null, pageRevision: REV });
     await flush();
-    expect(voice.capture).toHaveBeenCalledWith(expect.objectContaining({ activated: false }), expect.any(Function));
+    expect(voice.capture).toHaveBeenCalledWith(expect.objectContaining({ refusal: "The top bar was used" }), expect.any(Function));
     expect(fixture.sent[0]).toMatchObject({ id: "tp-1", ok: false, error: { code: "cancelled" } });
   });
 
@@ -456,5 +458,129 @@ describe("the relay and files with sessions.start and sessions.send (R3.20a, R5.
       expect.objectContaining({ id: "tp-3", error: expect.objectContaining({ code: "invalid_request" }) }),
     ]);
     expect(h.calls).toHaveLength(0);
+  });
+});
+
+// --- review fixes ----------------------------------------------------------------
+
+describe("the reader's gesture, told apart from the shell's own chrome (R3.32a)", () => {
+  function gestureFixture(activation: { isActive: boolean } | undefined) {
+    const listeners = new Map<string, ((event: { isTrusted: boolean }) => void)[]>();
+    const win = {
+      navigator: activation ? { userActivation: activation } : {},
+      addEventListener: (type: string, listener: (event: { isTrusted: boolean }) => void) => listeners.set(type, [...(listeners.get(type) ?? []), listener]),
+    } as unknown as Window & typeof globalThis;
+    const gesture = createReaderGesture(win, { cooldownMs: 2_000, pollMs: 100 });
+    const fire = (type: string, isTrusted = true) => (listeners.get(type) ?? []).forEach((listener) => listener({ isTrusted }));
+    return { gesture, fire };
+  }
+
+  it("refuses while an activation the chrome caused is live, and allows once it lapsed and the page acts", async () => {
+    vi.useFakeTimers();
+    const activation = { isActive: true };
+    const { gesture, fire } = gestureFixture(activation);
+    // Activation with no gesture in the chrome: it came from the page.
+    expect(gesture.refusal()).toBeNull();
+    // The reader clicks Cancel in the bar: the page re-asking now is refused.
+    fire("pointerdown");
+    fire("click");
+    expect(gesture.refusal()).toMatch(/not in the top bar/);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(gesture.refusal()).toMatch(/not in the top bar/);
+    // The chrome's activation lapses; a later one can only be the page's.
+    activation.isActive = false;
+    await vi.advanceTimersByTimeAsync(150);
+    expect(gesture.refusal()).toMatch(/presses something in the page/);
+    activation.isActive = true;
+    expect(gesture.refusal()).toBeNull();
+    // A script's synthetic event is no gesture of the reader's.
+    fire("pointerdown", false);
+    expect(gesture.refusal()).toBeNull();
+  });
+
+  it("waits a moment after a bar or question closes, and never allows without the API", async () => {
+    vi.useFakeTimers();
+    const { gesture } = gestureFixture({ isActive: true });
+    gesture.closed();
+    expect(gesture.refusal()).toMatch(/just closed/);
+    await vi.advanceTimersByTimeAsync(2_100);
+    expect(gesture.refusal()).toBeNull();
+    expect(gestureFixture(undefined).gesture.refusal()).toMatch(/cannot tell/);
+  });
+
+  it("a relay without the shell's gesture tracking treats nothing as the reader's action", async () => {
+    const { voice } = stubVoice();
+    document.body.innerHTML = `<dialog><p></p></dialog>`;
+    const relay = createRelay({ config, confirmer: createConfirmer(document.querySelector("dialog")!), navigator: { inPlace: vi.fn(), reserveWindow: vi.fn(), external: vi.fn(), release: vi.fn() } as never, onDirty: vi.fn(), voice, fetchImpl: vi.fn() as never });
+    const sent: unknown[] = [];
+    relay.handle({ postMessage: (message: unknown) => sent.push(message) } as unknown as MessagePort, { kind: "thread-page:record", id: "tp-record-1", purpose: "dictate" });
+    await flush();
+    expect(voice.capture).toHaveBeenCalledWith(expect.objectContaining({ refusal: expect.stringMatching(/presses something/) }), expect.any(Function));
+  });
+});
+
+describe("the relay after review", () => {
+  it("cancels an open bar on Escape from the page", () => {
+    const { voice } = stubVoice();
+    const fixture = relayFixture(async () => jsonResponse({}), voice);
+    fixture.relay.handle(fixture.port, { kind: "thread-page:escape" });
+    expect(voice.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses file metadata in the parameters without real files", async () => {
+    const fixture = relayFixture(async () => jsonResponse({}));
+    fixture.relay.handle(fixture.port, { v: 1, id: "tp-1", method: "sessions.start", params: { projectId: "p", prompt: "x", files: [{ name: "a.png", size: 3, type: "image/png" }] }, pageRevision: REV });
+    await flush();
+    expect(fixture.sent[0]).toMatchObject({ ok: false, error: { code: "invalid_params" } });
+    expect(fixture.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("transcribes only audio, and shortens a long transcript instead of failing the answer (R4.24b)", async () => {
+    const { voice } = stubVoice({ transcribe: vi.fn(async () => "long ".repeat(10_000)) });
+    const submitted: Record<string, unknown>[] = [];
+    const fixture = relayFixture(async (url, init) => {
+      if (url === "/upload") return jsonResponse({ ok: true, name: "n", path: "uploads/n", sizeBytes: 3 });
+      submitted.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return jsonResponse({ ok: true, delivery: "queued" });
+    }, voice);
+    fixture.relay.handle(fixture.port, {
+      kind: "thread-page:submit",
+      submissionId: "s1",
+      title: "T",
+      answers: [],
+      files: [
+        { field: "a", file: new File(["x"], "page.html", { type: "text/html" }), transcribe: true },
+        { field: "b", file: new File(["x"], "memo.ogg", { type: "audio/ogg" }), transcribe: true },
+      ],
+    });
+    await flush(12);
+    expect(voice.transcribe).toHaveBeenCalledTimes(1);
+    const files = submitted[0]!.files as { transcript?: string }[];
+    expect(files[0]).not.toHaveProperty("transcript");
+    expect(files[1]!.transcript!.length).toBe(LIMITS.transcriptChars);
+    expect(files[1]!.transcript).toMatch(/\(transcript shortened\)$/);
+  });
+
+  it("discards what was stored when the approved call itself fails, and says what stays", async () => {
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    const fixture = relayFixture(async (url, init) => {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      calls.push({ url, body });
+      const request = body.request as { id: string };
+      if (url === "/attach") return body.discard === true ? jsonResponse({ ok: true, removed: 0, kept: 1 }) : jsonResponse({ ok: true, index: body.index });
+      if (!body.confirmation) return jsonResponse({ confirm: { requestId: request.id, summary: "Start", challenge: "chal.sig" } }, 401);
+      return jsonResponse({ response: { v: 1, id: request.id, ok: false, error: { code: "unavailable", message: "The host could not start it" } } }, 503);
+    });
+    fixture.relay.handle(fixture.port, { v: 1, id: "tp-1", method: "sessions.start", params: { projectId: "p", prompt: "x" }, pageRevision: REV, files: [new File(["abc"], "a.txt")] });
+    await flush();
+    fixture.dialog.querySelector<HTMLButtonElement>('button[value="confirm"]')!.click();
+    await flush(12);
+    expect(calls.map((call) => [call.url, call.body.discard === true])).toEqual([
+      ["/bridge", false],
+      ["/attach", false],
+      ["/bridge", false],
+      ["/attach", true],
+    ]);
+    expect(fixture.sent[0]).toMatchObject({ ok: false, error: { code: "unavailable", message: expect.stringContaining("One file already attached stays") } });
   });
 });

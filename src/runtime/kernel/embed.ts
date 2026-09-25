@@ -52,6 +52,8 @@ export interface EmbedManagerDeps {
   dictate?(prompt: string): Promise<RecordAnswer>;
   /** Whether the reader can record here, which embedded pages are told too. */
   voiceAvailable?(): boolean;
+  /** Escape inside an embed reaches the shell too, to cancel an open bar. */
+  escape?(): void;
 }
 
 export interface EmbedManager {
@@ -472,6 +474,10 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     }
     if (data.kind === "thread-page:record") {
       void record(embed, data);
+      return;
+    }
+    if (data.kind === "thread-page:escape") {
+      deps.escape?.();
       return;
     }
     if (embed.shown === null || !isBridgeRequest(data, embed.shown)) {

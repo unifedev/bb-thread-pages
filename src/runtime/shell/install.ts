@@ -7,7 +7,8 @@ import { createNavigator } from "./navigate.ts";
 import { createOwnFiles } from "./own-files.ts";
 import { createPoller, type Poller } from "./poll.ts";
 import { createRelay } from "./relay.ts";
-import { createVoice, readerActivation, type RecorderElements, type Voice } from "./voice.ts";
+import { createReaderGesture } from "./gesture.ts";
+import { createVoice, type RecorderElements, type Voice } from "./voice.ts";
 
 /**
  * Wires the shell: loads the document into the sandboxed frame, hands it one
@@ -94,8 +95,10 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   const poller = createPoller(win, config, view, fetchImpl);
   const navigator = createNavigator(win);
   let voice: Voice | null = null;
+  // The reader's gestures in the shell's own chrome, told apart from those in the page. spec R3.32a
+  const gesture = createReaderGesture(win);
   // The recording bar is a question too: one of the two at a time. spec R3.22a, R3.32a
-  const confirmer = createConfirmer(dialog, CONFIRM_ARM_MS, () => voice?.isOpen() ?? false);
+  const confirmer = createConfirmer(dialog, CONFIRM_ARM_MS, () => voice?.isOpen() ?? false, () => gesture.closed());
   if (elements.recorder) {
     voice = createVoice(win, config, elements.recorder, {
       questionOpen: () => confirmer.isOpen?.() ?? false,
@@ -108,6 +111,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
         }
       },
       setStatus: (text, warn) => view.setStatus(text, warn),
+      onClosed: () => gesture.closed(),
       ...(fetchImpl ? { fetchImpl } : {}),
     });
     voice.onChange((usable) => framePort?.postMessage({ kind: "thread-page:voice", available: usable }));
@@ -132,7 +136,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     onGranted: (grant) => grantsChrome?.add(grant),
     ownFiles: createOwnFiles(win, config, request, confirmer),
     ...(voice ? { voice } : {}),
-    readerActed: () => readerActivation(win),
+    readerRefusal: () => gesture.refusal(),
     onStatus: (text, warn) => view.setStatus(text, warn),
     ...(fetchImpl ? { fetchImpl } : {}),
   });
@@ -156,6 +160,8 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   }
 
   function connectFrame(target: HTMLIFrameElement, restore: { x: number; y: number } | null): void {
+    // Another document now: a bar the previous one asked for is not this one's to finish.
+    voice?.cancel();
     const channel = new win.MessageChannel();
     const port = channel.port1;
     framePort = port;
@@ -213,6 +219,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
    * the shell's.
    */
   function loadFrame(url: string): void {
+    voice?.cancel();
     const next = frame.cloneNode(false) as HTMLIFrameElement;
     next.removeAttribute("data-incoming");
     next.setAttribute("src", url);

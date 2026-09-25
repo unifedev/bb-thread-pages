@@ -56,6 +56,9 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     embedded: config.embedded === true,
     dictate: (prompt) => recorder.request("dictate", prompt),
     voiceAvailable: () => voiceAvailable,
+    escape: () => {
+      post({ kind: "thread-page:escape" });
+    },
   });
   const textAreas = createTextAreaControls(win, {
     embedded: config.embedded === true,
@@ -111,6 +114,14 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     if (!form || isManualForm(form)) return;
     dirty.markForm(form);
   }
+  // Escape in the page cancels an open recording bar, wherever the reader's focus is. spec R3.32
+  win.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Escape") post({ kind: "thread-page:escape" });
+    },
+    true,
+  );
   doc.addEventListener("input", markDirty, true);
   doc.addEventListener("change", markDirty, true);
 

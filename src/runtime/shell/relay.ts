@@ -5,7 +5,9 @@ import { encodeBase64 } from "./base64.ts";
 import type { Confirmer } from "./confirm.ts";
 import type { Navigator } from "./navigate.ts";
 import type { OwnFiles } from "./own-files.ts";
-import { readerActivation, recordingExtension, type Voice, type VoiceOutcome } from "./voice.ts";
+import { shortenTranscript } from "../../domain/submissions/parse.ts";
+import { NEEDS_ACTION } from "./gesture.ts";
+import { recordingExtension, type Voice, type VoiceOutcome } from "./voice.ts";
 
 /**
  * The shell's side of the port: it validates every message from the frame,
@@ -31,8 +33,8 @@ export interface RelayDeps {
   onGranted?(grant: { sessionId: string; title: string }): void;
   /** The shell's recorder and its bar. spec R3.32, D38 */
   voice?: Voice;
-  /** Whether the shell's own document has the reader's activation now. spec R3.32a */
-  readerActed?(): boolean;
+  /** Null when the reader has just acted in the page, as the shell's own document tells; otherwise why not. spec R3.32a */
+  readerRefusal?(): string | null;
   /** The shell's status line, for what the reader must be told. spec R2.44 */
   onStatus?(text: string, warn: boolean): void;
   fetchImpl?: typeof fetch;
@@ -54,7 +56,8 @@ type Directive = { kind: "page" | "host" | "external"; url: string };
 export function createRelay(deps: RelayDeps): Relay {
   const { config, confirmer, navigator } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const readerActed = deps.readerActed ?? (() => readerActivation(globalThis as unknown as Window));
+  // Without the shell's own gesture tracking nothing counts as the reader's action.
+  const readerRefusal = deps.readerRefusal ?? (() => NEEDS_ACTION);
 
   function reply(port: MessagePort, message: ShellMessage): void {
     port.postMessage(message);
@@ -95,9 +98,14 @@ export function createRelay(deps: RelayDeps): Relay {
     reply(port, body.response);
   }
 
-  async function relayBridge(port: MessagePort, message: BridgeRequestMessage, activated: boolean): Promise<void> {
+  async function relayBridge(port: MessagePort, message: BridgeRequestMessage, refusal: string | null): Promise<void> {
     const files = message.files ?? [];
     let request: BridgeRequestMessage = message;
+    // The host is told about files only by the shell, from files it holds. spec R3.20a
+    if (message.files === undefined && FILE_METHODS.has(message.method) && isRecord(message.params) && "files" in message.params) {
+      reply(port, makeFailure(message.id, "invalid_params", "files must be a FileList, an array of File, or an <input type=file>"));
+      return;
+    }
     if (message.files !== undefined) {
       // The files ride beside the JSON; the host is told what they are, as the shell reads them. spec R5.75, R3.20a
       const problem = filesProblem(message);
@@ -110,7 +118,7 @@ export function createRelay(deps: RelayDeps): Relay {
     try {
       const first = await postBridge({ actionToken: config.actionToken, request });
       if (isRecord(first) && isRecord(first.record)) {
-        await relayRecording(port, request, first.record, activated);
+        await relayRecording(port, request, first.record, refusal);
         return;
       }
       if (isRecord(first) && isRecord(first.confirm)) {
@@ -135,7 +143,9 @@ export function createRelay(deps: RelayDeps): Relay {
         }
         // Nothing uploads before the reader confirms; then exactly the approved files. spec R5.78, R3.20a
         if (files.length > 0 && !(await attachFiles(port, request, files, confirm.challenge))) return;
-        const second = await postBridge({ actionToken: config.actionToken, request, confirmation: confirm.challenge });
+        let second = await postBridge({ actionToken: config.actionToken, request, confirmation: confirm.challenge });
+        // The call did not go: what was stored for it is released, and the page is told what stays. spec R5.79
+        if (files.length > 0 && !(isRecord(second) && isRecord(second.response) && second.response.ok === true)) second = await afterFailedCall(request, confirm.challenge, second);
         // The host records the grant when it accepts the challenge, whatever the answer itself then does.
         const refusedChallenge = isRecord(second) && isRecord(second.response) && isRecord(second.response.error) && second.response.error.code === "confirmation_invalid";
         if (grant && isRecord(second) && isRecord(second.response) && !refusedChallenge) deps.onGranted?.(grant);
@@ -149,6 +159,34 @@ export function createRelay(deps: RelayDeps): Relay {
       navigator.release();
       reply(port, makeFailure(request.id, "unavailable", error instanceof Error ? error.message : "The Thread Page bridge is unavailable"));
     }
+  }
+
+  async function discard(request: BridgeRequestMessage, challenge: string): Promise<number> {
+    try {
+      const response = await fetchImpl(config.attachUrl, {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ actionToken: config.actionToken, request, confirmation: challenge, discard: true }),
+      });
+      const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+      return typeof body?.kept === "number" ? body.kept : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function keptSentence(kept: number): string {
+    if (kept === 0) return "";
+    return ` ${kept === 1 ? "One file already attached stays" : `${kept} files already attached stay`} in the project's attachments, attached to nothing: this host cannot remove them.`;
+  }
+
+  async function afterFailedCall(request: BridgeRequestMessage, challenge: string, answer: unknown): Promise<unknown> {
+    const kept = await discard(request, challenge);
+    if (kept === 0 || !isRecord(answer) || !isRecord(answer.response) || !isRecord(answer.response.error) || typeof answer.response.error.message !== "string") return answer;
+    const error = answer.response.error;
+    return { ...answer, response: { ...answer.response, error: { ...error, message: `${error.message as string}${keptSentence(kept)}`.slice(0, 512) } } };
   }
 
   function filesProblem(message: BridgeRequestMessage): { code: "invalid_request" | "invalid_params" | "request_too_large"; message: string } | null {
@@ -191,15 +229,9 @@ export function createRelay(deps: RelayDeps): Relay {
       }
       if (failure) {
         deps.onStatus?.("", false);
-        await fetchImpl(config.attachUrl, {
-          method: "POST",
-          credentials: "same-origin",
-          cache: "no-store",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ actionToken: config.actionToken, request, confirmation: challenge, discard: true }),
-        }).catch(() => undefined);
+        const kept = await discard(request, challenge);
         const code = failure.code === "request_too_large" ? "request_too_large" : "handler_error";
-        reply(port, makeFailure(request.id, code, `Could not attach “${file.name}”: ${failure.message}. Nothing was started or sent.`));
+        reply(port, makeFailure(request.id, code, `Could not attach “${file.name}”: ${failure.message.replace(/\.$/, "")}. Nothing was started or sent.${keptSentence(kept)}`));
         return false;
       }
     }
@@ -213,7 +245,7 @@ export function createRelay(deps: RelayDeps): Relay {
    * transcriber; the page gets the text, and the recording itself only when it
    * asked. spec R5.68–R5.73
    */
-  async function relayRecording(port: MessagePort, request: BridgeRequestMessage, record: Record<string, unknown>, activated: boolean): Promise<void> {
+  async function relayRecording(port: MessagePort, request: BridgeRequestMessage, record: Record<string, unknown>, refusal: string | null): Promise<void> {
     const params = isRecord(record.params) ? record.params : {};
     if (record.requestId !== request.id || !deps.voice) {
       reply(port, makeFailure(request.id, deps.voice ? "invalid_response" : "unavailable", deps.voice ? "The Thread Page bridge returned an invalid answer" : "This page cannot record here."));
@@ -222,7 +254,7 @@ export function createRelay(deps: RelayDeps): Relay {
     const seconds = typeof params.maxDurationSeconds === "number" ? params.maxDurationSeconds : LIMITS.voiceDefaultSeconds;
     const prompt = typeof params.prompt === "string" ? params.prompt : undefined;
     const language = typeof params.language === "string" ? params.language : undefined;
-    const outcome = await deps.voice.capture({ maxDurationSeconds: seconds, activated, purpose: "capability" }, async (recording) => {
+    const outcome = await deps.voice.capture({ maxDurationSeconds: seconds, refusal, purpose: "capability" }, async (recording) => {
       const text = await deps.voice!.transcribe({ blob: recording.blob, type: recording.type, ...(prompt ? { prompt } : {}), ...(language ? { language } : {}) });
       return { text, recording };
     });
@@ -236,7 +268,7 @@ export function createRelay(deps: RelayDeps): Relay {
   }
 
   /** Dictate and the audio capture input: the kernel's own asks, answered on the same port. spec R4.58, R4.24a */
-  async function relayRecord(port: MessagePort, data: Record<string, unknown>, activated: boolean): Promise<void> {
+  async function relayRecord(port: MessagePort, data: Record<string, unknown>, refusal: string | null): Promise<void> {
     const id = data.id as string;
     const answer = (message: RecordedMessage) => reply(port, message);
     if (!deps.voice) {
@@ -247,12 +279,12 @@ export function createRelay(deps: RelayDeps): Relay {
     const prompt = typeof data.prompt === "string" ? data.prompt.slice(-LIMITS.voicePromptChars) : "";
     let outcome: VoiceOutcome<{ text?: string; file?: File }>;
     if (data.purpose === "audio") {
-      outcome = await voice.capture({ maxDurationSeconds: LIMITS.voiceDefaultSeconds, activated, purpose: "audio" }, async (recording) => {
+      outcome = await voice.capture({ maxDurationSeconds: LIMITS.voiceDefaultSeconds, refusal, purpose: "audio" }, async (recording) => {
         const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
         return { file: new File([recording.blob], `recording-${stamp}.${recordingExtension(recording.type)}`, { type: recording.type }) };
       });
     } else {
-      outcome = await voice.capture({ maxDurationSeconds: LIMITS.voiceDefaultSeconds, activated, purpose: "dictate" }, async (recording) => ({
+      outcome = await voice.capture({ maxDurationSeconds: LIMITS.voiceDefaultSeconds, refusal, purpose: "dictate" }, async (recording) => ({
         text: await voice.transcribe({ blob: recording.blob, type: recording.type, ...(prompt ? { prompt } : {}) }),
       }));
     }
@@ -296,12 +328,15 @@ export function createRelay(deps: RelayDeps): Relay {
         files.push(await uploadOne(entries[index] as SubmitFile));
       }
       // A recording's transcript goes beside its path; one that cannot be made is said to be missing. spec R4.24b
-      const recordings = entries.map((entry, index) => ({ entry, index })).filter(({ entry }) => entry.transcribe === true);
+      // Only audio, whatever the kernel asked: nothing else goes to the transcriber. spec R3.34
+      const recordings = entries.map((entry, index) => ({ entry, index })).filter(({ entry }) => entry.transcribe === true && /^audio\//i.test(entry.file?.type ?? ""));
       for (let turn = 0; turn < recordings.length; turn += 1) {
         const { entry, index } = recordings[turn] as { entry: SubmitFile; index: number };
         const stored = files[index] as (typeof files)[number];
         reply(port, { kind: "thread-page:submit-progress", submissionId, message: `Transcribing ${turn + 1} of ${recordings.length}…` });
-        stored.transcript = deps.voice && config.voice.available ? await deps.voice.transcribe({ upload: stored.path, type: entry.file.type || "audio/webm" }).catch(() => null) : null;
+        const text = deps.voice && config.voice.available ? await deps.voice.transcribe({ upload: stored.path, type: entry.file.type }).catch(() => null) : null;
+        // A long transcript is shortened and says so; it never fails the answer. spec R4.24b
+        stored.transcript = text === null ? null : shortenTranscript(text);
       }
       if (files.length > 0) reply(port, { kind: "thread-page:submit-progress", submissionId, message: "Sending…" });
       const response = await fetchImpl(config.submitUrl, {
@@ -368,14 +403,19 @@ export function createRelay(deps: RelayDeps): Relay {
       if (data.kind === "thread-page:record") {
         if (!isValidRequestId(data.id) || (data.purpose !== "dictate" && data.purpose !== "audio")) return;
         // The reader's gesture, as the shell's own document sees it, when the ask arrives. spec R3.32a
-        void relayRecord(port, data, readerActed());
+        void relayRecord(port, data, readerRefusal());
+        return;
+      }
+      // Escape pressed in the page while the bar is open cancels it; cancelling is always safe. spec R3.32
+      if (data.kind === "thread-page:escape") {
+        deps.voice?.cancel();
         return;
       }
       if (!isBridgeRequest(data, config.pageRevision)) {
         reply(port, makeFailure(data.id, "invalid_request", "Invalid Thread Page bridge request"));
         return;
       }
-      void relayBridge(port, data, data.method === VOICE_METHOD ? readerActed() : false);
+      void relayBridge(port, data, data.method === VOICE_METHOD ? readerRefusal() : NEEDS_ACTION);
     },
   };
 }

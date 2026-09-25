@@ -27,7 +27,7 @@ const DEFAULT_WORDING: ConfirmWording = { heading: "Confirm this action", confir
  * something else. A question asked while one is open is declined, never
  * swapped in.
  */
-export function createConfirmer(dialog: HTMLDialogElement, armMs = 0, otherQuestionOpen: () => boolean = () => false): Confirmer {
+export function createConfirmer(dialog: HTMLDialogElement, armMs = 0, otherQuestionOpen: () => boolean = () => false, onClosed: () => void = () => undefined): Confirmer {
   const text = dialog.querySelector("p");
   const heading = dialog.querySelector("h2");
   const cancel = dialog.querySelector<HTMLButtonElement>('button[value="cancel"]');
@@ -48,6 +48,7 @@ export function createConfirmer(dialog: HTMLDialogElement, armMs = 0, otherQuest
     }
     gesture = undefined;
     if (dialog.open) dialog.close();
+    if (current) onClosed();
     current?.(approved);
   }
 

@@ -57,6 +57,8 @@ export type KernelMessage =
   | { kind: "thread-page:file-request"; id: string; path: string }
   /** Dictate, or an audio capture input: open the shell's recording bar. spec R4.58, R4.24a, D38 */
   | { kind: "thread-page:record"; id: string; purpose: RecordPurpose; prompt?: string }
+  /** Escape pressed in the page: an open recording bar is cancelled. Cancelling is always safe. spec R3.32 */
+  | { kind: "thread-page:escape" }
   | BridgeRequestMessage;
 
 export type ShellMessage =

@@ -112,7 +112,8 @@ export function createBridgeClient(pageRevision: string, doc: Document): BridgeC
       // The files go to the shell by structured clone, beside the JSON parameters, never in them. spec R5.75
       if (FILE_METHODS.has(method) && typeof params === "object" && params !== null && !Array.isArray(params) && Object.prototype.hasOwnProperty.call(params, "files")) {
         const { files: given, ...rest } = params as Record<string, unknown>;
-        const extracted = extractFiles(given);
+        // `files: undefined` is no files, like an empty list.
+        const extracted = given === undefined ? [] : extractFiles(given);
         if (extracted === null) {
           reject(new ThreadPageError("invalid_params", "files must be a FileList, an array of File, or an <input type=\"file\">"));
           return;

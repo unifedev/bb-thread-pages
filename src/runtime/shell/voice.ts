@@ -38,8 +38,8 @@ export type VoiceOutcome<T> = { ok: true; value: T } | { ok: false; code: Bridge
 
 export interface CaptureOptions {
   maxDurationSeconds: number;
-  /** Whether the shell had the reader's activation when the request arrived. spec R3.32a */
-  activated: boolean;
+  /** Null when the reader had just acted in the page as the request arrived; otherwise why not. spec R3.32a */
+  refusal: string | null;
   /** What the bar says it is for. */
   purpose: "capability" | "dictate" | "audio";
 }
@@ -56,6 +56,8 @@ export interface Voice {
    * the bar says so; resolves with its result, or why there is none.
    */
   capture<T>(options: CaptureOptions, work: (recording: Recording) => Promise<T>): Promise<VoiceOutcome<T>>;
+  /** Cancels an open bar, as Cancel does: the page's document changed, or the reader pressed Escape in the page. */
+  cancel(): void;
   /** Sends a recording, or an upload the page's form just stored, to the host's transcriber. */
   transcribe(input: { blob?: Blob; upload?: string; type: string; prompt?: string; language?: string }): Promise<string>;
 }
@@ -67,6 +69,8 @@ export interface VoiceDeps {
   restoreFocus(): void;
   /** Tells the reader, in the shell's status line, what went wrong. spec R2.44 */
   setStatus(text: string, warn: boolean): void;
+  /** The bar closed; a new one waits a moment. spec R3.32a */
+  onClosed?(): void;
   fetchImpl?: typeof fetch;
 }
 
@@ -82,13 +86,6 @@ export class VoiceFailure extends Error {
     super(message);
     this.code = code;
   }
-}
-
-/** Whether the shell's own document has the reader's transient activation — from a gesture in the page, which the browser propagates to its ancestors. */
-export function readerActivation(win: Window): boolean {
-  const activation = (win.navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
-  // An engine without the API cannot tell; all three measured engines have it.
-  return activation ? activation.isActive : true;
 }
 
 export function recordingType(win: Window & typeof globalThis): string | undefined {
@@ -122,6 +119,8 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
   let refused = false;
   let open = false;
   let watching = false;
+  /** Cancels the open bar, when one is open and not already sending. */
+  let cancelOpen: (() => void) | null = null;
 
   async function notify(): Promise<void> {
     const value = await usable();
@@ -241,9 +240,7 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
   function capture<T>(options: CaptureOptions, work: (recording: Recording) => Promise<T>): Promise<VoiceOutcome<T>> {
     // One question at a time, only on the reader's action. spec R3.32a
     if (open || deps.questionOpen()) return Promise.resolve({ ok: false, code: "unavailable", message: "Another question is open in the top bar; answer it first." });
-    if (!options.activated) {
-      return Promise.resolve({ ok: false, code: "unavailable", message: "The recording bar opens only when the reader presses something in the page." });
-    }
+    if (options.refusal !== null) return Promise.resolve({ ok: false, code: "unavailable", message: options.refusal });
     open = true;
     return surfaceProblem().then((problem) => {
       if (problem) {
@@ -304,7 +301,9 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
         cancel.removeEventListener("click", onCancel);
         done.removeEventListener("click", onDoneClick);
         open = false;
+        cancelOpen = null;
         hide();
+        deps.onClosed?.();
         if (!outcome.ok && outcome.code !== "cancelled") deps.setStatus(`Voice: ${outcome.message}`, true);
         resolve(outcome);
       }
@@ -417,6 +416,7 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
         void onDone();
       }
 
+      cancelOpen = onCancel;
       show(options.purpose);
       win.addEventListener("keydown", onKey, true);
       win.addEventListener("pagehide", onCancel);
@@ -513,5 +513,8 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
     isOpen: () => open,
     capture,
     transcribe,
+    cancel() {
+      cancelOpen?.();
+    },
   };
 }

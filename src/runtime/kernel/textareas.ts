@@ -135,6 +135,11 @@ function optedOut(field: HTMLTextAreaElement): boolean {
   return form !== null && isManualForm(form);
 }
 
+/** Disabled — itself, by a disabled fieldset — or inert: nothing can be typed or attached. spec R4.55 */
+function unusable(field: Element): boolean {
+  return matchesSafely(field, ":disabled") || field.closest("[inert]") !== null;
+}
+
 function matchesSafely(element: Element, selector: string): boolean {
   try {
     return element.matches(selector);
@@ -164,6 +169,7 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
   let scheduled = 0;
   let resizeObserver: ResizeObserver | null = null;
   let ticker: ReturnType<typeof setInterval> | null = null;
+  let observing = false;
 
   function layer(): ShadowRoot | null {
     if (root) {
@@ -255,7 +261,7 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
       return;
     }
     const text = (answer.text ?? "").trim();
-    if (!text || field.disabled || field.readOnly || !field.isConnected) return;
+    if (!text || unusable(field) || field.readOnly || !field.isConnected) return;
     insert(field, Math.min(start, field.value.length), Math.min(end, field.value.length), text);
   }
 
@@ -339,12 +345,24 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
       const entry = create(field);
       if (entry) entries.set(field, entry);
     }
-    if (entries.size > 0 && ticker === null) {
-      // Layout moves without telling anyone (an image loads above a field); look again now and then.
-      ticker = setInterval(() => {
-        if (doc.visibilityState !== "hidden") schedule();
-      }, 750);
-    }
+    if (entries.size > 0) observe();
+  }
+
+  /**
+   * Watched only once there is a text area: a field disabled while its form
+   * sends, made read-only, inert, hidden or opted out loses its controls
+   * (R4.55). Its size and visibility come from the ResizeObserver, its
+   * movement from scrolling and, while controls show, a periodic look.
+   */
+  function observe(): void {
+    if (observing || typeof win.MutationObserver !== "function" || !doc.documentElement) return;
+    observing = true;
+    new win.MutationObserver(() => schedule()).observe(doc.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["disabled", "readonly", "hidden", "inert", "open", MANUAL_ATTRIBUTE, "form"],
+    });
   }
 
   /** The part of the field the reader can actually see: the viewport, and every clipping ancestor. */
@@ -372,7 +390,7 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
   }
 
   function shown(field: HTMLTextAreaElement): boolean {
-    if (field.disabled || field.readOnly || field.hidden || !field.isConnected || optedOut(field)) return false;
+    if (unusable(field) || field.readOnly || field.hidden || !field.isConnected || optedOut(field)) return false;
     // An offline copy answers nothing: its fields lose the controls too. spec R4.55
     if (deps.isReadOnly()) return false;
     if (field.getClientRects().length === 0) return false;
@@ -476,13 +494,20 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
       const edgeVisible = box !== null && box.bottom >= rect.bottom - 1 && uncovered(field, rect.left + Math.min(rect.width / 2, 8), rect.bottom - 2);
       entry.list.hidden = !(listed && visible && edgeVisible);
       if (!entry.list.hidden) {
-        drawList(entry, !field.disabled && !field.readOnly);
+        drawList(entry, !unusable(field) && !field.readOnly);
         entry.list.style.left = `${Math.round(rect.left)}px`;
         entry.list.style.top = `${Math.round(rect.bottom + 4)}px`;
         entry.list.style.maxWidth = `${Math.max(120, Math.round(rect.width))}px`;
       }
     }
-    if (entries.size === 0 && ticker !== null) {
+    // Layout moves without telling anyone (an image loads above a field): while controls show, look
+    // again now and then; while none shows there is nothing to keep in place.
+    const showing = [...entries.values()].some((entry) => !entry.group.hidden || !entry.list.hidden);
+    if (showing && ticker === null) {
+      ticker = setInterval(() => {
+        if (doc.visibilityState !== "hidden") schedule();
+      }, 750);
+    } else if (!showing && ticker !== null) {
       clearInterval(ticker);
       ticker = null;
     }
@@ -562,7 +587,9 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     return entry && shown(field) && attachable(field) ? entry : undefined;
   }
 
+  // In the bubble phase, and only when the page's own handlers left the event alone.
   function onPaste(event: ClipboardEvent): void {
+    if (event.defaultPrevented) return;
     const entry = entryFor(event.target);
     const files = Array.from(event.clipboardData?.files ?? []);
     if (!entry || files.length === 0) return;
@@ -572,12 +599,13 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
   }
 
   function onDragOver(event: DragEvent): void {
-    if (!entryFor(event.target) || !event.dataTransfer?.types.includes("Files")) return;
+    if (event.defaultPrevented || !entryFor(event.target) || !event.dataTransfer?.types.includes("Files")) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
   }
 
   function onDrop(event: DragEvent): void {
+    if (event.defaultPrevented) return;
     const entry = entryFor(event.target);
     const files = Array.from(event.dataTransfer?.files ?? []);
     if (!entry || files.length === 0) return;
@@ -590,7 +618,7 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     for (const control of controlsOf(form)) {
       if (!isTextArea(control)) continue;
       const entry = entries.get(control);
-      if (!entry || entry.files.length === 0 || control.disabled || optedOut(control)) continue;
+      if (!entry || entry.files.length === 0 || unusable(control) || optedOut(control)) continue;
       // Beside that field's text in the answer; an audio file is transcribed. spec R4.62, R4.24b
       const field = control.name || "attachment";
       for (const file of entry.files) out.push({ field, file, ...(/^audio\//i.test(file.type) ? { transcribe: true } : {}) });
@@ -603,21 +631,12 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     if (isTextArea(event.target)) touched.add(event.target);
   }, true);
   win.addEventListener("keydown", onDocumentKey);
-  doc.addEventListener("paste", onPaste, true);
-  doc.addEventListener("dragover", onDragOver, true);
-  doc.addEventListener("drop", onDrop, true);
+  doc.addEventListener("paste", onPaste);
+  doc.addEventListener("dragover", onDragOver);
+  doc.addEventListener("drop", onDrop);
   doc.addEventListener("scroll", schedule, { capture: true, passive: true });
   win.addEventListener("resize", schedule);
   doc.addEventListener("visibilitychange", schedule);
-  if (typeof win.MutationObserver === "function" && doc.documentElement) {
-    // A field disabled while its form sends, made read-only, hidden or opted out loses its controls. spec R4.55
-    new win.MutationObserver(() => schedule()).observe(doc.documentElement, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      attributeFilter: ["disabled", "readonly", "hidden", "style", "class", "open", MANUAL_ATTRIBUTE, "form"],
-    });
-  }
 
   return {
     prepare(from) {

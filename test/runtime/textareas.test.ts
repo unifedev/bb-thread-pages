@@ -374,3 +374,32 @@ describe("dictation inside an embed (R4.51a, A131)", () => {
     expect(received.at(-1)).toEqual({ kind: "thread-page:voice", available: false });
   });
 });
+
+describe("after review", () => {
+  it("give nothing to a field disabled by its fieldset or made inert", async () => {
+    const fixture = install(`<form><fieldset disabled><textarea name="a"></textarea></fieldset><div inert><textarea name="b"></textarea></div><textarea name="c"></textarea></form>`);
+    await fixture.frame();
+    const groups = Array.from(fixture.roots[0]!.querySelectorAll<HTMLElement>(".group"));
+    expect(groups.map((group) => group.hidden)).toEqual([true, true, false]);
+  });
+
+  it("leave a paste the page handled itself alone, and post Escape to the shell", async () => {
+    const fixture = install(FORM);
+    await fixture.frame();
+    const field = fixture.doc.querySelector("textarea")!;
+    field.addEventListener("paste", (event) => event.preventDefault());
+    field.dispatchEvent(Object.assign(new fixture.win.Event("paste", { bubbles: true, cancelable: true }), { clipboardData: { files: [new fixture.win.File(["x"], "x.txt")], types: ["Files"] } }));
+    await fixture.frame();
+    expect(controlsFor(fixture).list.hidden).toBe(true);
+    field.dispatchEvent(new fixture.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(fixture.posted).toContainEqual({ kind: "thread-page:escape" });
+  });
+
+  it("treat files: undefined as no files", () => {
+    const fixture = install(`<p></p>`);
+    void fixture.win.threadPage.invoke("sessions.start", { projectId: "proj_a", prompt: "go", files: undefined });
+    const request = fixture.posted.find((message) => message.method === "sessions.start")!;
+    expect(request.params).toEqual({ projectId: "proj_a", prompt: "go" });
+    expect(request).not.toHaveProperty("files");
+  });
+});
