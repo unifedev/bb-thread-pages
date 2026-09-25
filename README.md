@@ -33,8 +33,9 @@ verify it. Nothing here decides what the product should be.
   configured a seed of their own; there is no template, stylesheet or example.
 - `bb thread-page guide` — the authoring guide: forms and controls anywhere on
   the page, own files, several documents and parts, how an open page follows a
-  save, showing another session's page, uploads, `window.threadPage`, every
-  capability, other services and servers, links, windows, downloads and full
+  save, showing another session's page, uploads, what every text area offers
+  (dictation and attached files), voice, `window.threadPage`, every
+  capability, files with `sessions.start` and `sessions.send`, other services and servers, links, windows, downloads and full
   screen, other sites in a frame, large media, limits, and what the sandbox
   still silences.
 - `bb thread-page home [--clear]` — makes this session's page the home page,
@@ -52,7 +53,8 @@ document includes at serve time with
 `<link rel="thread-page-include" href="_parts/*.html">` — and `uploads/` holds
 what the reader attaches. An open page follows a save in about two seconds while
 its session works, swapped in place. A page shows another session's page with
-`threadPage.embed(target, { sessionId })`.
+`threadPage.embed(target, { sessionId })`. Every `<textarea>` offers Dictate and
+Attach files; the top bar records, bb transcribes, and the page gets text.
 
 ## Layout
 

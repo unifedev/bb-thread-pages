@@ -25,6 +25,34 @@ describe("the authoring guide", () => {
     expect(coreGuide).toContain("`voice.captureAndTranscribe` — device · confirmed in trusted chrome");
   });
 
+  // Spec 1.5: the text-area controls, voice, the recorded answer and files, each with its numbers. A138, R6.24
+  it("documents text areas, voice, the audio input and files with their limits, and not bb's own voice command", () => {
+    const areas = section(coreGuide, "### Every text area takes voice and files", "## Files the reader sends you");
+    expect(areas).toContain("**Dictate**");
+    expect(areas).toContain("**Attach files**");
+    expect(areas).toContain("**Attached here:**");
+    expect(areas).toContain(`${LIMITS.uploadsPerForm} per\nform`);
+    expect(areas).toContain("`data-thread-page-manual` on a <textarea>");
+    expect(areas).toMatch(/Dictate only/);
+    const uploads = section(coreGuide, "## Files the reader sends you", "## Files you show the reader");
+    expect(uploads).toContain('<input type="file" accept="audio/*" capture>');
+    expect(uploads).toContain("Transcript missing");
+    expect(uploads).toContain(`up to ${LIMITS.voiceDefaultSeconds} s`);
+    const voice = section(coreGuide, "## Voice", "## Capabilities\n");
+    expect(voice).toContain("**it is the confirmation**");
+    expect(voice).toContain("5 MB of audio with its default transcription");
+    expect(voice).toContain("25 MB with OpenAI; each attempt 10 s, 2 attempts");
+    expect(voice).toContain(`from 1 to ${LIMITS.voiceMaxSeconds}, default ${LIMITS.voiceDefaultSeconds}`);
+    expect(voice).toContain(`at most\n  ${LIMITS.voicePromptChars} characters`);
+    expect(voice).toContain("`cancelled`: Cancel, Escape, or Done before 1 s");
+    const files = section(coreGuide, "**With files.**", "## Network");
+    expect(files).toContain(`At most ${LIMITS.promptFiles} files of 24 MiB each`);
+    expect(files).toContain("native attachment");
+    expect(files).toContain("`unavailable` rather than starting without them");
+    expect(coreGuide).not.toMatch(/bb voice transcribe|voice transcribe/);
+    expect(coreGuide).not.toContain("not implemented: unknown_method");
+  });
+
   it("states every limit as a number", () => {
     expect(coreGuide).toContain("5 MiB");
     expect(coreGuide).toContain("24 MiB");

@@ -1,5 +1,93 @@
 # Changelog
 
+## 1.7.0 — unreleased — voice, text areas that take voice and files, files with sessions
+
+Implements spec 1.5 (`bartsoj/bb-thread-pages`, DECISIONS D38–D40). Existing
+pages keep working; `window.threadPage.version` and the bridge protocol stay
+`1`.
+
+### Voice: the shell records, bb transcribes, the page gets text (D38)
+
+- The shell's `Permissions-Policy` now allows the microphone to the shell
+  itself (`microphone=(self)`); every page document keeps `microphone=()`, and
+  neither the page frame nor an embed frame is given it. The page never holds
+  the device.
+- A recording bar in the top bar's own chrome — live waveform, Cancel, Done —
+  is the consent: nothing leaves the reader's device until Done, Escape and
+  Cancel discard, and a Done under 1 s says *Too short* and sends nothing. It
+  opens only while the shell's own document has the reader's activation from a
+  gesture in the page, one at a time, and it counts as a question beside the
+  confirmation dialog. The recorder copies bb's composer: the first supported
+  of webm, mp4 and ogg, the chunk's type (Firefox leaves the recorder's empty),
+  250 ms slices, and bb's preferred microphone
+  (`bb.voiceInput.audioInputDeviceId`).
+- Transcription goes shell → `POST /transcribe` (JSON and base64, the action
+  token) → the host contract's new optional `voice` → on bb
+  `sdk.system.transcribeVoice`, the endpoint bb's composer uses. Whether a
+  service is configured comes from `sdk.system.config()`
+  (`voiceTranscriptionEnabled`). bb takes no language, so a hint rides at the
+  head of the context.
+- `voice.captureAndTranscribe` is implemented and always listed (confirmation
+  `required`): `{ language?, prompt? (≤ 1000), maxDurationSeconds? (1–600,
+  default 120), keepAudio? }` → `{ text }`, plus the recording as a `Blob`
+  with `keepAudio`. `unavailable`, with the reason, when the host cannot
+  transcribe, no service is configured, the reader's surface cannot record
+  (secure context, `getUserMedia`, `MediaRecorder`, microphone permission not
+  `denied`), the microphone was refused (then until reload), or the call came
+  without the reader's action; `request_too_large` over the host's size limit.
+  Inside an embed it stays `unavailable`.
+- `<input type="file" accept="audio/*" capture>` in a captured form: with a
+  fine pointer a click opens the shell's recorder and the recording becomes the
+  input's file; with a coarse one (a phone) the browser's own recorder answers.
+  On submit the shell transcribes it from the stored upload and the answer
+  carries `Transcript: …` beside its path, or says it is missing.
+
+### Every text area takes voice and files (D39)
+
+- Each `<textarea>` gets **Dictate** and **Attach files** — line icons at
+  16 px in the field's own colour — over its bottom-right corner, in a closed
+  shadow root whose host is the last child of `<html>`, fixed by inline
+  `!important` styles: the field and the page's layout are untouched and page
+  CSS cannot reach them. Tab goes from the field to Dictate, Attach, then what
+  follows. Disabled, read-only, hidden, modal-dialog and opted-out fields get
+  none, and a field loses them while its form sends or the page is an offline
+  copy.
+- Dictate inserts the transcript at the caret with a separating space and fires
+  `input` and `change`; the text before the caret goes as context.
+- Attach, paste and drop list files under the field (no layout space). They
+  upload with the form, and the answer reports them under **Attached here:**
+  beside that field's text, audio with its transcript. File inputs and text
+  areas count together: 24 MiB each and 8 per form, and a form over either is
+  now refused visibly instead of cut short.
+- Attach is offered only in a captured form, not inside an embed and not on the
+  built-in home. Dictate works inside an embed through the embedding page's
+  shell. `data-thread-page-manual` on a text area removes its controls only.
+
+### Files with `sessions.start` and `sessions.send` (D40)
+
+- `files` — a `FileList`, an array of `File` or an `<input type="file">` — goes
+  from the kernel to the shell by structured clone; the host sees each file's
+  name, size and type, bound into the confirmation's challenge, and the dialog
+  names every file with its size. At most 8 files of 24 MiB each, else
+  `request_too_large` before any dialog.
+- After Confirm the shell stores each file through `POST /attach`, which needs
+  the call and its challenge and the exact approved size, as a project
+  attachment (`sdk.projects.attachments.upload`); the call then carries them as
+  `localImage`/`localFile` items. The host checks count, name, size and type in
+  order and refuses a mismatch with `confirmation_invalid`. A failed upload
+  starts or sends nothing and names the file (`request_too_large` or
+  `handler_error`); bb has no route to remove an attachment, so what was
+  stored for the call is logged and left, attached to nothing. A host without
+  attachments answers `unavailable`. Works from the built-in home.
+
+### Also
+
+- Confirmation summaries may be 1024 characters and list files one per line;
+  signed tokens may be 8 KiB.
+- The guide documents text areas, voice, the recorded answer and `files`, with
+  their limits; the standing instruction is unchanged.
+- `test/browser/voice.mjs`: 42 checks, passing in Chromium, Firefox and WebKit.
+
 ## 1.6.0 — 2026-09-25 — links, popups, own files, full screen, other sites, large media
 
 Implements spec 1.4 (`bartsoj/bb-thread-pages`, DECISIONS D33–D37). Existing
