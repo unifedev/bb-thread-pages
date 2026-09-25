@@ -6,13 +6,15 @@ import { isOpenableInTab, isOwnFilePath, shellFetchLimit } from "../../src/domai
 import { installKernel } from "../../src/runtime/kernel/install.ts";
 import { EMBEDDED_MEDIA_REFUSAL, UNAVAILABLE_ATTRIBUTE } from "../../src/runtime/kernel/large-media.ts";
 import type { ShellConfig } from "../../src/runtime/shared/protocol.ts";
-import { createOwnFiles } from "../../src/runtime/shell/own-files.ts";
+import { createOwnFiles, shownName } from "../../src/runtime/shell/own-files.ts";
 
 // A page's own non-document files (D33) and its large media (D37), at the
 // kernel and at the shell. The serve-time half is in test/pages/inline.test.ts.
 
 const FILES = "/api/v1/threads/thr_a/thread-storage/files/";
-const config = { filesUrl: FILES } as ShellConfig;
+const config = { filesUrl: FILES, deferredFiles: ["media/clip.mp4", "gone.mp4", "huge.mp4", "locked.mp4"] } as ShellConfig;
+/** A confirmer that must not be asked. */
+const never = { confirm: vi.fn(async () => false) };
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function fakePort() {
@@ -53,7 +55,7 @@ describe("the shell and a page's own files", () => {
 
   it("downloads from its own origin under the page's name, and opens a passive file in a new tab (D33)", () => {
     const { open, clicks, restore } = shell();
-    const files = createOwnFiles(window as never, config, vi.fn() as never);
+    const files = createOwnFiles(window as never, config, vi.fn() as never, never);
     files.open("media/clip one.mp4", true, "Thanks for Alua.mp4");
     files.open("clip.mp4", true, null);
     files.open("report.pdf", false, null);
@@ -67,7 +69,7 @@ describe("the shell and a page's own files", () => {
 
   it("downloads rather than opens a type that could run script, and refuses anything outside the page (hostile page)", () => {
     const { open, clicks, restore } = shell();
-    const files = createOwnFiles(window as never, config, vi.fn() as never);
+    const files = createOwnFiles(window as never, config, vi.fn() as never, never);
     files.open("drawing.svg", false, null);
     for (const path of ["../other/x.pdf", "/etc/passwd", "a/../../x.pdf", "https://evil.example/x.pdf", 7, null]) files.open(path, false, null);
     // A document of the page opens in place, never raw in a tab.
@@ -136,9 +138,36 @@ describe("the shell and a page's own files", () => {
     expect(declined.assign).not.toHaveBeenCalled();
   });
 
+  // The bb app answers null inside the dialog's click too, and opens the URL itself: no second copy in place.
+  it("after a null inside the Open click, opens in place only if the shell still has focus", async () => {
+    const focus = { visible: true, focused: true };
+    const { win, open, assign } = fakeWindow([], focus);
+    const confirmer = { confirm: vi.fn(async (_s: string, onGesture?: () => void) => { onGesture?.(); focus.focused = false; return true; }) };
+    createOwnFiles(win, config, vi.fn() as never, confirmer, 0).open("report.pdf", false, null);
+    await settle();
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("fetches only a file the served document deferred (D37)", async () => {
+    const fetchImpl = vi.fn(async () => new Response(new Uint8Array(3), { status: 200 }));
+    const files = createOwnFiles(window as never, config, fetchImpl as never, never);
+    const { port, sent } = fakePort();
+    await files.fetchFor(port, "tp-file-1", "private/notes.mp4");
+    await files.fetchFor(port, "tp-file-2", "report.pdf");
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(sent.map((message) => message.error)).toEqual(["Not a file this document defers", "Not a file this document defers"]);
+  });
+
+  it("names a file in its question without bidi, zero-width, control or quote characters", () => {
+    expect(shownName("a/\u202eevil\u202cfdp.exe")).toBe("evilfdp.exe");
+    expect(shownName("x\u200b\u200d\u2066y\u2069”\".pdf")).toBe("xy.pdf");
+    expect(shownName("n".repeat(80) + ".pdf")).toHaveLength(60);
+  });
+
   it("does nothing on the built-in home, which has no files", () => {
     const { open, clicks, restore } = shell();
-    createOwnFiles(window as never, { filesUrl: null } as ShellConfig, vi.fn() as never).open("clip.mp4", true, null);
+    createOwnFiles(window as never, { filesUrl: null, deferredFiles: [] } as unknown as ShellConfig, vi.fn() as never, never).open("clip.mp4", true, null);
     expect(open).not.toHaveBeenCalled();
     expect(clicks).toEqual([]);
     restore();
@@ -146,7 +175,7 @@ describe("the shell and a page's own files", () => {
 
   it("fetches a large media file with the reader's credential and hands the frame the bytes (D37)", async () => {
     const fetchImpl = vi.fn(async () => new Response(new Uint8Array(3000), { status: 200, headers: { "content-type": "video/mp4" } }));
-    const files = createOwnFiles(window as never, config, fetchImpl as never);
+    const files = createOwnFiles(window as never, config, fetchImpl as never, never);
     const { port, sent } = fakePort();
     await files.fetchFor(port, "tp-file-1", "media/clip.mp4");
     expect(fetchImpl).toHaveBeenCalledWith(`${FILES}media/clip.mp4`, { credentials: "same-origin", cache: "no-store" });
@@ -163,7 +192,7 @@ describe("the shell and a page's own files", () => {
       [`${FILES}locked.mp4`]: new Response("", { status: 401 }),
     };
     const fetchImpl = vi.fn(async (url: string) => answers[url]!);
-    const files = createOwnFiles(window as never, config, fetchImpl as never);
+    const files = createOwnFiles(window as never, config, fetchImpl as never, never);
     const { port, sent } = fakePort();
     await files.fetchFor(port, "tp-file-1", "../x.mp4");
     await files.fetchFor(port, "tp-file-2", "gone.mp4");
@@ -171,7 +200,7 @@ describe("the shell and a page's own files", () => {
     await files.fetchFor(port, "tp-file-4", "locked.mp4");
     await files.fetchFor(port, "not an id!", "gone.mp4");
     expect(sent.map((message) => [message.id, message.ok, message.error])).toEqual([
-      ["tp-file-1", false, "Not one of this page's files"],
+      ["tp-file-1", false, "Not a file this document defers"],
       ["tp-file-2", false, "The file does not exist"],
       ["tp-file-3", false, "Larger than 25 MiB, the most the host reads"],
       ["tp-file-4", false, "The host answered 401"],
@@ -232,6 +261,23 @@ describe("the kernel and large media (D37)", () => {
     expect(request).toBeDefined();
     handle.deliver({ kind: "thread-page:file", id: "tp-file-999", ok: true, blob: new Blob(["x"]) });
     expect(late.hasAttribute("src")).toBe(false);
+  });
+
+  it("asks again for a file that could not come, when an element needs it next", async () => {
+    const { handle, posted, connect } = kernel();
+    connect();
+    const first = posted.find((message) => message.path === "gone.png")!;
+    handle.deliver({ kind: "thread-page:file", id: first.id as string, ok: false, error: "The host answered 503" });
+    await flush();
+    const again = document.createElement("img");
+    again.setAttribute("data-thread-page-src", "gone.png");
+    document.body.appendChild(again);
+    await flush();
+    const asks = posted.filter((message) => message.path === "gone.png");
+    expect(asks).toHaveLength(2);
+    handle.deliver({ kind: "thread-page:file", id: asks[1]!.id as string, ok: true, blob: new Blob(["x"]) });
+    await flush();
+    expect(again.getAttribute("src")).toMatch(/^blob:null\//);
   });
 
   it("inside an embed asks nothing and says why", async () => {

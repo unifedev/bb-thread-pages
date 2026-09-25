@@ -241,6 +241,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     path: string;
     stale: boolean;
     empty: boolean;
+    deferredFiles: string[];
   }
 
   /** Exchanges the token for one bound to a document of the page at its current revision. */
@@ -266,7 +267,8 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     ) {
       return (isRecord(body) && typeof body.message === "string" && body.message) || "That page could not be opened";
     }
-    return { actionToken: body.actionToken, pageRevision: body.pageRevision, expiresAt: body.expiresAt, documentUrl: body.documentUrl, path: body.path, stale: body.stale === true, empty: body.empty === true };
+    const deferredFiles = Array.isArray(body.deferredFiles) ? body.deferredFiles.filter((path): path is string => typeof path === "string") : [];
+    return { actionToken: body.actionToken, pageRevision: body.pageRevision, expiresAt: body.expiresAt, documentUrl: body.documentUrl, path: body.path, stale: body.stale === true, empty: body.empty === true, deferredFiles };
   }
 
   function applySession(session: DocumentSession): void {
@@ -277,6 +279,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     config.documentPath = session.path;
     config.stale = session.stale;
     config.empty = session.empty;
+    config.deferredFiles = session.deferredFiles;
     lastStale = config.stale;
   }
 

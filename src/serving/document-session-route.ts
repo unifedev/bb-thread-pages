@@ -7,6 +7,7 @@ import { isBuiltinHome } from "./builtin-home.ts";
 import type { ServingContext } from "./context.ts";
 import { EMPTY_REVISION, loadUnlessUnwritten } from "./empty-page.ts";
 import { failureResponse, jsonResponse } from "./responses.ts";
+import { deferredPaths } from "./shell-route.ts";
 import { eligibleSession } from "./session-access.ts";
 
 /**
@@ -40,6 +41,7 @@ export function documentSessionRoute(serving: ServingContext) {
         path: path ?? ENTRY_DOCUMENT,
         stale: page?.stale ?? false,
         empty: page === null,
+        deferredFiles: deferredPaths(page),
       });
     } catch (error) {
       return failureResponse(error, serving.host.log, "POST /document-session", false);

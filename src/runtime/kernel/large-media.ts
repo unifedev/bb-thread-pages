@@ -60,6 +60,10 @@ export function createLargeMedia(win: Window & typeof globalThis, deps: LargeMed
           entry.sent = deps.post({ kind: "thread-page:file-request", id, path });
         });
     files.set(path, answer);
+    // A file that could not come is asked for again the next time an element needs it.
+    void answer.then((outcome) => {
+      if (!outcome.ok && files.get(path) === answer) files.delete(path);
+    });
     return answer;
   }
 

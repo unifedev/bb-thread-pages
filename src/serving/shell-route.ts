@@ -50,6 +50,7 @@ export function shellRoute(serving: ServingContext) {
           documentSessionUrl: `${serving.routeBase}/document-session`,
           navigable: true,
           filesUrl: serving.site.siteRoot(id),
+          deferredFiles: deferredPaths(page),
           workingLabel: settings.workingLabel,
           stale,
           empty: page === null,
@@ -71,4 +72,9 @@ export function shellRoute(serving: ServingContext) {
       return failureResponse(error, serving.host.log, "GET /page", true);
     }
   };
+}
+
+/** The own media files a served document defers to the shell (D37). */
+export function deferredPaths(page: { site: { deferred?: readonly { path: string }[] } } | null): string[] {
+  return (page?.site.deferred ?? []).map((file) => file.path);
 }

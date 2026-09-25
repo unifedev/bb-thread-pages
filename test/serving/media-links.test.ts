@@ -67,6 +67,14 @@ describe("large own media (D37)", () => {
     expect(status.stdout).toContain("fetched by the shell (large media): clip.mp4 (2 MiB)");
   });
 
+  it("tells the shell which files the document defers, on load and on a document exchange (only those are fetched)", async () => {
+    const shell = await (await fixture.get(`${ROUTE_BASE}/page?session=thr_a`)).text();
+    expect(shell).toContain("&quot;deferredFiles&quot;:[&quot;clip.mp4&quot;]");
+    const token = /&quot;actionToken&quot;:&quot;([^&]+)&quot;/.exec(shell)![1]!;
+    const exchanged = (await (await fixture.post(`${ROUTE_BASE}/document-session`, { actionToken: token, path: "index.html" })).json()) as { deferredFiles?: unknown };
+    expect(exchanged.deferredFiles).toEqual(["clip.mp4"]);
+  });
+
   it("revises the document when the large file changes, so an open reader gets the new one", async () => {
     const before = (await fixture.get(`${ROUTE_BASE}/document?session=thr_a`)).headers.get("etag");
     put("clip.mp4", new Uint8Array(LIMITS.inlineFileBytes + 11).fill(7));

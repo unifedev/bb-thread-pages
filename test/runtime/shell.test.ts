@@ -23,6 +23,7 @@ const config: ShellConfig = {
   documentSessionUrl: "/document-session",
   navigable: true,
   filesUrl: "/api/v1/threads/thr_a/thread-storage/files/",
+  deferredFiles: [],
   pollMs: 10_000,
   pollWorkingMs: 2_000,
   pollAfterAnswerMs: 60_000,

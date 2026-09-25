@@ -1,3 +1,4 @@
+import { isOwnHost } from "../../src/serving/bridge/handlers/navigation.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LIMITS } from "../../src/domain/limits.ts";
 import { revisionOf } from "../../src/domain/revision.ts";
@@ -234,6 +235,34 @@ describe("navigation", () => {
     const { first, second } = await confirmed("navigation.openExternal", { url: "https://example.com/path?q=1", label: "Docs" });
     expect(first.body.confirm?.summary).toBe("Open “Docs” (https://example.com) in a new tab?");
     expect(second.body.navigate).toEqual({ kind: "external", url: "https://example.com/path?q=1" });
+  });
+
+  // Other names for the same server are the same server. spec R5.32a, A118
+  it("knows this host by any of its names: loopback aliases on its port, trailing dots, case, any getbb.app port", () => {
+    const loopback = ["http://127.0.0.1:38886"];
+    for (const url of ["http://127.0.0.1:38886/x", "http://localhost:38886/", "http://LOCALHOST.:38886/", "http://app.localhost:38886/", "http://127.1.2.3:38886/", "http://2130706433:38886/", "http://[::1]:38886/", "http://[::ffff:127.0.0.1]:38886/", "http://0.0.0.0:38886/", "https://127.0.0.1:38886/"]) {
+      expect(isOwnHost(new URL(url), loopback), url).toBe(true);
+    }
+    // Another port on this machine is another server; the page may be pointed at a local tool on purpose.
+    for (const url of ["http://localhost:8000/", "http://127.0.0.1/", "http://10.0.0.5:38886/"]) expect(isOwnHost(new URL(url), loopback), url).toBe(false);
+    // The LAN address the reader used, and only that one.
+    expect(isOwnHost(new URL("http://192.168.1.20:38886/"), ["http://192.168.1.20:38886"])).toBe(true);
+    expect(isOwnHost(new URL("http://192.168.1.21:38886/"), ["http://192.168.1.20:38886"])).toBe(false);
+    for (const url of ["https://bart.getbb.app/", "https://Bart.GetBB.App./x", "https://x.getbb.app:8443/", "http://getbb.app:80/", "https://getbb.app./"]) {
+      expect(isOwnHost(new URL(url), []), url).toBe(true);
+    }
+    // Look-alikes are other sites: suffixes, prefixes, and an IDN homoglyph (Cyrillic е).
+    for (const url of ["https://notgetbb.app/", "https://getbb.app.example.com/", "https://getbb.apps/", "https://gеtbb.app/", "https://bart.gеtbb.app/"]) {
+      expect(isOwnHost(new URL(url), loopback), url).toBe(false);
+    }
+  });
+
+  it("rejects a URL with userinfo before it could be matched against this host", async () => {
+    for (const url of ["https://user@bart.getbb.app/", "https://evil.example@127.0.0.1:38886/", "https://a:b@example.com/"]) {
+      const answer = await call("navigation.openExternal", { url });
+      expect(answer.body.confirm, url).toBeUndefined();
+      expect(answer.body.response?.error?.code, url).toBe("invalid_params");
+    }
   });
 
   // Host addresses have their own capabilities; the shell must never open one unsandboxed. spec R5.32a, A118

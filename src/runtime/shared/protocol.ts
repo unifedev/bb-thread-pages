@@ -92,6 +92,12 @@ export interface ShellConfig {
    * built-in home, which has none. spec R4.15b, R4.25a
    */
   filesUrl: string | null;
+  /**
+   * The own media files the open document defers to the shell (D37). The
+   * shell fetches these and nothing else. Follows the document on a switch or
+   * a refresh. spec R4.25a
+   */
+  deferredFiles: string[];
   workingLabel: string;
   stale: boolean;
   /** The agent has not written the page yet; the frame holds host text. spec R6.19 */

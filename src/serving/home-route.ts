@@ -57,6 +57,7 @@ export function homeRoute(serving: ServingContext) {
           documentSessionUrl: `${serving.routeBase}/document-session`,
           navigable: false,
           filesUrl: null,
+          deferredFiles: [],
           workingLabel: settings.workingLabel,
           stale: false,
           empty: false,

@@ -18,8 +18,10 @@ import type { Confirmer } from "./confirm.ts";
  * - A large media file the document could not carry: the shell fetches it
  *   and hands the frame the bytes (D37; delete with large-media.ts).
  *
- * Every path is checked again here: inside the page root, never a document
- * (those open in place), never a part.
+ * Every path is checked again here: inside the page root; a document of the
+ * page is only downloaded (it opens in place otherwise); only types that cannot
+ * run script on the host's origin open in a tab; and only a file the served
+ * document deferred is fetched.
  */
 export interface OwnFiles {
   open(path: unknown, download: unknown, name: unknown): void;
@@ -28,9 +30,13 @@ export interface OwnFiles {
 
 const OPEN_WORDING = { heading: "Open this file?", confirmLabel: "Open", cancelLabel: "Cancel" };
 
-/** A file name for the shell's own question: the host-validated path's last segment, bounded. */
-function shownName(path: string): string {
-  const name = baseName(path).replace(/[\u0000-\u001f\u007f“”"]/g, "");
+/**
+ * A file name for the shell's own question: the host-validated path's last
+ * segment, bounded, without control, quote, bidi or zero-width characters, so
+ * a name cannot reorder or close the host's own sentence.
+ */
+export function shownName(path: string): string {
+  const name = baseName(path).replace(/[\u0000-\u001f\u007f“”"\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, "");
   return name.length <= 60 ? name : `${name.slice(0, 59)}…`;
 }
 
@@ -43,7 +49,7 @@ const OPEN_SETTLE_MS = 400;
  * Safari over bb Connect (1.6.0): the page's click arrives as a message, too
  * late for a popup. Its Open button is a click of the shell's own.
  */
-export function createOwnFiles(win: Window & typeof globalThis, config: ShellConfig, fetchImpl: typeof fetch, confirmer?: Confirmer, settleMs = OPEN_SETTLE_MS): OwnFiles {
+export function createOwnFiles(win: Window & typeof globalThis, config: ShellConfig, fetchImpl: typeof fetch, confirmer: Confirmer, settleMs = OPEN_SETTLE_MS): OwnFiles {
   /** Opens a tab and returns it, or null. Not `noopener`, which always returns null; the opener is dropped instead. */
   function tryOpen(url: string): Window | null {
     let opened: Window | null = null;
@@ -76,30 +82,32 @@ export function createOwnFiles(win: Window & typeof globalThis, config: ShellCon
     return doc.visibilityState === "visible" && (typeof doc.hasFocus !== "function" || doc.hasFocus());
   }
 
+  /** Runs `then` after the settle time, only if the shell still has the reader's attention. */
+  function ifStillHere(then: () => void): void {
+    win.setTimeout(() => {
+      if (stillHere()) then();
+    }, settleMs);
+  }
+
   /**
    * A tab now. If `window.open` gave nothing and, a moment later, the shell
    * still has focus, it asks in its own dialog, whose Open click opens the
-   * tab; if that is refused too, the file opens in place of the shell and Back
-   * returns.
+   * tab. If that gave nothing too — and again the shell keeps focus, since the
+   * bb app answers null there as well — the file opens in place of the shell
+   * and Back returns.
    */
   function openTab(url: string, path: string): void {
     if (tryOpen(url)) return;
-    win.setTimeout(() => {
-      if (!stillHere()) return;
-      if (!confirmer) {
-        win.location.assign(url);
-        return;
-      }
+    ifStillHere(() => {
       let opened = false;
       void confirmer
         .confirm(`Open “${shownName(path)}” in a new tab?`, () => {
           opened = tryOpen(url) !== null;
         }, OPEN_WORDING)
         .then((approved) => {
-          // A refused tab inside a click of our own: the file in place, as long as nothing else opened it.
-          if (approved && !opened && stillHere()) win.location.assign(url);
+          if (approved && !opened) ifStillHere(() => win.location.assign(url));
         });
-    }, settleMs);
+    });
   }
 
   function urlOf(path: string): string | null {
@@ -137,7 +145,7 @@ export function createOwnFiles(win: Window & typeof globalThis, config: ShellCon
       if (!isValidRequestId(id)) return;
       const reply = (message: ShellMessage) => port.postMessage(message);
       const fail = (error: string) => reply({ kind: "thread-page:file", id, ok: false, error });
-      if (!isOwnFilePath(path) || isDocumentPath(path)) return fail("Not one of this page's files");
+      if (!isOwnFilePath(path) || isDocumentPath(path) || !config.deferredFiles.includes(path)) return fail("Not a file this document defers");
       const url = urlOf(path);
       if (!url) return fail("This page has no files of its own");
       const limit = shellFetchLimit(path);

@@ -39,6 +39,43 @@ const HOSTED_DOMAIN = "getbb.app";
 
 const OWN_ORIGIN_REFUSAL = "navigation.openExternal does not open this host's own addresses; open a page with pages.open and a session with sessions.openHost";
 
+/** A hostname as a server sees it: lower case, no trailing dots, no IPv6 brackets. */
+function hostKey(hostname: string): string {
+  return hostname.toLowerCase().replace(/\.+$/, "").replace(/^\[(.*)\]$/, "$1");
+}
+
+/** Every name for this machine's own loopback: `localhost` (and `*.localhost`), 127.0.0.0/8, `::1`, `0.0.0.0`. */
+function isLoopback(host: string): boolean {
+  return host === "localhost" || host.endsWith(".localhost") || /^127(\.\d{1,3}){3}$/.test(host) || host === "::1" || host === "0.0.0.0" || /^::ffff:(127\.|7f)/.test(host);
+}
+
+function portOf(url: URL): string {
+  return url.port || (url.protocol === "https:" ? "443" : "80");
+}
+
+/**
+ * Whether `target` is this host: a `getbb.app` name whatever its port, or the
+ * same server as one of `own` under another name — the same host and port, or
+ * any loopback name on the same port. The URL parser has already folded case,
+ * numeric IPv4 forms and punycode, so a look-alike stays another site. spec R5.32a
+ */
+export function isOwnHost(target: URL, own: readonly string[]): boolean {
+  const host = hostKey(target.hostname);
+  if (host === HOSTED_DOMAIN || host.endsWith(`.${HOSTED_DOMAIN}`)) return true;
+  const port = portOf(target);
+  return own.some((origin) => {
+    let mine: URL;
+    try {
+      mine = new URL(origin);
+    } catch {
+      return false;
+    }
+    if (portOf(mine) !== port) return false;
+    const other = hostKey(mine.hostname);
+    return other === host || (isLoopback(other) && isLoopback(host));
+  });
+}
+
 export const navigationOpenExternal = handler<OpenExternalParams, unknown>({
   method: "navigation.openExternal",
   /**
@@ -47,14 +84,10 @@ export const navigationOpenExternal = handler<OpenExternalParams, unknown>({
    * (spec R5.32a, X37). Host addresses have their own capabilities.
    */
   async refuse(params, { serving, requestOrigins }) {
-    const target = new URL(params.url);
-    const hostname = target.hostname.toLowerCase();
-    const own = new Set(requestOrigins ?? []);
+    const own = [...(requestOrigins ?? [])];
     const published = await serving.host.origin.public().catch(() => null);
-    if (published) own.add(new URL(published).origin);
-    if (hostname === HOSTED_DOMAIN || hostname.endsWith(`.${HOSTED_DOMAIN}`) || own.has(target.origin)) {
-      throw new PageError("invalid_params", OWN_ORIGIN_REFUSAL);
-    }
+    if (published) own.push(published);
+    if (isOwnHost(new URL(params.url), own)) throw new PageError("invalid_params", OWN_ORIGIN_REFUSAL);
   },
   // The page stays; the site opens beside it. spec R5.33
   async summarize(params) {
