@@ -7,6 +7,7 @@ import { createNavigator } from "./navigate.ts";
 import { createOwnFiles } from "./own-files.ts";
 import { createPoller, type Poller } from "./poll.ts";
 import { createRelay } from "./relay.ts";
+import { createVoice, readerActivation, type RecorderElements, type Voice } from "./voice.ts";
 
 /**
  * Wires the shell: loads the document into the sandboxed frame, hands it one
@@ -31,6 +32,8 @@ export interface ShellElements {
   archive: HTMLButtonElement | null;
   /** The list of sessions this page may answer from an embed. spec R5.65 */
   grants?: GrantElements | null;
+  /** The recording bar. spec R3.32 */
+  recorder?: RecorderElements | null;
 }
 
 export interface ShellHandle {
@@ -90,7 +93,25 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
 
   const poller = createPoller(win, config, view, fetchImpl);
   const navigator = createNavigator(win);
-  const confirmer = createConfirmer(dialog, CONFIRM_ARM_MS);
+  let voice: Voice | null = null;
+  // The recording bar is a question too: one of the two at a time. spec R3.22a, R3.32a
+  const confirmer = createConfirmer(dialog, CONFIRM_ARM_MS, () => voice?.isOpen() ?? false);
+  if (elements.recorder) {
+    voice = createVoice(win, config, elements.recorder, {
+      questionOpen: () => confirmer.isOpen?.() ?? false,
+      // The bar took the keyboard; the page gets it back, so the reader can go on typing.
+      restoreFocus: () => {
+        try {
+          frame.focus({ preventScroll: true });
+        } catch {
+          // Focus is a courtesy.
+        }
+      },
+      setStatus: (text, warn) => view.setStatus(text, warn),
+      ...(fetchImpl ? { fetchImpl } : {}),
+    });
+    voice.onChange((usable) => framePort?.postMessage({ kind: "thread-page:voice", available: usable }));
+  }
   const relay = createRelay({
     config,
     confirmer,
@@ -110,6 +131,9 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     },
     onGranted: (grant) => grantsChrome?.add(grant),
     ownFiles: createOwnFiles(win, config, request, confirmer),
+    ...(voice ? { voice } : {}),
+    readerActed: () => readerActivation(win),
+    onStatus: (text, warn) => view.setStatus(text, warn),
     ...(fetchImpl ? { fetchImpl } : {}),
   });
   const homeLink = win.document.querySelector<HTMLAnchorElement>("a.home");
@@ -143,6 +167,11 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     target.contentWindow?.postMessage({ kind: "thread-page:connect", version: HANDSHAKE_VERSION }, "*", [channel.port2]);
     port.postMessage({ kind: "thread-page:source-state", stale: lastStale });
     if (restore && (restore.x > 0 || restore.y > 0)) port.postMessage({ kind: "thread-page:restore-scroll", x: restore.x, y: restore.y });
+    // Dictate is shown only where recording can work. spec R4.59
+    if (voice) void voice.usable().then((available) => {
+      if (framePort === port) port.postMessage({ kind: "thread-page:voice", available });
+    });
+    else port.postMessage({ kind: "thread-page:voice", available: false });
   }
 
   win.addEventListener("message", (event) => {

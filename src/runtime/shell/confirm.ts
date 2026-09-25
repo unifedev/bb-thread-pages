@@ -15,6 +15,8 @@ export interface ConfirmWording {
 export interface Confirmer {
   /** `wording` is the shell's own fixed text for a kind of question, never the page's. */
   confirm(summary: string, onConfirmGesture?: () => void, wording?: ConfirmWording): Promise<boolean>;
+  /** Whether a question is open now. */
+  isOpen?(): boolean;
 }
 
 const DEFAULT_WORDING: ConfirmWording = { heading: "Confirm this action", confirmLabel: "Confirm", cancelLabel: "Cancel" };
@@ -25,7 +27,7 @@ const DEFAULT_WORDING: ConfirmWording = { heading: "Confirm this action", confir
  * something else. A question asked while one is open is declined, never
  * swapped in.
  */
-export function createConfirmer(dialog: HTMLDialogElement, armMs = 0): Confirmer {
+export function createConfirmer(dialog: HTMLDialogElement, armMs = 0, otherQuestionOpen: () => boolean = () => false): Confirmer {
   const text = dialog.querySelector("p");
   const heading = dialog.querySelector("h2");
   const cancel = dialog.querySelector<HTMLButtonElement>('button[value="cancel"]');
@@ -70,7 +72,8 @@ export function createConfirmer(dialog: HTMLDialogElement, armMs = 0): Confirmer
     confirm(summary, onConfirmGesture, wording = DEFAULT_WORDING) {
       return new Promise((resolve) => {
         // One question at a time: the open one stays as it is, under the reader's cursor.
-        if (active) {
+        // The recording bar counts as one. spec R3.22a, R3.32a
+        if (active || otherQuestionOpen()) {
           resolve(false);
           return;
         }
@@ -92,5 +95,6 @@ export function createConfirmer(dialog: HTMLDialogElement, armMs = 0): Confirmer
         }
       });
     },
+    isOpen: () => active !== null,
   };
 }

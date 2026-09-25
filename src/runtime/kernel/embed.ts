@@ -2,7 +2,8 @@ import { ENTRY_DOCUMENT, isDocumentPath } from "../../domain/document-path.ts";
 import type { BridgeErrorCode } from "../../domain/errors.ts";
 import { LIMITS } from "../../domain/limits.ts";
 import { PAGE_FRAME_ALLOW, PAGE_SANDBOX } from "../../domain/sandbox.ts";
-import { HANDSHAKE_VERSION, isBridgeRequest, isRecord, isScrollMessage, makeFailure, sentMessage, type BridgeRequestMessage, type BridgeResponseMessage } from "../shared/protocol.ts";
+import { HANDSHAKE_VERSION, isBridgeRequest, isRecord, isScrollMessage, isValidRequestId, makeFailure, sentMessage, type BridgeRequestMessage, type BridgeResponseMessage } from "../shared/protocol.ts";
+import type { RecordAnswer } from "./record-client.ts";
 
 /**
  * Embedded pages: `threadPage.embed(target, { sessionId, path?, onState? })`.
@@ -43,10 +44,20 @@ export interface EmbedManagerDeps {
   setDirty(dirty: boolean): void;
   /** This document is itself shown inside another page: embedding is one level deep. spec R4.52 */
   embedded: boolean;
+  /**
+   * Dictate inside an embed, answered by this page's own recorder and shell,
+   * whose bar is the consent. The embedded page's own voice capability stays
+   * `unavailable`. spec R4.51a
+   */
+  dictate?(prompt: string): Promise<RecordAnswer>;
+  /** Whether the reader can record here, which embedded pages are told too. */
+  voiceAvailable?(): boolean;
 }
 
 export interface EmbedManager {
   embed(target: unknown, options: unknown): () => void;
+  /** The reader can, or can no longer, record here: embedded text areas show Dictate accordingly. */
+  setVoice(available: boolean): void;
 }
 
 /** Exactly the page frame's sandbox, whatever the author set. spec R3.24, R4.43, D34 */
@@ -392,6 +403,29 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     }
   }
 
+  /** Dictate in an embedded text area: this page's shell records, and it counts toward the embed's bound. spec R4.51a, R4.49 */
+  async function record(embed: Embed, data: Record<string, unknown>): Promise<void> {
+    if (!isValidRequestId(data.id)) return;
+    const id = data.id;
+    let answer: RecordAnswer;
+    if (data.purpose !== "dictate" || !deps.dictate) {
+      // Files, a recording among them, cannot be sent from inside another page. spec R4.51
+      answer = { ok: false, code: "unavailable", message: "Only dictation works inside another page." };
+    } else if (!allowed(embed)) {
+      answer = { ok: false, code: "rate_limited", message: "Too many requests from this embedded page; try again shortly." };
+    } else {
+      answer = await deps.dictate(typeof data.prompt === "string" ? data.prompt : "");
+      // The embedded field takes the text: its frame gets the keyboard back first.
+      try {
+        embed.frame.focus({ preventScroll: true });
+      } catch {
+        // Focus is a courtesy.
+      }
+    }
+    if (embed.stopped) return;
+    reply(embed, { kind: "thread-page:recorded", id, ...answer });
+  }
+
   function onEmbedMessage(embed: Embed, data: unknown): void {
     if (embed.stopped || !isRecord(data)) return;
     if (data.kind === "thread-page:dirty" || data.kind === "thread-page:clean") {
@@ -436,6 +470,10 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       void submit(embed, data);
       return;
     }
+    if (data.kind === "thread-page:record") {
+      void record(embed, data);
+      return;
+    }
     if (embed.shown === null || !isBridgeRequest(data, embed.shown)) {
       reply(embed, makeFailure(data.id, "invalid_request", "Invalid Thread Page bridge request"));
       return;
@@ -459,6 +497,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     const restore = embed.restore;
     embed.restore = null;
     if (restore && (restore.x > 0 || restore.y > 0)) port.postMessage({ kind: "thread-page:restore-scroll", x: restore.x, y: restore.y });
+    port.postMessage({ kind: "thread-page:voice", available: deps.voiceAvailable?.() === true && deps.dictate !== undefined });
   }
 
   function listen(): void {
@@ -489,6 +528,11 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
   }
 
   return {
+    setVoice(available) {
+      for (const embed of embeds) {
+        if (!embed.stopped && embed.port) reply(embed, { kind: "thread-page:voice", available: available && deps.dictate !== undefined });
+      }
+    },
     embed(target, options) {
       const wanted = options as EmbedOptions | null;
       if (!wanted || typeof wanted !== "object" || typeof wanted.sessionId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(wanted.sessionId)) {

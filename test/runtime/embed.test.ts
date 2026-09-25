@@ -144,7 +144,8 @@ describe("threadPage.embed", () => {
     const next = await connect(win, frame);
     await vi.advanceTimersByTimeAsync(5);
     expect(next.received).toContainEqual({ kind: "thread-page:restore-scroll", x: 0, y: 640 });
-    expect(received).toEqual([]);
+    // The old document hears nothing after its connection was told whether the reader can record.
+    expect(received.filter((message) => (message as { kind?: string }).kind !== "thread-page:voice")).toEqual([]);
   });
 
   it("polls faster while an embedded session works, and not at all while hidden or after stop (R4.44)", async () => {

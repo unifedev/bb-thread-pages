@@ -16,5 +16,24 @@ const acts = document.querySelector<HTMLElement>("[data-shell-acts]");
 const pin = document.querySelector<HTMLButtonElement>('[data-act="pin"]');
 const read = document.querySelector<HTMLButtonElement>('[data-act="read"]');
 const archive = document.querySelector<HTMLButtonElement>('[data-act="archive"]');
+const bar = document.querySelector<HTMLElement>("[data-shell-recorder]");
+const wave = bar?.querySelector<HTMLCanvasElement>("canvas") ?? null;
+const time = bar?.querySelector<HTMLElement>("[data-rec-time]") ?? null;
+const recStatus = bar?.querySelector<HTMLElement>("[data-rec-status]") ?? null;
+const cancel = bar?.querySelector<HTMLButtonElement>('[data-rec="cancel"]') ?? null;
+const done = bar?.querySelector<HTMLButtonElement>('[data-rec="done"]') ?? null;
 if (!frame || !status || !work || !reload || !dialog || !title) throw new Error("Thread Page shell: chrome is incomplete");
-installShell(window, config, { frame, status, work, reload, dialog, title, acts, pin, read, archive, grants: grantsButton && grantsDialog ? { button: grantsButton, dialog: grantsDialog } : null });
+installShell(window, config, {
+  frame,
+  status,
+  work,
+  reload,
+  dialog,
+  title,
+  acts,
+  pin,
+  read,
+  archive,
+  grants: grantsButton && grantsDialog ? { button: grantsButton, dialog: grantsDialog } : null,
+  recorder: bar && wave && time && recStatus && cancel && done ? { bar, wave, time, status: recStatus, cancel, done } : null,
+});

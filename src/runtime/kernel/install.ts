@@ -4,9 +4,12 @@ import { installApi } from "./api.ts";
 import { createBridgeClient } from "./bridge-client.ts";
 import { createDirtyTracker } from "./dirty.ts";
 import { createEmbedManager, EMBEDDED_FILES_REFUSAL } from "./embed.ts";
-import { buildIntent, formsReachedFrom, isManualForm, lockForm, ownerForm, prepareForm, statusLine, unlockForm, type PendingForm } from "./forms.ts";
+import { installAudioInputs } from "./audio-input.ts";
+import { buildIntent, fileLimitProblem, formsReachedFrom, isManualForm, lockForm, ownerForm, prepareForm, statusLine, unlockForm, type PendingForm } from "./forms.ts";
 import { createLargeMedia } from "./large-media.ts";
 import { createReadOnlyController } from "./readonly.ts";
+import { createRecordClient } from "./record-client.ts";
+import { createTextAreaControls } from "./textareas.ts";
 import { installScroll } from "./scroll.ts";
 import { createUpdateOffer } from "./update-offer.ts";
 
@@ -42,12 +45,28 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   });
   const bridge = createBridgeClient(config.pageRevision, doc);
   const readOnly = createReadOnlyController(doc, config.stale);
+  // The shell's recorder, asked for by Dictate and the audio capture input. D38
+  const recorder = createRecordClient((message) => post(message));
+  /** Whether the shell says the reader can record here. spec R4.59 */
+  let voiceAvailable = false;
 
   const embeds = createEmbedManager(win, {
     invoke: (method, params) => bridge.invoke(method, params),
     setDirty: (value) => dirty.setEmbedded(value),
     embedded: config.embedded === true,
+    dictate: (prompt) => recorder.request("dictate", prompt),
+    voiceAvailable: () => voiceAvailable,
   });
+  const textAreas = createTextAreaControls(win, {
+    embedded: config.embedded === true,
+    uploads: config.uploads !== false,
+    isReadOnly: () => readOnly.isReadOnly(),
+    dictate: (prompt) => recorder.request("dictate", prompt),
+    markDirty: (form) => {
+      if (!isManualForm(form)) dirty.markForm(form);
+    },
+  });
+  installAudioInputs(win, { embedded: config.embedded === true, voiceAvailable: () => voiceAvailable, record: () => recorder.request("audio") });
   const scroll = installScroll(win, (x, y) => {
     post({ kind: "thread-page:scroll", x, y });
   });
@@ -68,6 +87,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
 
   function prepare(root: ParentNode): void {
     for (const form of formsReachedFrom(root)) prepareForm(form);
+    textAreas.prepare(root);
     largeMedia.prepare(root);
     readOnly.prepare(root);
     updateOffer.prepare();
@@ -103,10 +123,16 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       if (readOnly.isReadOnly() || pendingByForm.has(form as HTMLFormElement)) return;
       const submissionId = `sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
       const target = form as HTMLFormElement;
-      const intent = buildIntent(target, (event as SubmitEvent).submitter ?? null, submissionId);
+      const intent = buildIntent(target, (event as SubmitEvent).submitter ?? null, submissionId, textAreas.filesOf(target));
       // Uploads take the shell's token, which names the page this one is shown in. spec R4.51
       if (config.embedded && intent.files.length > 0) {
         statusLine(target).textContent = EMBEDDED_FILES_REFUSAL;
+        return;
+      }
+      // File inputs and text areas count together; over the limits the form is not sent. spec R4.62
+      const tooMany = fileLimitProblem(intent.files);
+      if (tooMany) {
+        statusLine(target).textContent = tooMany;
         return;
       }
       const pending: PendingForm = { form: target, disabled: [], dirtyVersion: dirty.versionOf(target) };
@@ -154,8 +180,16 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     if (!isRecord(data)) return;
     if (data.kind === "thread-page:source-state") {
       readOnly.apply(data.stale === true);
+      textAreas.update();
       return;
     }
+    if (data.kind === "thread-page:voice") {
+      voiceAvailable = data.available === true;
+      textAreas.setVoice(voiceAvailable);
+      embeds.setVoice(voiceAvailable);
+      return;
+    }
+    if (recorder.receive(data)) return;
     if (data.kind === "thread-page:restore-scroll") {
       if (typeof data.x === "number" && typeof data.y === "number") scroll.restore(data.x, data.y);
       return;

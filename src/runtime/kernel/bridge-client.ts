@@ -39,6 +39,22 @@ function isContributedMethod(method: string): boolean {
   return dot > 0 && !RESERVED_NAMESPACES.has(method.slice(0, dot));
 }
 
+/** The capabilities that take `files`. spec R5.75 */
+const FILE_METHODS: ReadonlySet<string> = new Set(["sessions.start", "sessions.send"]);
+
+/**
+ * `files` as a page may pass it — a FileList, an array of File, or an
+ * `<input type="file">` — as the Files themselves, or null when it is none of
+ * those. Tag checks, not `instanceof`, so it works across realms. spec R5.75
+ */
+export function extractFiles(value: unknown): File[] | null {
+  const tag = Object.prototype.toString.call(value);
+  if (tag === "[object FileList]") return Array.from(value as FileList);
+  if (tag === "[object HTMLInputElement]") return (value as HTMLInputElement).type === "file" ? Array.from((value as HTMLInputElement).files ?? []) : null;
+  if (Array.isArray(value)) return value.every((item) => Object.prototype.toString.call(item) === "[object File]") ? [...(value as File[])] : null;
+  return null;
+}
+
 interface Pending {
   request: BridgeRequestMessage;
   resolve: (value: unknown) => void;
@@ -91,7 +107,20 @@ export function createBridgeClient(pageRevision: string, doc: Document): BridgeC
         return;
       }
       const id = nextId();
-      const request: BridgeRequestMessage = { v: BRIDGE_VERSION, id, method, params: params === undefined ? null : params, pageRevision };
+      let sent = params;
+      let files: File[] | undefined;
+      // The files go to the shell by structured clone, beside the JSON parameters, never in them. spec R5.75
+      if (FILE_METHODS.has(method) && typeof params === "object" && params !== null && !Array.isArray(params) && Object.prototype.hasOwnProperty.call(params, "files")) {
+        const { files: given, ...rest } = params as Record<string, unknown>;
+        const extracted = extractFiles(given);
+        if (extracted === null) {
+          reject(new ThreadPageError("invalid_params", "files must be a FileList, an array of File, or an <input type=\"file\">"));
+          return;
+        }
+        sent = rest;
+        if (extracted.length > 0) files = extracted;
+      }
+      const request: BridgeRequestMessage = { v: BRIDGE_VERSION, id, method, params: sent === undefined ? null : sent, pageRevision, ...(files ? { files } : {}) };
       pending.set(id, { request, resolve, reject });
       if (post) send(id);
       else queued.push(id);
