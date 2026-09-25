@@ -1,6 +1,7 @@
 import { ENTRY_DOCUMENT, isDocumentPath } from "../../domain/document-path.ts";
 import type { BridgeErrorCode } from "../../domain/errors.ts";
 import { LIMITS } from "../../domain/limits.ts";
+import { PAGE_FRAME_ALLOW, PAGE_SANDBOX } from "../../domain/sandbox.ts";
 import { HANDSHAKE_VERSION, isBridgeRequest, isRecord, isScrollMessage, makeFailure, sentMessage, type BridgeRequestMessage, type BridgeResponseMessage } from "../shared/protocol.ts";
 
 /**
@@ -48,7 +49,8 @@ export interface EmbedManager {
   embed(target: unknown, options: unknown): () => void;
 }
 
-export const EMBED_SANDBOX = "allow-scripts allow-forms";
+/** Exactly the page frame's sandbox, whatever the author set. spec R3.24, R4.43, D34 */
+export const EMBED_SANDBOX = PAGE_SANDBOX;
 const DECLINED_COOLDOWN_MS = 10_000;
 
 /** What an embedded page may reach through the embedding page. Everything else is `unavailable`. spec R4.48 */
@@ -149,7 +151,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     const next = frame.nextSibling;
     if (parent) parent.removeChild(frame);
     frame.removeAttribute("src");
-    frame.removeAttribute("allow");
+    frame.setAttribute("allow", PAGE_FRAME_ALLOW);
     frame.removeAttribute("name");
     frame.removeAttribute("csp");
     frame.setAttribute("sandbox", EMBED_SANDBOX);

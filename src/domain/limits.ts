@@ -120,6 +120,13 @@ export const LIMITS = Object.freeze({
   inlineTotalBytes: 3 * 1024 * 1024,
   /** How far `url()` inside an inlined stylesheet is followed. */
   inlineCssDepth: 3,
+  /**
+   * An own media file too large to carry is fetched by the shell instead, up
+   * to the host's own read limit: 25 MiB, 10 MiB for images (bb's daemon,
+   * `file-read.ts`). Larger cannot reach the reader at all. D37
+   */
+  shellFetchBytes: 25 * 1024 * 1024,
+  shellFetchImageBytes: 10 * 1024 * 1024,
   offlineCopyBytes: 200 * 1024,
   offlineCacheEntries: 32,
   offlineCacheBytes: 8 * 1024 * 1024,

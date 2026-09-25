@@ -34,7 +34,9 @@ verify it. Nothing here decides what the product should be.
 - `bb thread-page guide` — the authoring guide: forms and controls anywhere on
   the page, own files, several documents and parts, how an open page follows a
   save, showing another session's page, uploads, `window.threadPage`, every
-  capability, other services and servers, limits, and what the sandbox silences.
+  capability, other services and servers, links, windows, downloads and full
+  screen, other sites in a frame, large media, limits, and what the sandbox
+  still silences.
 - `bb thread-page home [--clear]` — makes this session's page the home page,
   or returns to the built-in one.
 - `bb thread-page status` — settings, the exact instruction a new session
@@ -110,6 +112,13 @@ document (`SiteStrategy` "core-storage"). One consequence: page script cannot
 `fetch()` its own files (bb refuses the sandbox's `Origin: null`); subresources
 load normally. The "plugin-prefix" strategy in `src/pages/site.ts` removes the
 limitation once bb offers prefix routes.
+
+Over bb Connect a sandboxed page's own requests carry no credential, so the
+document carries its own files (`src/pages/inline.ts`), and media too large to
+carry is fetched by the shell and handed to the page as a `blob:` URL
+(`src/runtime/kernel/large-media.ts`, `src/runtime/shell/own-files.ts`). Both
+are workarounds to delete once bb serves a sandboxed page its own files by URL
+on every origin (get-bb/bb #1632, #3617, #4339).
 
 ## Release
 

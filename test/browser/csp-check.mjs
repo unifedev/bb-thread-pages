@@ -1,3 +1,4 @@
+// Measured for spec 1.3 (D30) against the 1.5.0 document CSP, kept as that record; 1.6.0's CSP is in src/serving/responses.ts.
 import http from "node:http";
 import { chromium, firefox, webkit } from "playwright";
 const CSP = ["default-src * data: blob: 'unsafe-inline' 'unsafe-eval'","script-src * data: blob: 'unsafe-inline' 'unsafe-eval'","frame-src 'none'","child-src blob:","object-src 'none'","base-uri 'self'","sandbox allow-scripts allow-forms"].join("; ");

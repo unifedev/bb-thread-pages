@@ -1,5 +1,6 @@
 import { PageError, errorText } from "../domain/errors.ts";
 import { escapeHtml } from "../domain/html/escape.ts";
+import { PAGE_SANDBOX } from "../domain/sandbox.ts";
 import type { HostLogger } from "../host/types.ts";
 
 /** Response helpers and the two content security policies. spec R2.41–R2.43, 03 */
@@ -22,7 +23,9 @@ export function shellCsp(nonce: string): string {
     "connect-src 'self'",
     "form-action 'none'",
     "frame-ancestors 'self'",
-    "frame-src 'self'",
+    // blob: and data: only because WebKit checks a download the page builds against its parent's
+    // frame-src, as a navigation of the page frame (measured). The frame keeps its sandbox whatever it shows.
+    "frame-src 'self' blob: data:",
     `script-src 'nonce-${nonce}'`,
     `style-src 'nonce-${nonce}'`,
     "img-src 'self' data:",
@@ -30,9 +33,14 @@ export function shellCsp(nonce: string): string {
 }
 
 /**
- * The document: open network and arbitrary code (spec R3.4, R3.11), no
- * frames (embedding is deferred), no plugins, same-origin bases only, and
+ * The document: open network and arbitrary code (spec R3.4, R3.11), frames
+ * of any https site (R3.27, D36), no plugins, same-origin bases only, and
  * the sandbox restated so it holds even if the frame attribute did not.
+ *
+ * `frame-ancestors 'self'` is what keeps this host's own pages out of a
+ * page's frames by URL (R3.27): a document may be framed by the shell, whose
+ * origin is this host's, and by nothing else — an opaque-origin page among
+ * its ancestors never matches `'self'`. The shell's policy says the same.
  */
 export function documentCsp(): string {
   return [
@@ -44,11 +52,14 @@ export function documentCsp(): string {
     "media-src * data: blob:",
     "connect-src * data: blob:",
     "worker-src * blob: data:",
-    "frame-src 'none'",
-    "child-src blob:",
+    // blob: and data: too: WebKit checks a download's navigation against frame-src, so without them a
+    // download the page built is refused there (measured). Such a frame is the page's own content, in its sandbox.
+    "frame-src https: blob: data:",
+    "child-src https: blob: data:",
     "object-src 'none'",
     "base-uri 'self'",
-    "sandbox allow-scripts allow-forms",
+    "frame-ancestors 'self'",
+    `sandbox ${PAGE_SANDBOX}`,
   ].join("; ");
 }
 

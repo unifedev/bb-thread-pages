@@ -224,6 +224,8 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
           return { bytes, sha256: file.sha256, modifiedAtMs: typeof file.modifiedAtMs === "number" ? file.modifiedAtMs : null };
         } catch (error) {
           if (isNotFound(error)) return null;
+          // bb's daemon refuses a file over its read limit (25 MiB, 10 MiB for images) with 413.
+          if (isTooLarge(error)) throw new PageError("page_too_large", "The host does not read a file this large", { cause: error });
           throw hostUnavailable(error);
         }
       },
@@ -301,6 +303,13 @@ function isNotFound(error: unknown): boolean {
     if (body?.code === "ENOENT" || body?.code === "not_found") return true;
   }
   return /\b(enoent|not found|does not exist|no such file)\b/i.test(errorText(error));
+}
+
+function isTooLarge(error: unknown): boolean {
+  const record = asRecord(error);
+  if (record?.status === 413) return true;
+  const body = asRecord(record?.body);
+  return body?.code === "file_too_large" || /\bfile_too_large\b/.test(errorText(error));
 }
 
 function isConflict(error: unknown): boolean {

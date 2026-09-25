@@ -24,7 +24,9 @@ describe("the shell", () => {
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(response.headers.get("content-security-policy")).toMatch(/script-src 'nonce-/);
-    expect(html).toContain('sandbox="allow-scripts allow-forms"');
+    expect(html).toContain('sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" allow="fullscreen *"');
+    // The shell hands its own files address to the runtime, for own-file links and large media. D33, D37
+    expect(html).toContain("&quot;filesUrl&quot;:&quot;/api/v1/threads/thr_a/thread-storage/files/&quot;");
     expect(html).toContain("data-config=");
     expect(html).toContain("&quot;actionToken&quot;");
     // With no page designated, home is the built-in home page. spec R7.10
@@ -107,7 +109,10 @@ describe("the document", () => {
     expect(response.headers.get("x-thread-page-activity")).toBe("idle");
     expect(response.headers.get("x-thread-page-stale")).toBe("false");
     expect(response.headers.get("content-security-policy")).toMatch(/connect-src \*/);
-    expect(response.headers.get("content-security-policy")).toMatch(/frame-src 'none'/);
+    // Frames of any https site; this host's documents refuse to be framed by anything but the shell. D36, R3.27
+    expect(response.headers.get("content-security-policy")).toMatch(/frame-src https: blob: data:;/);
+    expect(response.headers.get("content-security-policy")).toMatch(/frame-ancestors 'self'/);
+    expect(response.headers.get("content-security-policy")).not.toMatch(/allow-same-origin|allow-top-navigation|allow-modals/);
     const html = await response.text();
     expect(html.indexOf('<base href="/api/v1/threads/thr_a/thread-storage/files/">')).toBeLessThan(html.indexOf("data-thread-page-kernel"));
     expect(html.indexOf("data-thread-page-kernel")).toBeLessThan(html.indexOf("<title>"));

@@ -1,5 +1,65 @@
 # Changelog
 
+## 1.6.0 — unreleased — links, popups, own files, full screen, other sites, large media
+
+Implements spec 1.4 (`bartsoj/bb-thread-pages`, DECISIONS D33–D37). Existing
+pages keep working; `window.threadPage.version` and the bridge protocol stay
+`1`.
+
+### Links and windows work as on any website (D34)
+
+- The page frame and every embed frame are sandboxed
+  `allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads`
+  (the document CSP says the same). `allow-same-origin`, top navigation and
+  modals stay refused.
+- A link to another site opens in a **new tab with no confirmation**, whatever
+  its `target`; a link without one no longer replaces the page. The new tab is
+  the site on its own origin.
+- `window.open` works natively on a click. `navigation.openExternal` opens with
+  no dialog during a click; without one it still asks, as before.
+- `mailto:` and `tel:` hand off to the reader's apps. A `blob:`/`data:` download
+  the page builds is saved (Chromium and WebKit; WebKit also needed `blob:`
+  and `data:` in the shell's `frame-src`).
+
+### A page's own files: opened and downloaded by the shell (D33)
+
+- A link to one of the page's own files that is not a document is carried out
+  by the shell from its own origin, with the reader's credential: `download`
+  saves it under the attribute's name; otherwise it opens in a new tab at the
+  host's file address. Only passive types open in a tab; an SVG, XML or unknown
+  type is downloaded instead. A relative link that climbs out of the page root
+  does nothing.
+
+### Full screen (D35)
+
+- `allow="fullscreen *"` on the page frame and embed frames. WebKit rejects a
+  plain `allow="fullscreen"`.
+
+### Other sites in a frame (D36 step 1)
+
+- The document CSP allows `frame-src https:` (and `blob:`, `data:`). The frame
+  inherits the sandbox: maps, Spotify, Wikipedia work; Vimeo, Figma and likely
+  YouTube do not. This host's own documents now send `frame-ancestors 'self'`,
+  so one framed by URL inside a page is refused (R3.27).
+
+### Large own media (D37, interim)
+
+- A `<video>`, `<audio>`, `<source>`, `<img>`, `<track>` or `poster` naming an
+  own file too large to carry is marked instead of left bare; the shell fetches
+  it (up to the host's read limit: 25 MiB, 10 MiB for images) and the page gets
+  a `blob:` URL. Seeking works. Logged once, and listed by
+  `bb thread-page status` as "fetched by the shell". Delete when bb lands
+  #1632, #3617 and #4339.
+
+### Known: a popup can reach bb's raw file route
+
+- A popup escapes the sandbox, so page script can open any URL of the host in
+  an unsandboxed tab. bb 0.43.4's thread-storage route serves `.svg` and `.xml`
+  inline with no `sandbox` CSP (only `.html` gets one), so an agent-written SVG
+  opened that way runs script on the host's origin with the reader's
+  credential (measured on a harness that serves files the way bb does). The fix
+  is bb's: a `sandbox` CSP on every raw file response.
+
 ## 1.5.0 — 2026-09-20 — refresh in place, embedded pages, parts
 
 Implements spec 1.3 (`bartsoj/bb-thread-pages`, DECISIONS D28–D32). Existing

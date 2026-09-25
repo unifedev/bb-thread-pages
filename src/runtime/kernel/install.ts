@@ -5,6 +5,8 @@ import { createBridgeClient } from "./bridge-client.ts";
 import { createDirtyTracker } from "./dirty.ts";
 import { createEmbedManager, EMBEDDED_FILES_REFUSAL } from "./embed.ts";
 import { buildIntent, formsReachedFrom, isManualForm, lockForm, ownerForm, prepareForm, statusLine, unlockForm, type PendingForm } from "./forms.ts";
+import { createLargeMedia } from "./large-media.ts";
+import { openExternalNatively } from "./open-external.ts";
 import { createReadOnlyController } from "./readonly.ts";
 import { installScroll } from "./scroll.ts";
 import { createUpdateOffer } from "./update-offer.ts";
@@ -55,9 +57,12 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     post({ kind: "thread-page:apply-update" });
   });
 
+  const largeMedia = createLargeMedia(win, { post: (message) => post(message), embedded: config.embedded === true });
+
   installApi(win, {
     version: 1,
-    invoke: (method, params) => bridge.invoke(method, params),
+    // On the reader's click the browser opens it, with no dialog; otherwise the host confirms. spec R5.34a, D34
+    invoke: (method, params) => (method === "navigation.openExternal" && openExternalNatively(win, params) ? Promise.resolve({ opened: true }) : bridge.invoke(method, params)),
     watch: (method, params, listener, options) => bridge.watch(method, params, listener, options),
     setDirty: (value) => dirty.setCustom(value !== false),
     embed: (target, options) => embeds.embed(target, options),
@@ -65,6 +70,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
 
   function prepare(root: ParentNode): void {
     for (const form of formsReachedFrom(root)) prepareForm(form);
+    largeMedia.prepare(root);
     readOnly.prepare(root);
     updateOffer.prepare();
   }
@@ -124,14 +130,23 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   installAnchorInterception(
     doc,
     {
-      external: (url, label) => {
-        void bridge.invoke("navigation.openExternal", label ? { url, label } : { url }).catch(() => undefined);
-      },
       document: (path) => {
         post({ kind: "thread-page:open-document", path });
       },
+      file: (path, download, name) => {
+        post({ kind: "thread-page:open-file", path, download, name });
+      },
+      // Inside the reader's click, so the browser allows it; the new window is on the site's own origin. D34
+      newTab: (url) => {
+        try {
+          win.open(url, "_blank", "noopener,noreferrer");
+        } catch {
+          // A browser that refuses leaves the page as it was.
+        }
+      },
     },
     config.siteRoot ?? null,
+    config.embedded === true,
   );
 
   function onShellMessage(data: unknown): void {
@@ -144,6 +159,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       if (typeof data.x === "number" && typeof data.y === "number") scroll.restore(data.x, data.y);
       return;
     }
+    if (largeMedia.receive(data)) return;
     if (data.kind === "thread-page:update-available") {
       if (config.embedded) updateOffer.show();
       return;
@@ -176,6 +192,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       next.postMessage(request);
     });
     if (dirty.isDirty()) post({ kind: "thread-page:dirty" });
+    largeMedia.flush();
   }
 
   function acceptPort(event: MessageEvent): void {

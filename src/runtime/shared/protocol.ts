@@ -41,6 +41,10 @@ export type KernelMessage =
   | { kind: "thread-page:scroll"; x: number; y: number }
   /** Inside an embed: the reader accepted the offered new version. spec R4.46 */
   | { kind: "thread-page:apply-update" }
+  /** A link to one of the page's own files that is not a document: the shell downloads it or opens it in a new tab. spec R4.15b, D33 */
+  | { kind: "thread-page:open-file"; path: string; download: boolean; name: string | null }
+  /** An own media file too large to carry: the shell fetches it and hands the bytes back. spec R4.25a, D37 */
+  | { kind: "thread-page:file-request"; id: string; path: string }
   | BridgeRequestMessage;
 
 export type ShellMessage =
@@ -51,6 +55,9 @@ export type ShellMessage =
   | { kind: "thread-page:update-available" }
   | { kind: "thread-page:submit-progress"; submissionId: string; message: string }
   | { kind: "thread-page:submit-result"; submissionId: string; ok: boolean; message?: string; error?: string }
+  /** The answer to a file request: the file's bytes, or why they cannot come. D37 */
+  | { kind: "thread-page:file"; id: string; ok: true; blob: Blob }
+  | { kind: "thread-page:file"; id: string; ok: false; error: string }
   | BridgeResponseMessage;
 
 /** Carried in the kernel script's `data-config` attribute. */
@@ -79,6 +86,12 @@ export interface ShellConfig {
   documentSessionUrl: string;
   /** Whether links to the page's other documents open in place (not for the built-in home). */
   navigable: boolean;
+  /**
+   * Where the page's own files are served on this host, for the shell to open,
+   * download and fetch them with the reader's credential; null for the
+   * built-in home, which has none. spec R4.15b, R4.25a
+   */
+  filesUrl: string | null;
   workingLabel: string;
   stale: boolean;
   /** The agent has not written the page yet; the frame holds host text. spec R6.19 */
@@ -168,6 +181,11 @@ export function sentMessage(delivery: unknown): string {
 
 export function isScrollMessage(value: Record<string, unknown>): value is { kind: "thread-page:scroll"; x: number; y: number } {
   return value.kind === "thread-page:scroll" && typeof value.x === "number" && typeof value.y === "number" && Number.isFinite(value.x) && Number.isFinite(value.y) && value.x >= 0 && value.y >= 0;
+}
+
+/** A request id for a file request, from the kernel. */
+export function isFileRequest(value: Record<string, unknown>): value is { kind: "thread-page:file-request"; id: string; path: string } {
+  return value.kind === "thread-page:file-request" && isValidRequestId(value.id) && typeof value.path === "string";
 }
 
 export function makeFailure(id: unknown, code: BridgeErrorCode, message: string): BridgeResponseMessage {

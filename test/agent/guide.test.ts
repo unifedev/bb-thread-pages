@@ -41,7 +41,7 @@ describe("the authoring guide", () => {
     expect(coreGuide).toContain("What you get when you say nothing");
     expect(coreGuide).toContain("Pages have internet access");
     expect(coreGuide).toContain("`window.prompt`, `alert`, `confirm`");
-    expect(coreGuide).toContain("`window.open`");
+    expect(coreGuide).toContain("**`window.open(url)`**");
     expect(coreGuide).toContain("Your page is yours alone");
     expect(coreGuide).toContain("data-thread-page-manual");
     expect(coreGuide).toContain("uploads/");
@@ -71,7 +71,8 @@ describe("the authoring guide", () => {
 
     const embedding = section(coreGuide, "## Showing another session's page", "## window.threadPage");
     expect(embedding).toContain("window.threadPage.embed(target, { sessionId, path, onState })");
-    expect(embedding).toContain('**always** `sandbox="allow-scripts allow-forms"`');
+    expect(embedding).toContain('`sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"`');
+    expect(embedding).toContain('`allow="fullscreen *"`');
     expect(embedding).toMatch(new RegExp(`every ${LIMITS.embedPollWorkingMs / 1000} s while an embedded session is working`));
     expect(embedding).toMatch(/checked in one call\s+per tick/);
     expect(embedding).toContain(`At most ${LIMITS.embedsPerPage} embeds on a page`);
@@ -85,6 +86,38 @@ describe("the authoring guide", () => {
     expect(coreGuide).toContain("`pages.answer` — granted-write · asked once per pair in trusted chrome, then remembered");
     expect(coreGuide).toContain(`| pages.read | ${LIMITS.pagesReadEntries} documents per call, 8 MiB per response`);
     for (const stale of ["Embedding another page or site in an <iframe> is blocked", "within 10 s and reloads the page", "| Shell revision poll | every 10 s while visible |"]) {
+      expect(coreGuide, stale).not.toContain(stale);
+    }
+  });
+
+  // Spec 1.4 (D33–D37): links, windows, downloads, own files, full screen, other
+  // sites and large media, with numbers, and nothing left that became false. R6.25
+  it("explains links, windows, downloads, own files, full screen, other sites and large media, and drops what became false", () => {
+    const affordances = section(coreGuide, "## Links, windows, downloads and full screen", "## Other sites in a frame");
+    expect(affordances).toMatch(/opens in a \*\*new tab\*\*, with no dialog,\s+whatever its `target`/);
+    expect(affordances).toContain("**`window.open(url)`** works from a click handler");
+    expect(affordances).toMatch(/called without one, the reader is asked\s+first/);
+    expect(affordances).toContain("**`mailto:` and `tel:`**");
+    expect(affordances).toContain("`URL.createObjectURL(blob)`");
+    expect(affordances).toContain("`element.requestFullscreen()`");
+    expect(affordances).toContain("`window.prompt`, `alert`, `confirm`");
+
+    const sites = section(coreGuide, "## Other sites in a frame", "## One agent, one page");
+    expect(sites).toContain("**no cookies and no storage**");
+    expect(sites).toMatch(/OpenStreetMap/);
+    expect(sites).toMatch(/Vimeo shows its poster at most, Figma is\s+blank/);
+    expect(sites).toContain("`X-Frame-Options`");
+    expect(sites).toContain("show it with `threadPage.embed`");
+
+    const files = section(coreGuide, "## Files you show the reader", "## Several documents");
+    expect(files).toContain(`of a\nfile up to ${LIMITS.shellFetchBytes / (1024 * 1024)} MiB (${LIMITS.shellFetchImageBytes / (1024 * 1024)} MiB for an image`);
+    expect(files).toContain("`data-thread-page-src=\"clip.mp4\"`");
+    expect(files).toContain("*fetched by the shell*");
+    expect(files).toMatch(/\*\*an SVG, XML or any other type is downloaded instead\*\*/);
+    expect(files).toContain('`<a href="clip.mp4" download="Our clip.mp4">`');
+    expect(coreGuide).toContain(`| Large media fetched for the reader | up to ${LIMITS.shellFetchBytes / (1024 * 1024)} MiB per file`);
+
+    for (const stale of ["frame-src 'none'", "a frame with a URL is blocked", "a page has no popups", "goes through the usual confirmation", "What the sandbox silences", "routes it through `navigation.openExternal`, which confirms"]) {
       expect(coreGuide, stale).not.toContain(stale);
     }
   });

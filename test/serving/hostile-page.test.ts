@@ -89,3 +89,25 @@ describe("a hostile page", () => {
     expect((await exchange({ actionToken: expired, path: "second.html" })).status).toBe(401);
   });
 });
+
+// Popups escape the sandbox (D34), so what a popup could reach is the host's
+// own routes: none of them may be framed inside a page, and none widens the
+// sandbox. spec R3.3, R3.27, A117. The browser half — a popup of the shell
+// cannot be read from the page, the page cannot navigate the top window — is
+// test/browser/media-links.mjs.
+describe("a hostile page with popups", () => {
+  it("cannot frame this host's shell or documents by URL: each answers frame-ancestors 'self'", async () => {
+    for (const url of [`${ROUTE_BASE}/page?session=thr_a`, `${ROUTE_BASE}/document?session=thr_a`, `${ROUTE_BASE}/document?session=thr_a&path=second.html`, `${ROUTE_BASE}/home`, `${ROUTE_BASE}/home-document`]) {
+      const csp = (await fixture.get(url)).headers.get("content-security-policy") ?? "";
+      expect(csp, url).toContain("frame-ancestors 'self'");
+    }
+  });
+
+  it("gets a document that is sandboxed even when opened on its own, with no same origin, top navigation or modals", async () => {
+    for (const url of [`${ROUTE_BASE}/document?session=thr_a`, `${ROUTE_BASE}/home-document`]) {
+      const csp = (await fixture.get(url)).headers.get("content-security-policy") ?? "";
+      expect(csp, url).toMatch(/(?:^|; )sandbox allow-scripts /);
+      expect(csp, url).not.toMatch(/allow-same-origin|allow-top-navigation|allow-modals/);
+    }
+  });
+});

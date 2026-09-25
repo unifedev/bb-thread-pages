@@ -3,6 +3,7 @@ import { isEntityId, isOpaqueToken, isStorageKey } from "../ids.ts";
 import type { JsonValue } from "../json/strict-json.ts";
 import { LIMITS, mebibytes } from "../limits.ts";
 import { EFFECT_CLASSES, type CapabilitySpec } from "./contract.ts";
+import { externalUrlProblem } from "../external-url.ts";
 import * as s from "./schema.ts";
 
 /**
@@ -383,18 +384,7 @@ export const sessionsOpenHost = spec({
 
 export type OpenExternalParams = s.Infer<typeof openExternalParams>;
 const openExternalParams = s.object({
-  url: s.refine(s.string({ min: 1, max: 2048, pattern: /^[^\u0000-\u0020\u007f]+$/, label: "URL" }), (value) => {
-    let parsed: URL;
-    try {
-      parsed = new URL(value);
-    } catch {
-      return "Expected an absolute http or https URL";
-    }
-    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname || parsed.username || parsed.password) {
-      return "Expected an absolute http or https URL without credentials";
-    }
-    return null;
-  }),
+  url: s.refine(s.string({ min: 1, max: 2048, pattern: /^[^\u0000-\u0020\u007f]+$/, label: "URL" }), externalUrlProblem),
   label: s.optional(s.string({ min: 1, max: 160, label: "Label" })),
 });
 
@@ -408,7 +398,7 @@ export const navigationOpenExternal = spec({
   validateResult: openedResult,
   doc: {
     params: "`{ url, label? }` — http or https only.",
-    result: "`{ opened: true }`. The confirmation names the destination origin. An ordinary `<a href=\"https://…\">` in your page goes through this automatically.",
+    result: "`{ opened: true }`. Called during the reader's click, the URL opens in a new tab with no dialog; called without one, the host asks the reader first, naming the destination origin. An ordinary `<a href=\"https://…\">` needs neither: it opens in a new tab by itself.",
   },
 });
 

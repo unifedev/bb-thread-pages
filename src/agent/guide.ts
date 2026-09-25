@@ -1,6 +1,7 @@
 import type { Contributor } from "../domain/capabilities/contributed.ts";
 import type { CapabilityRegistry } from "../domain/capabilities/registry.ts";
 import { LIMITS, kibibytes, mebibytes } from "../domain/limits.ts";
+import { PAGE_FRAME_ALLOW, PAGE_SANDBOX } from "../domain/sandbox.ts";
 import { ENTRY_FILE, UPLOAD_DIR } from "../pages/layout.ts";
 import type { SiteStrategy } from "../pages/site.ts";
 
@@ -26,7 +27,8 @@ export function buildGuide(registry: CapabilityRegistry, site: SiteStrategy, con
     contributed(contributors),
     startingSessions(),
     network(),
-    unavailable(),
+    browserAffordances(),
+    otherSites(),
     composition(),
     home(),
     accessibility(),
@@ -160,8 +162,9 @@ consequences worth knowing:
   entry limit, and a page over ${kibibytes(LIMITS.offlineCopyBytes)} keeps no offline copy. Per file at
   most ${mebibytes(LIMITS.inlineFileBytes)}, ${mebibytes(LIMITS.inlineTotalBytes)} across the page; base64 adds a third to both.
 - A file that is missing, too large or over the budget is **left as you wrote
-  it** and named in the plugin log (\`bb plugin logs thread-pages\`). The page
-  still renders; that one reference does not resolve.
+  it** and named in the plugin log (\`bb plugin logs thread-pages\`) and in
+  \`bb thread-page status\`. The page still renders; that one reference does not
+  resolve. Media is the exception — see *Large video, audio and images* below.
 - \`url()\` inside a stylesheet you reference is followed too, so backgrounds
   and \`@font-face\` survive. Absolute and remote URLs are never touched.
 - Changing a file beside ${ENTRY_FILE} changes the document, so an open page
@@ -177,7 +180,43 @@ you. Load data with <script src="data.js"> or inline it in the document.
 Remote fetches work (see Network).`
     : `
 Page script may also fetch its own files as data: \`await fetch("data.json")\`.`
-}`;
+}
+
+**Large video, audio and images.** A \`<video>\`, \`<audio>\`, \`<source>\`,
+\`<img>\` or \`<track>\` \`src\`, or a \`poster\`, naming one of your files that is too
+large to carry is fetched for the reader instead: the top bar fetches it from
+the host with the reader's credential and hands your page the bytes as a
+\`blob:\` URL. Plain markup is enough — \`<video src="clip.mp4" controls>\` of a
+file up to ${mebibytes(LIMITS.shellFetchBytes)} (${mebibytes(LIMITS.shellFetchImageBytes)} for an image, the host's own read limits) plays and
+seeks on every origin, a phone over the host's remote address included. What
+to know:
+
+- Until the bytes arrive the element has no \`src\` (the served document holds
+  \`data-thread-page-src="clip.mp4"\` in its place), so script that reads
+  \`video.src\` at load sees nothing; wait for \`loadedmetadata\`. A file that
+  cannot come gets \`data-thread-page-unavailable\` with the reason.
+- The whole file is fetched before it plays: prefer a video of a few MiB, and
+  compress before you publish. A larger file cannot reach the reader at all —
+  put it at a public URL and reference that.
+- Only those elements. A large stylesheet, script, font, \`srcset\` candidate or
+  CSS \`url()\` is not fetched this way; keep them within the carrying limits.
+- Not inside another page's embed: there the element says why, and the reader
+  can open the page itself.
+- \`bb thread-page status\` lists each such file as *fetched by the shell*.
+
+**Linking to your own files.** A link to one of your files that is not a
+document of the page is carried out by the top bar, from the host's own
+address, with the reader's credential:
+
+- \`<a href="report.pdf">\` (any \`target\`) opens the file in a **new tab**; your
+  page stays. Images, video, audio, PDF, text, CSV, JSON and HTML open;
+  **an SVG, XML or any other type is downloaded instead**, because a tab on the
+  host's address must not run a file's script.
+- \`<a href="clip.mp4" download="Our clip.mp4">\` **downloads** it under that
+  name (the file's own name when the attribute is empty).
+- A link to another \`.html\` document of the page opens it in the page (see
+  *Several documents*); with \`download\` it is downloaded.
+- A relative link that climbs out of your page root does nothing.`;
 
 const keepingCurrent = () => `## Keeping a page current
 
@@ -277,9 +316,10 @@ chrome around it.
 What the host does for you, with no further code:
 
 - loads the document exactly as the host serves it at its own address, into a
-  frame that is **always** \`sandbox="allow-scripts allow-forms"\` whatever you
-  set, on an origin of its own — it cannot reach your page, and you cannot reach
-  into it;
+  frame that is **always** sandboxed exactly as your page is —
+  \`sandbox="${PAGE_SANDBOX}"\`
+  \`allow="${PAGE_FRAME_ALLOW}"\` — whatever you set, on an origin of its own: it cannot
+  reach your page, and you cannot reach into it;
 - keeps it fresh: every ${LIMITS.embedPollWorkingMs / 1000} s while an embedded session is working or was
   answered through its embed in the last ${LIMITS.embedPollAfterAnswerMs / 1000} s, every ${LIMITS.embedPollMs / 1000} s otherwise, never
   while the tab is hidden. **All the embeds of a page are checked in one call
@@ -290,7 +330,7 @@ What the host does for you, with no further code:
   offered inside the embed, and your page counts as dirty meanwhile, so your own
   refresh waits too;
 - follows its links: one to another document of that page opens in the embed,
-  an \`https:\` link goes through the usual confirmation;
+  an \`https:\` link opens in a new tab as it does in your page;
 - shows a short line of its own when there is nothing to show — no such
   session, archived, no page yet, too large, unreachable — and keeps checking.
 
@@ -314,7 +354,9 @@ answers and followed links included. \`pages.open\` and \`sessions.openHost\` wo
 from inside an embed only on the reader's click, so a page cannot take the
 reader away by itself when it is shown somewhere.
 **A form with a file attached is not sent from inside an embed**; its status
-line tells the reader to open the page itself. **Embedding is one level deep:**
+line tells the reader to open the page itself. Likewise a link to one of the
+embedded page's own non-document files does nothing there, and its large media
+does not load (the element says why). **Embedding is one level deep:**
 \`embed\` called inside an embedded page shows a line saying so and loads nothing.
 So write your own page to degrade when \`storage\` answers \`unavailable\`: it may
 be shown inside someone else's.
@@ -337,7 +379,9 @@ takes the token a read returned, never a session id or a prompt. To *say*
 something to another session in your own words, use \`sessions.send\`, which the
 reader confirms each time.
 
-Embedding another **site** is still not possible: a frame with a URL is blocked.
+To show another **site**, write an \`<iframe src="https://…">\` — see *Other
+sites in a frame*. \`embed\` is for pages of this host, which a frame by URL
+cannot show.
 Link to it.`;
 
 const runtimeApi = () => `## window.threadPage
@@ -512,9 +556,10 @@ with \`storage.set\`. That works whenever the service answers a cross-origin
 request from \`Origin: null\`, and many APIs do; an unauthenticated call that
 comes back as a readable 401 tells you the origin is accepted. Two things do
 not work, and the host offers no mechanism for either, by design: a sign-in
-flow that sends the reader to a login page and back (a page has no popups and
-no top-level navigation, and login pages refuse to load in a frame), and an
-SDK that checks a registered JavaScript origin, because \`null\` cannot be
+flow that sends the reader to a login page and back (a popup opens, but the
+flow has nowhere to return to — your page's origin is \`null\`, it has no
+top-level navigation, and login pages refuse to load in a frame), and an SDK
+that checks a registered JavaScript origin, because \`null\` cannot be
 registered.
 
 **A server of your own.** Page script runs in the reader's browser, so where
@@ -536,23 +581,58 @@ can reach, including its own network, and it can navigate its own frame with
 data in the URL. Both are accepted, documented properties of the model, not
 bugs to work around.`;
 
-const unavailable = () => `## What the sandbox silences
+const browserAffordances = () => `## Links, windows, downloads and full screen
 
-These do nothing, silently — the worst failure mode — so never rely on them:
+They work as on any website, on the reader's click:
 
-- \`window.open\` — use \`pages.open\` for another page, \`sessions.openHost\`
-  for the host application, and a plain <a href="https://…"> or
-  \`navigation.openExternal\` for the web.
+- **Links.** Any \`<a href="https://…">\` opens in a **new tab**, with no dialog,
+  whatever its \`target\`; a link with no target does not replace your page.
+  The new tab is the site itself, on its own origin, signed in as the reader is.
+- **\`window.open(url)\`** works from a click handler and returns the window,
+  which is on the site's origin, so you cannot read it. Without a click the
+  browser blocks it, as it would anywhere.
+- **\`navigation.openExternal\`** still works for pages written against it: during
+  a click it opens with no dialog; called without one, the reader is asked
+  first, in the top bar's dialog naming the destination.
+- **\`mailto:\` and \`tel:\`** links hand off to the reader's mail and phone apps.
+- **Downloads.** A file your page builds downloads the usual way: make a
+  \`Blob\`, point an \`<a download="name.csv">\` at \`URL.createObjectURL(blob)\`, click
+  it. Your own files: see *Linking to your own files*.
+- **Full screen.** \`element.requestFullscreen()\` from a click works, in your page
+  and inside an embed; Escape leaves. On an iPhone only a \`<video>\` goes full
+  screen, through its own control.
+
+What still does nothing, silently — never rely on it:
+
 - \`window.prompt\`, \`alert\`, \`confirm\` — build the input or the question into
   the page, or use a confirmed capability, which renders its own dialog. A
   <dialog> you script yourself needs data-thread-page-manual on its form.
-- top-level navigation — \`pages.open\` and \`sessions.openHost\` navigate the
-  reader's view in place through trusted chrome; the back button returns.
+- top-level navigation — your page cannot replace the top bar. \`pages.open\`
+  and \`sessions.openHost\` navigate the reader's view in place through trusted
+  chrome; the back button returns.
 
-An ordinary <a href="https://…"> works: the host intercepts the click and
-routes it through \`navigation.openExternal\`, which confirms and names the
-destination. Same-document fragments (#section) work natively. The trust
-boundary is not configurable: no setting widens the sandbox.`;
+Same-document fragments (#section) work natively. The trust boundary is not
+configurable: no setting widens the sandbox.`;
+
+const otherSites = () => `## Other sites in a frame
+
+\`<iframe src="https://…">\` works. The frame inherits your page's sandbox, so
+the site inside it runs with **no cookies and no storage**: it is never signed
+in, and anything that needs \`localStorage\` or a cookie to start fails.
+
+- **Works:** maps (the OpenStreetMap and Google Maps embeds), the Spotify embed,
+  Wikipedia, plain informational sites.
+- **Breaks:** video players and apps — Vimeo shows its poster at most, Figma is
+  blank, YouTube very likely fails. Link to them instead.
+- **Refuses any frame:** sites that send \`X-Frame-Options\` or
+  \`frame-ancestors\` — CodePen, most sign-in pages, many apps. Link to them.
+- Add \`allow="fullscreen"\` to the \`<iframe>\` if the site has a full-screen
+  button.
+- Only \`https:\` (plus \`blob:\` and \`data:\` documents you build). A page of **this
+  host** is refused by URL — show it with \`threadPage.embed\`.
+
+Nothing in your page can read into the frame, and nothing in it can reach
+your page or the host.`;
 
 const composition = () => `## One agent, one page
 
@@ -663,7 +743,9 @@ const limits = () => `## Limits
 | Limit | Value |
 | --- | --- |
 | Entry document | ${mebibytes(LIMITS.entryDocumentBytes)}, refused above, never truncated |
-| Other files in the page root | ${mebibytes(25 * 1024 * 1024)} per file (${mebibytes(10 * 1024 * 1024)} for images), the host's read limit |
+| Other files in the page root | ${mebibytes(LIMITS.shellFetchBytes)} per file (${mebibytes(LIMITS.shellFetchImageBytes)} for images), the host's read limit |
+| Carried into the document | ${mebibytes(LIMITS.inlineFileBytes)} per file, ${mebibytes(LIMITS.inlineTotalBytes)} per document |
+| Large media fetched for the reader | up to ${mebibytes(LIMITS.shellFetchBytes)} per file (${mebibytes(LIMITS.shellFetchImageBytes)} for images); video, audio, img, source, track, poster only |
 | Upload per file | ${mebibytes(LIMITS.uploadFileBytes)} |
 | Uploads per form | ${LIMITS.uploadsPerForm} |
 | Submission body | ${kibibytes(LIMITS.submissionBodyBytes)} excluding uploaded bytes; ${LIMITS.answersPerSubmission} answers; ${LIMITS.answerValueChars} characters per answer |
@@ -696,10 +778,13 @@ const limitations = (site: SiteStrategy) => `## Known limitations
   disabled and effectful capabilities answer unavailable.
 - A confirmed capability that fails on the host answers handler_error with a
   generic message; the cause is in the plugin log (\`bb plugin logs thread-pages\`).
-- Embedding another **site** in an <iframe> is blocked (frame-src 'none'); only
-  \`threadPage.embed\` shows another session's page. Inside an embed, in Safari,
-  a relative reference that was *not* carried into the document (missing or over
-  the size limits) resolves against the embedding page.
+- A site that needs cookies or storage — a video player, a design tool — does
+  not work in an <iframe> (the frame inherits the sandbox); link to it. Inside
+  an embed, in Safari, a relative reference that was *not* carried into the
+  document (missing or over the size limits) resolves against the embedding
+  page.
+- A large own media file is fetched whole before it plays, and not at all
+  inside another page's embed (see *Large video, audio and images*).
 - \`voice.captureAndTranscribe\` is not implemented: unknown_method.${
   site.name === "core-storage"
     ? `\n- fetch() of your own files from page script is refused on this host (see Files you show the reader).` +

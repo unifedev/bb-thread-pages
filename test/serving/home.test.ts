@@ -41,7 +41,7 @@ describe("the built-in home page, served", () => {
   it("serves its document in the page sandbox with the kernel, and answers the poll", async () => {
     const response = await fixture.get(`${ROUTE_BASE}/home-document`);
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-security-policy")).toMatch(/sandbox allow-scripts allow-forms/);
+    expect(response.headers.get("content-security-policy")).toMatch(/sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads(;|$)/);
     expect(response.headers.get("etag")).toBe(`"${BUILTIN_HOME_PAGE.revision}"`);
     const html = await response.text();
     expect(html).toContain("data-thread-page-kernel");
@@ -53,7 +53,7 @@ describe("the built-in home page, served", () => {
     const shell = await fixture.get(`${ROUTE_BASE}/home`);
     expect(shell.status).toBe(200);
     const html = await shell.text();
-    expect(html).toContain('sandbox="allow-scripts allow-forms"');
+    expect(html).toContain('sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" allow="fullscreen *"');
     expect(html).toContain("&quot;navigable&quot;:false");
     // The shell's runtime names the selector too, so look for the element itself.
     expect(html).not.toContain('class="acts" data-shell-acts');

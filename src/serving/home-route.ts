@@ -56,6 +56,7 @@ export function homeRoute(serving: ServingContext) {
           chromeActionUrl: `${serving.routeBase}/chrome-action`,
           documentSessionUrl: `${serving.routeBase}/document-session`,
           navigable: false,
+          filesUrl: null,
           workingLabel: settings.workingLabel,
           stale: false,
           empty: false,

@@ -30,3 +30,23 @@ page loads.
 
 Results of 20 September 2026 are in the specification repository,
 `verify/EXPECTATIONS.md` §Fixture 09.
+
+## Popups, own files, full screen, other sites, large media (spec 1.4)
+
+`media-links.mjs` needs no bb: `serve.ts` runs this worktree's routes over the
+unit tests' in-memory host and serves `verify/fixtures/10-media-links-embeds`
+from the specification repository as one session's page root, with a stand-in
+for bb's file route that answers as bb 0.43.4 does.
+
+    node test/browser/serve.ts <spec>/verify/fixtures/10-media-links-embeds 8790
+    GATE=1 TLS=<dir with key.pem, cert.pem> PROBE_SVG=1 node test/browser/serve.ts <same> 8791
+    PLAYWRIGHT=<…>/playwright/index.mjs ENGINE=webkit BASE=https://localhost:8791 GATE=1 PROBE_SVG=1 node test/browser/media-links.mjs
+
+`GATE=1` imitates bb Connect's edge: every request needs a `SameSite=Lax`
+cookie set by `/login`, so a request from the sandboxed frame fails as it does
+remotely. `PROBE_SVG=1` adds an SVG that, opened on the host's origin, reads the
+shell — the bb-side finding recorded in `CHANGELOG.md` 1.6.0.
+
+Results of 25 September 2026: Chromium and WebKit, 23 of 23 plain and 24 of 24
+gated over https; the SVG probe read a token in both.
+

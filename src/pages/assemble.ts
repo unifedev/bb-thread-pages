@@ -14,7 +14,7 @@ export function createAssembler(host: SessionHost): PageResolver {
     const location = await host.sessions.storage(session);
     const read = async (relativePath: string) => {
       const file = await host.files.read(location, relativePath);
-      return file ? { bytes: file.bytes } : null;
+      return file ? { bytes: file.bytes, sha256: file.sha256 } : null;
     };
     const directory = directoryOf(path);
     const expanded = await expandIncludes(html, { read, list: (dir) => host.files.list(location, dir) }, directory);
@@ -22,6 +22,6 @@ export function createAssembler(host: SessionHost): PageResolver {
     // authenticated origin, so the document carries them. Delete this pass, and
     // pages/inline.ts, once the host can authorise them.
     const carried = await resolveOwnFiles(expanded.html, read, directory);
-    return { html: carried.html, resolved: [...expanded.parts, ...carried.resolved], skipped: [...expanded.skipped, ...carried.skipped] };
+    return { html: carried.html, resolved: [...expanded.parts, ...carried.resolved], skipped: [...expanded.skipped, ...carried.skipped], ...(carried.deferred ? { deferred: carried.deferred } : {}) };
   };
 }

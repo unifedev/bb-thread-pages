@@ -49,6 +49,7 @@ export function shellRoute(serving: ServingContext) {
           chromeActionUrl: `${serving.routeBase}/chrome-action`,
           documentSessionUrl: `${serving.routeBase}/document-session`,
           navigable: true,
+          filesUrl: serving.site.siteRoot(id),
           workingLabel: settings.workingLabel,
           stale,
           empty: page === null,

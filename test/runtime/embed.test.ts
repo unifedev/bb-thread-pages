@@ -100,15 +100,16 @@ describe("threadPage.embed", () => {
     const manager = createEmbedManager(win, { invoke: h.invoke, setDirty: () => undefined, embedded: false });
     manager.embed(own, { sessionId: "thr_b" });
     await vi.advanceTimersByTimeAsync(10);
-    expect(own.getAttribute("sandbox")).toBe("allow-scripts allow-forms");
+    expect(own.getAttribute("sandbox")).toBe("allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads");
     expect(own.hasAttribute("src")).toBe(false);
-    expect(own.hasAttribute("allow")).toBe(false);
+    // Full screen, and nothing else the author asked for. D35
+    expect(own.getAttribute("allow")).toBe("fullscreen *");
     // The author widens it afterwards: the next load narrows it again.
     own.setAttribute("sandbox", "allow-same-origin allow-scripts");
     h.pages.set("thr_b#index.html", { revision: REV2, html: "<p>two</p>" });
     await vi.advanceTimersByTimeAsync(LIMITS.embedPollMs + 10);
     expect(own.srcdoc).toBe("<p>two</p>");
-    expect(own.getAttribute("sandbox")).toBe("allow-scripts allow-forms");
+    expect(own.getAttribute("sandbox")).toBe("allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads");
     // The same element, in the same place: it was only taken out while it changed,
     // so the refresh is a first load of a new browsing context and adds no history entry.
     expect(win.document.querySelector("#own")).toBe(own);

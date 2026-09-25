@@ -2,7 +2,7 @@ import type { BbPluginApi, PluginCliContext, PluginCliResult } from "@get-bb/plu
 import { describeIneligible, ineligibleReason } from "../domain/eligibility.ts";
 import { PageError, errorText } from "../domain/errors.ts";
 import { isSessionId } from "../domain/ids.ts";
-import { LIMITS } from "../domain/limits.ts";
+import { LIMITS, mebibytes } from "../domain/limits.ts";
 import type { SessionRecord } from "../host/types.ts";
 import { ENTRY_FILE, LEGACY_ENTRY_FILE, UPLOAD_DIR, entryPath, joinPath, legacyEntryPath } from "../pages/layout.ts";
 import { homeUrl, pageUrl, type ServingContext } from "../serving/context.ts";
@@ -254,6 +254,8 @@ async function status(deps: CliDeps, context: PluginCliContext): Promise<PluginC
       // Parts and own files that were left as written, where the agent can see them. spec R1.25
       lines.push(`carried into the document: ${page.site.resolved} file${page.site.resolved === 1 ? "" : "s"} (parts and own files)`);
       for (const file of page.site.skipped.slice(0, 20)) lines.push(`not carried: ${file.path} (${file.reason})`);
+      // Too large to carry, fetched by the reader's shell instead; a failure there shows on the page. D37
+      for (const file of (page.site.deferred ?? []).slice(0, 20)) lines.push(`fetched by the shell (large media): ${file.path} (${mebibytes(file.bytes)})`);
     } catch (error) {
       lines.push(`revision: ${PageError.is(error) ? error.message : errorText(error)}`);
     }

@@ -2,6 +2,7 @@ import { isDocumentPath } from "../../domain/document-path.ts";
 import { isBridgeRequest, isBridgeResponse, isRecord, isScrollMessage, makeFailure, sentMessage, type BridgeRequestMessage, type ShellConfig, type ShellMessage, type SubmitFile } from "../shared/protocol.ts";
 import type { Confirmer } from "./confirm.ts";
 import type { Navigator } from "./navigate.ts";
+import type { OwnFiles } from "./own-files.ts";
 
 /**
  * The shell's side of the port: it validates every message from the frame,
@@ -21,6 +22,8 @@ export interface RelayDeps {
   onAnswered?(): void;
   /** Where the document is scrolled to. spec R2.18b */
   onScroll?(x: number, y: number): void;
+  /** The page's own files: opened, downloaded, or fetched for a large media element. spec R4.15b, R4.25a */
+  ownFiles?: OwnFiles;
   /** The reader granted this page answers into another session. spec R5.64 */
   onGranted?(grant: { sessionId: string; title: string }): void;
   fetchImpl?: typeof fetch;
@@ -197,6 +200,14 @@ export function createRelay(deps: RelayDeps): Relay {
         return;
       }
       if (data.kind === "thread-page:apply-update") return;
+      if (data.kind === "thread-page:open-file") {
+        deps.ownFiles?.open(data.path, data.download, data.name);
+        return;
+      }
+      if (data.kind === "thread-page:file-request") {
+        if (deps.ownFiles) void deps.ownFiles.fetchFor(port, data.id, data.path);
+        return;
+      }
       if (data.kind === "thread-page:open-document") {
         if (isDocumentPath(data.path)) deps.onOpenDocument?.(data.path);
         return;

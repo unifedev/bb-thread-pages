@@ -1,5 +1,7 @@
 import { defaultTreeAdapter, parse as parseHtml, serialize as serializeHtml, type DefaultTreeAdapterTypes } from "parse5";
+import { PageError } from "../domain/errors.ts";
 import { LIMITS } from "../domain/limits.ts";
+import { shellFetchLimit } from "../domain/own-files.ts";
 import { isSafeRelativePath } from "./layout.ts";
 
 /**
@@ -35,9 +37,21 @@ type HtmlNode = DefaultTreeAdapterTypes.ChildNode;
 export interface OwnFile {
   readonly bytes: Uint8Array;
   readonly mimeType?: string | undefined;
+  /** The host's hash of the bytes, when it gives one; names the version of a file the shell fetches. */
+  readonly sha256?: string | undefined;
 }
 
+/** null for a missing file; throws `page_too_large` for one the host will not read at all. */
 export type OwnFileReader = (relativePath: string) => Promise<OwnFile | null>;
+
+/**
+ * A reference to one of the page's own media files that is too large to
+ * carry, left for the shell to fetch. spec R4.25a, DECISIONS D37
+ */
+export interface DeferredFile {
+  readonly path: string;
+  readonly bytes: number;
+}
 
 export interface ResolvedFile {
   readonly path: string;
@@ -54,7 +68,38 @@ export interface ResolveOutcome {
   readonly html: string;
   readonly resolved: readonly ResolvedFile[];
   readonly skipped: readonly SkippedFile[];
+  /** Own media too large to carry, marked for the shell to fetch. Absent when there is none. */
+  readonly deferred?: readonly DeferredFile[];
 }
+
+/**
+ * The marker a deferred reference carries instead of its attribute:
+ * `src="clip.mp4"` becomes `data-thread-page-src="clip.mp4"` (the path from
+ * the page root), with `data-thread-page-stamp` naming the file's version so a
+ * changed file changes the document. The kernel asks the shell for the bytes
+ * and sets the attribute to a `blob:` URL. D37
+ *
+ * Delete with the rest of this workaround, and with runtime/kernel/large-media.ts,
+ * once bb serves a sandboxed page its own files by URL over every origin
+ * (get-bb/bb #1632, #3617, #4339; docs/B1-OWN-FILES.md in the specification).
+ */
+export const DEFERRED_ATTRIBUTE_PREFIX = "data-thread-page-";
+export const DEFERRED_STAMP_ATTRIBUTE = "data-thread-page-stamp";
+
+/**
+ * Which references may be deferred: media, images, posters and text tracks —
+ * the things a large own file usually is, and whose elements take a URL the
+ * kernel can set later. Stylesheets and scripts are never deferred: they
+ * would run late, out of order. D37
+ */
+const DEFERRABLE: ReadonlyArray<{ tag: string; attr: string }> = [
+  { tag: "img", attr: "src" },
+  { tag: "source", attr: "src" },
+  { tag: "audio", attr: "src" },
+  { tag: "video", attr: "src" },
+  { tag: "video", attr: "poster" },
+  { tag: "track", attr: "src" },
+];
 
 /** Attributes that may name one of the page's own files, per element. */
 const CARRIERS: ReadonlyArray<{ tag: string; attr: string; test?: (element: HtmlElement) => boolean }> = [
@@ -161,14 +206,24 @@ export async function resolveOwnFiles(html: string, read: OwnFileReader, base = 
   const document = parseHtml(html);
   const resolved: ResolvedFile[] = [];
   const skipped: SkippedFile[] = [];
+  const deferred: DeferredFile[] = [];
   const seen = new Map<string, string | null>();
+  /** Files left uncarried because of their size alone, which the shell may fetch instead. */
+  const oversize = new Map<string, { bytes: number; stamp: string; reason: SkippedFile["reason"] }>();
+  const deferredPaths = new Set<string>();
   let budget = LIMITS.inlineTotalBytes;
 
-  async function urlFor(path: string, depth: number): Promise<string | null> {
-    const memo = seen.get(path);
-    if (memo !== undefined) return memo;
-    const answer = await load(path, depth);
-    seen.set(path, answer);
+  /** Referenced where it could not be deferred (a stylesheet, a script, a srcset), so it is reported as not carried. */
+  const undeferred = new Set<string>();
+
+  /** `deferrable`: the reference is one the shell may fetch instead when the file is too large (D37). */
+  async function urlFor(path: string, depth: number, deferrable = false): Promise<string | null> {
+    let answer = seen.get(path);
+    if (answer === undefined) {
+      answer = await load(path, depth);
+      seen.set(path, answer);
+    }
+    if (answer === null && !deferrable && oversize.has(path)) undeferred.add(path);
     return answer;
   }
 
@@ -177,17 +232,23 @@ export async function resolveOwnFiles(html: string, read: OwnFileReader, base = 
       skipped.push({ path, reason: "unsafe-path" });
       return null;
     }
-    const file = await read(path).catch(() => null);
+    let file: OwnFile | null;
+    try {
+      file = await read(path);
+    } catch (error) {
+      // Past the host's own read limit: nothing can bring this file to the reader.
+      skipped.push({ path, reason: PageError.is(error) && error.code === "page_too_large" ? "too-large" : "missing" });
+      return null;
+    }
     if (!file) {
       skipped.push({ path, reason: "missing" });
       return null;
     }
-    if (file.bytes.byteLength > LIMITS.inlineFileBytes) {
-      skipped.push({ path, reason: "too-large" });
-      return null;
-    }
-    if (file.bytes.byteLength > budget) {
-      skipped.push({ path, reason: "budget" });
+    const size = file.bytes.byteLength;
+    const reason = size > LIMITS.inlineFileBytes ? "too-large" : size > budget ? "budget" : null;
+    if (reason) {
+      if (size <= shellFetchLimit(path)) oversize.set(path, { bytes: size, stamp: stampOf(file), reason });
+      else skipped.push({ path, reason });
       return null;
     }
     budget -= file.bytes.byteLength;
@@ -232,8 +293,22 @@ export async function resolveOwnFiles(html: string, read: OwnFileReader, base = 
       if (reference === null || !isOwnFileReference(reference)) continue;
       const path = pathOf(reference);
       if (!path) continue;
-      const url = await urlFor(normalise(base + path), 0);
-      if (!url) continue;
+      const full = normalise(base + path);
+      const deferrable = DEFERRABLE.some((entry) => entry.tag === carrier.tag && entry.attr === carrier.attr);
+      const url = await urlFor(full, 0, deferrable);
+      if (!url) {
+        const large = oversize.get(full);
+        if (!large || !deferrable) continue;
+        removeAttribute(element, carrier.attr);
+        setAttribute(element, `${DEFERRED_ATTRIBUTE_PREFIX}${carrier.attr}`, full);
+        setAttribute(element, DEFERRED_STAMP_ATTRIBUTE, large.stamp);
+        if (!deferredPaths.has(full)) {
+          deferredPaths.add(full);
+          deferred.push({ path: full, bytes: large.bytes });
+        }
+        changed = true;
+        continue;
+      }
       setAttribute(element, carrier.attr, url);
       changed = true;
     }
@@ -250,7 +325,24 @@ export async function resolveOwnFiles(html: string, read: OwnFileReader, base = 
     }
   }
 
-  return { html: changed ? serializeHtml(document) : html, resolved, skipped };
+  // A large file referenced from a stylesheet, a script or a srcset is not deferred there. D37
+  for (const [path, large] of oversize) {
+    if (undeferred.has(path) || !deferredPaths.has(path)) skipped.push({ path, reason: large.reason });
+  }
+  return { html: changed ? serializeHtml(document) : html, resolved, skipped, ...(deferred.length > 0 ? { deferred } : {}) };
+}
+
+function removeAttribute(element: HtmlElement, name: string): void {
+  element.attrs = element.attrs.filter((attr) => attr.name !== name);
+}
+
+/** A short name for this version of a file, so a changed file changes the document that defers it. */
+function stampOf(file: OwnFile): string {
+  if (file.sha256) return file.sha256.slice(0, 16);
+  let hash = 0x811c9dc5;
+  const step = Math.max(1, Math.floor(file.bytes.byteLength / 65_536));
+  for (let index = 0; index < file.bytes.byteLength; index += step) hash = Math.imul(hash ^ (file.bytes[index] ?? 0), 0x01000193) >>> 0;
+  return `${file.bytes.byteLength.toString(16)}-${hash.toString(16)}`;
 }
 
 async function resolveSrcset(srcset: string, urlFor: (path: string, depth: number) => Promise<string | null>, base: string): Promise<string | null> {

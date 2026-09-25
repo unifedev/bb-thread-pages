@@ -105,7 +105,9 @@ if (only.includes("B")) {
   await embed.locator("#marker", { hasText: "B v1" }).waitFor({ timeout: 10000 });
   ok("B1 the embed shows the second session's page", true);
   const sandboxes = await host.locator("iframe").evaluateAll((els) => els.map((el) => ({ id: el.id, sandbox: el.getAttribute("sandbox"), allow: el.getAttribute("allow"), src: el.getAttribute("src") })));
-  ok("B1b every embed frame is sandbox=\"allow-scripts allow-forms\", including the author's wider iframe", sandboxes.length === 2 && sandboxes.every((s) => s.sandbox === "allow-scripts allow-forms" && !s.allow && !s.src), JSON.stringify(sandboxes));
+  // The page frame's sandbox and full screen, whatever the author wrote (R4.43, D34, D35).
+  const SANDBOX = "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
+  ok("B1b every embed frame is sandboxed exactly as the page frame, including the author's wider iframe", sandboxes.length === 2 && sandboxes.every((s) => s.sandbox === SANDBOX && s.allow === "fullscreen *" && !s.src), JSON.stringify(sandboxes));
   await host.frameLocator("#own").locator("#marker", { hasText: "B second" }).waitFor({ timeout: 10000 });
   ok("B1c a second embed (another document of that page, author's own iframe) shows too", true);
   await embed.locator("#probe", { hasText: "origin" }).waitFor();

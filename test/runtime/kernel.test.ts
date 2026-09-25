@@ -339,27 +339,105 @@ describe("anchors", () => {
     return element;
   };
 
-  // A link to another document of the page opens in place. spec R4.15a, R1.12a
-  it("routes external links through the capability, opens the page's own documents in place, and leaves fragments and other files alone", () => {
+  // A link to another document of the page opens in place; any other own file goes to the shell;
+  // another site opens natively in a new tab. spec R4.15, R4.15a, R4.15b, D33, D34
+  it("decides every kind of link: documents, own files, other sites, handlers, built files", () => {
     expect(decideAnchor(anchor("#section"), documentUrl, base)).toEqual({ kind: "default" });
     expect(decideAnchor(anchor("other.html"), documentUrl, base)).toEqual({ kind: "document", path: "other.html" });
     expect(decideAnchor(anchor("../index.html"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "index.html" });
     expect(decideAnchor(anchor("next.html#part"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "guides/next.html" });
-    expect(decideAnchor(anchor("data.json"), documentUrl, base)).toEqual({ kind: "default" });
-    expect(decideAnchor(anchor("uploads/report.html"), documentUrl, base)).toEqual({ kind: "default" });
-    expect(decideAnchor(anchor("https://github.com/x/y", "Repo"), documentUrl, base)).toEqual({ kind: "external", url: "https://github.com/x/y", label: "Repo" });
+    // Own files that are not documents: the shell opens or downloads them. D33
+    expect(decideAnchor(anchor("data.json"), documentUrl, base)).toEqual({ kind: "file", path: "data.json", download: false, name: null });
+    expect(decideAnchor(anchor("uploads/report.html"), documentUrl, base)).toEqual({ kind: "file", path: "uploads/report.html", download: false, name: null });
+    expect(decideAnchor(anchor("_parts/a.html"), documentUrl, base)).toEqual({ kind: "file", path: "_parts/a.html", download: false, name: null });
+    expect(decideAnchor(anchor("media/clip%20one.mp4"), documentUrl, base)).toEqual({ kind: "file", path: "media/clip one.mp4", download: false, name: null });
+    const saved = anchor("clip.mp4");
+    saved.setAttribute("download", "../../Thanks for Alua.mp4");
+    expect(decideAnchor(saved, documentUrl, base)).toEqual({ kind: "file", path: "clip.mp4", download: true, name: "Thanks for Alua.mp4" });
+    const bare = anchor("other.html");
+    bare.setAttribute("download", "");
+    expect(decideAnchor(bare, documentUrl, base)).toEqual({ kind: "file", path: "other.html", download: true, name: null });
+    // Climbing out of the page root is refused, not sent to the host's other routes. R1.4, R1.5, D33
+    expect(decideAnchor(anchor("../../etc/passwd"), documentUrl, base)).toEqual({ kind: "block" });
+    expect(decideAnchor(anchor("../thr_b/thread-storage/files/secret.pdf"), documentUrl, base)).toEqual({ kind: "block" });
+    // Inside an embed the shell is not this page's: its own files are refused, visibly in the guide. R4.50
+    expect(decideAnchor(anchor("data.json"), documentUrl, base, base, true)).toEqual({ kind: "block" });
+    expect(decideAnchor(anchor("other.html"), documentUrl, base, base, true)).toEqual({ kind: "document", path: "other.html" });
+    // Other sites: a new tab unless the author already named a window. D34
+    expect(decideAnchor(anchor("https://github.com/x/y", "Repo"), documentUrl, base)).toEqual({ kind: "new-tab", url: "https://github.com/x/y" });
+    for (const target of ["_self", "_top", "_parent", " _TOP "]) {
+      const link = anchor("https://example.com/");
+      link.setAttribute("target", target);
+      expect(decideAnchor(link, documentUrl, base), target).toEqual({ kind: "new-tab", url: "https://example.com/" });
+    }
+    for (const target of ["_blank", "docs"]) {
+      const link = anchor("https://example.com/");
+      link.setAttribute("target", target);
+      expect(decideAnchor(link, documentUrl, base), target).toEqual({ kind: "default" });
+    }
+    // The reader's own handlers, and files the page built. D34
+    expect(decideAnchor(anchor("mailto:a@b.c"), documentUrl, base)).toEqual({ kind: "new-tab", url: "mailto:a@b.c" });
+    expect(decideAnchor(anchor("tel:+48123"), documentUrl, base)).toEqual({ kind: "new-tab", url: "tel:+48123" });
+    const mail = anchor("mailto:a@b.c");
+    mail.setAttribute("target", "_blank");
+    expect(decideAnchor(mail, documentUrl, base)).toEqual({ kind: "default" });
+    const csv = anchor("blob:null/1234");
+    csv.setAttribute("download", "rows.csv");
+    expect(decideAnchor(csv, documentUrl, base)).toEqual({ kind: "default" });
+    const data = anchor("data:text/csv,a,b");
+    data.setAttribute("download", "rows.csv");
+    expect(decideAnchor(data, documentUrl, base)).toEqual({ kind: "default" });
+    expect(decideAnchor(anchor("data:text/html,<p>x"), documentUrl, base)).toEqual({ kind: "block" });
+    expect(decideAnchor(anchor("blob:null/1234"), documentUrl, base)).toEqual({ kind: "block" });
+    const shown = anchor("blob:null/1234");
+    shown.setAttribute("target", "_blank");
+    expect(decideAnchor(shown, documentUrl, base)).toEqual({ kind: "default" });
     expect(decideAnchor(anchor("javascript:alert(1)"), documentUrl, base)).toEqual({ kind: "block" });
-    expect(decideAnchor(anchor("mailto:a@b.c"), documentUrl, base)).toEqual({ kind: "block" });
   });
 
-  it("invokes navigation.openExternal on click", () => {
-    const { posted } = install(`<head></head><body><a id="ext" href="https://example.com/docs">Docs</a></body>`);
-    const link = document.getElementById("ext")!;
-    const event = new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
-    link.dispatchEvent(event);
-    expect(event.defaultPrevented).toBe(true);
-    const request = posted.messages.find((entry) => (entry as { method?: string }).method === "navigation.openExternal") as { params: unknown };
-    expect(request.params).toEqual({ url: "https://example.com/docs", label: "Docs" });
+  function click(element: Element, init: MouseEventInit = {}): MouseEvent {
+    const event = new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ...init });
+    element.dispatchEvent(event);
+    return event;
+  }
+
+  it("opens another site in a new tab on click, with no capability call and no dialog (D34)", () => {
+    const { posted } = install(`<head></head><body><a id="ext" href="https://example.com/docs">Docs</a><a id="blank" href="https://example.com/b" target="_blank">B</a></body>`);
+    const open = vi.fn(() => null);
+    window.open = open as never;
+    expect(click(document.getElementById("ext")!).defaultPrevented).toBe(true);
+    expect(open).toHaveBeenCalledWith("https://example.com/docs", "_blank", "noopener,noreferrer");
+    // A link that already opens a window is the browser's own; a modified click keeps its meaning.
+    expect(click(document.getElementById("blank")!).defaultPrevented).toBe(false);
+    expect(click(document.getElementById("ext")!, { metaKey: true }).defaultPrevented).toBe(false);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(posted.messages.some((entry) => (entry as { method?: string }).method === "navigation.openExternal")).toBe(false);
+  });
+
+  it("hands a link to one of the page's own files to the shell, with the download name (D33)", () => {
+    const { posted } = install(`<head><base href="https://bb.example/files/"></head><body><a id="open" href="clip.mp4">Open</a><a id="save" href="clip.mp4" download="Alua.mp4">Save</a></body>`);
+    expect(click(document.getElementById("open")!).defaultPrevented).toBe(true);
+    expect(click(document.getElementById("save")!).defaultPrevented).toBe(true);
+    expect(posted.messages).toContainEqual({ kind: "thread-page:open-file", path: "clip.mp4", download: false, name: null });
+    expect(posted.messages).toContainEqual({ kind: "thread-page:open-file", path: "clip.mp4", download: true, name: "Alua.mp4" });
+  });
+
+  it("opens navigation.openExternal natively during the reader's click, and asks the host otherwise (D34)", async () => {
+    const { posted, api } = install(`<head></head><body></body>`);
+    const open = vi.fn(() => null);
+    window.open = open as never;
+    const activation = { isActive: true, hasBeenActive: true };
+    Object.defineProperty(window.navigator, "userActivation", { value: activation, configurable: true });
+    await expect(api.invoke("navigation.openExternal", { url: "https://example.com/a", label: "A" })).resolves.toEqual({ opened: true });
+    expect(open).toHaveBeenCalledWith("https://example.com/a", "_blank", "noopener,noreferrer");
+    // Parameters the host would reject are the host's to reject, with its own error.
+    void api.invoke("navigation.openExternal", { url: "javascript:alert(1)" }).catch(() => undefined);
+    void api.invoke("navigation.openExternal", { url: "https://example.com/", extra: 1 }).catch(() => undefined);
+    activation.isActive = false;
+    void api.invoke("navigation.openExternal", { url: "https://example.com/b" }).catch(() => undefined);
+    expect(open).toHaveBeenCalledTimes(1);
+    const sent = posted.messages.filter((entry) => (entry as { method?: string }).method === "navigation.openExternal") as { params: unknown }[];
+    expect(sent.map((entry) => entry.params)).toEqual([{ url: "javascript:alert(1)" }, { url: "https://example.com/", extra: 1 }, { url: "https://example.com/b" }]);
   });
 
   it("asks the shell to open another document of the page on click", () => {

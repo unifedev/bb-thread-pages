@@ -22,6 +22,7 @@ const config: ShellConfig = {
   documentPath: "index.html",
   documentSessionUrl: "/document-session",
   navigable: true,
+  filesUrl: "/api/v1/threads/thr_a/thread-storage/files/",
   pollMs: 10_000,
   pollWorkingMs: 2_000,
   pollAfterAnswerMs: 60_000,

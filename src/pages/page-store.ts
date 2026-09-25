@@ -1,7 +1,7 @@
 import { documentKey } from "../domain/document-path.ts";
 import { PageError, PUBLIC_MESSAGES, errorText } from "../domain/errors.ts";
 import { isRevision } from "../domain/ids.ts";
-import { LIMITS } from "../domain/limits.ts";
+import { LIMITS, mebibytes } from "../domain/limits.ts";
 import { revisionOf } from "../domain/revision.ts";
 import type { SessionHost } from "../host/contract.ts";
 import type { ResolveOutcome } from "./inline.ts";
@@ -21,7 +21,12 @@ export interface LoadedPage {
   /** True when served from the offline copy. */
   readonly stale: boolean;
   /** Own files carried into the document, and those that could not be. */
-  readonly site: { readonly resolved: number; readonly skipped: readonly { path: string; reason: string }[] };
+  readonly site: {
+    readonly resolved: number;
+    readonly skipped: readonly { path: string; reason: string }[];
+    /** Own media too large to carry, which the shell fetches for the reader. D37 */
+    readonly deferred?: readonly { path: string; bytes: number }[];
+  };
 }
 
 interface CachedPage {
@@ -166,12 +171,16 @@ export function createPageStore(host: SessionHost, resolve?: PageResolver): Page
         try {
           const outcome = await resolve(session, authored, path);
           html = outcome.html;
-          site = { resolved: outcome.resolved.length, skipped: outcome.skipped };
+          site = { resolved: outcome.resolved.length, skipped: outcome.skipped, ...(outcome.deferred ? { deferred: outcome.deferred } : {}) };
           // Once per change, not once per poll: the shell asks every two seconds while a session works.
-          const report = outcome.skipped.map((file) => `${file.path} (${file.reason})`).join(", ");
+          const deferred = outcome.deferred ?? [];
+          const report = [...outcome.skipped.map((file) => `${file.path} (${file.reason})`), ...deferred.map((file) => `${file.path} (deferred)`)].join(", ");
           if (report !== (reported.get(key) ?? "")) {
             for (const file of outcome.skipped) {
               host.log.warn(`page ${key}: ${file.path} is referenced but was not carried into the document (${file.reason})`);
+            }
+            for (const file of deferred) {
+              host.log.info(`page ${key}: ${file.path} (${mebibytes(file.bytes)}) is too large to carry; the shell fetches it for the reader (large media, D37)`);
             }
             reported.delete(key);
             if (report) reported.set(key, report);

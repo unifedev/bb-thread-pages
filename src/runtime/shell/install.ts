@@ -4,6 +4,7 @@ import { createChromeActions } from "./actions.ts";
 import { createConfirmer } from "./confirm.ts";
 import { createGrantsChrome, type GrantElements, type GrantsChrome } from "./grants.ts";
 import { createNavigator } from "./navigate.ts";
+import { createOwnFiles } from "./own-files.ts";
 import { createPoller, type Poller } from "./poll.ts";
 import { createRelay } from "./relay.ts";
 
@@ -108,6 +109,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       scroll = { x, y };
     },
     onGranted: (grant) => grantsChrome?.add(grant),
+    ownFiles: createOwnFiles(win, config, request),
     ...(fetchImpl ? { fetchImpl } : {}),
   });
   const homeLink = win.document.querySelector<HTMLAnchorElement>("a.home");

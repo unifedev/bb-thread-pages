@@ -1,4 +1,5 @@
 import { escapeHtml } from "../domain/html/escape.ts";
+import { PAGE_FRAME_ALLOW, PAGE_SANDBOX } from "../domain/sandbox.ts";
 import { SHELL_RUNTIME } from "../generated/shell-runtime.ts";
 import { EMPTY_PAGE_STATUS, type ShellConfig } from "../runtime/shared/protocol.ts";
 
@@ -93,7 +94,7 @@ export function renderShell(view: ShellView): string {
     ${acts}
     <button type="button" class="reload" data-shell-reload aria-label="Reload updated page">Reload</button>
   </header>
-  <div class="stage"><iframe title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe></div>
+  <div class="stage"><iframe title="${title}" sandbox="${PAGE_SANDBOX}" allow="${PAGE_FRAME_ALLOW}" referrerpolicy="no-referrer"></iframe></div>
 </div>
 <dialog aria-labelledby="tp-confirm-title">
   <form method="dialog">
