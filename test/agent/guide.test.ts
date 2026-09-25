@@ -39,9 +39,13 @@ describe("the authoring guide", () => {
     expect(uploads).toContain("Transcript missing");
     expect(uploads).toContain(`up to ${LIMITS.voiceDefaultSeconds} s`);
     const voice = section(coreGuide, "## Voice", "## Capabilities\n");
-    expect(voice).toContain("**it is the confirmation**");
-    expect(voice).toContain("5 MB of audio with its default transcription");
-    expect(voice).toContain("25 MB with OpenAI; each attempt 10 s, 2 attempts");
+    expect(voice).toMatch(/\*\*it is the\s+confirmation\*\*/);
+    expect(voice).toContain("20 MB of audio with its default transcription");
+    expect(voice).toContain("25 MB with OpenAI; each attempt 10 s,\n  2 attempts");
+    expect(voice).toContain("bottom centre of the page area");
+    expect(voice).toMatch(/never re-ask by yourself after `cancelled`/);
+    expect(coreGuide).not.toContain("top bar's recording bar");
+    expect(coreGuide).toContain("no HEIC or HEIF");
     expect(voice).toContain(`from 1 to ${LIMITS.voiceMaxSeconds}, default ${LIMITS.voiceDefaultSeconds}`);
     expect(voice).toContain(`at most\n  ${LIMITS.voicePromptChars} characters`);
     expect(voice).toContain("`cancelled`: Cancel, Escape, or Done before 1 s");

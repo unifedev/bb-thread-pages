@@ -131,7 +131,7 @@ corner, drawn by the host in the field's own text colour: **Dictate** (a
 microphone) and **Attach files** (a paperclip). They live in a layer of the
 host's outside your document tree — your CSS does not reach them, the field's
 markup, attributes and style are untouched, nothing moves, and they are reached
-by Tab right after the field. Dictate records the reader in the top bar's
+by Tab right after the field. Dictate records the reader in the host's
 recording bar and inserts the host's transcript at the caret, then fires
 \`input\` and \`change\`. Attach — or pasting or dropping files onto the field —
 lists the files under the field; they are uploaded with the form, and the answer
@@ -144,7 +144,10 @@ sends; Dictate is absent where the reader cannot record (see *Voice*). Put
 \`data-thread-page-manual\` on a <textarea> to give it no controls — its answer is
 still sent with its form — or on the form to leave the whole form alone. Do
 that for an editor built on a hidden-looking <textarea> (some code editors keep
-a small one at the caret) and when you build your own voice button.`;
+a small one at the caret) and when you build your own voice button. A text area
+inside your own shadow DOM gets no controls, \`form.reset()\` does not clear the
+attached files, and a paste or drop your own handler already took
+(\`preventDefault\`) attaches nothing.`;
 
 const uploads = () => `## Files the reader sends you
 
@@ -164,7 +167,7 @@ and no submission claims the missing file.
 **A recorded answer.** \`<input type="file" accept="audio/*" capture>\` in a
 captured form is answered by the reader's voice, with no code: on a phone
 (a coarse pointer) the browser's own recorder answers it; elsewhere a click on
-it opens the top bar's recording bar (up to ${LIMITS.voiceDefaultSeconds} s), and the recording becomes
+it opens the host's recording bar (up to ${LIMITS.voiceDefaultSeconds} s), and the recording becomes
 the input's file. Where voice is not available — see *Voice* — it stays a plain
 file picker. On submit the recording is uploaded like any file and transcribed
 by the host, and the transcript arrives beside its path:
@@ -477,15 +480,20 @@ recorder with no code (above).
       catch (e) { if (e.code !== "cancelled") say(e.message); }
     };
 
-- Only the top bar records, never your page: its recording bar shows a live
-  waveform, Cancel and Done, and **it is the confirmation** — there is no
-  dialog, and nothing leaves the reader's device until they press Done. The
+- Only the host records, never your page: its recording bar — the host's own
+  chrome, floating at the bottom centre of the page area, where your page
+  cannot draw — shows a live waveform, Cancel and Done, and **it is the
+  confirmation**: there is no dialog, and nothing leaves the reader's device
+  until they press Done. Escape cancels it, in your page too. The
   recording goes only to the host's transcriber; your page gets the text, and
   the recording as a \`Blob\` only with \`keepAudio: true\`.
 - The bar opens **only from the reader's action** in your page — call it from a
   click or key handler, never on load or from a timer — and one at a time: a
   call without the action, or while another bar or confirmation is open, is
-  \`unavailable\`.
+  \`unavailable\`. A press in the host's own chrome (the top bar, a dialog, the
+  bar's Cancel or Done) is not the reader acting in your page: for about 5 s
+  after one, and 2 s after a bar or dialog closes, the bar does not open —
+  never re-ask by yourself after \`cancelled\`.
 - \`cancelled\`: Cancel, Escape, or Done before ${LIMITS.voiceMinMs / 1000} s (the bar says *Too short*).
   \`request_too_large\`: over the host's size limit. \`unavailable\`, with the
   reason: no transcription service on this host, a browser or app that cannot
@@ -496,8 +504,9 @@ recorder with no code (above).
   input use ${LIMITS.voiceDefaultSeconds}); at the cap recording stops and the bar waits for Done.
   \`prompt\` — context such as names, terms, what came before — at most
   ${LIMITS.voicePromptChars} characters; \`language\` a tag such as \`de\`, a hint.
-- The host's own limits, on bb: 5 MB of audio with its default transcription
-  service, 25 MB with OpenAI; each attempt 10 s, 2 attempts. There is no
+- The host's own limits, on bb: 20 MB of audio with its default transcription
+  service (5 MB before bb a67f21bab), 25 MB with OpenAI; each attempt 10 s,
+  2 attempts. There is no
   streaming: the text comes once, after Done. A long recording is slow to
   transcribe and may time out — prefer short turns.
 - \`context.get\` lists the method wherever the host implements it, even when
@@ -639,7 +648,9 @@ reader confirms, and each file becomes a native attachment of the prompt in the
 target project (the start's \`projectId\`, or the project of the session a send
 goes to), so the model sees an image as an image, exactly as when the reader
 attaches it in bb. At most ${LIMITS.promptFiles} files of ${mebibytes(LIMITS.promptFileBytes)} each, else \`request_too_large\` before
-any dialog. If an upload fails nothing is started or sent and the call rejects
+any dialog; bb itself attaches images of at most 10 MB and no HEIC or HEIF
+images, which are refused before the dialog too (\`request_too_large\`,
+\`invalid_params\`). If an upload fails nothing is started or sent and the call rejects
 naming the file (\`request_too_large\` when the host refused it for its size,
 \`handler_error\` otherwise). A host that cannot attach files answers
 \`unavailable\` rather than starting without them. This works from the built-in
@@ -864,9 +875,9 @@ const limits = () => `## Limits
 | Upload per file | ${mebibytes(LIMITS.uploadFileBytes)} |
 | Uploads per form | ${LIMITS.uploadsPerForm}, file inputs and text-area attachments together; a form over it is not sent |
 | Voice recording | ${LIMITS.voiceMinMs / 1000} s at least; \`maxDurationSeconds\` 1–${LIMITS.voiceMaxSeconds}, default ${LIMITS.voiceDefaultSeconds} (also Dictate and the audio input); context ${LIMITS.voicePromptChars} characters |
-| Transcription (the host's, on bb) | 5 MB with the default service, 25 MB with OpenAI; 10 s per attempt, 2 attempts |
-| Transcript beside a recorded file | ${LIMITS.transcriptChars} characters |
-| Files with sessions.start / sessions.send | ${LIMITS.promptFiles} per call, ${mebibytes(LIMITS.promptFileBytes)} each |
+| Transcription (the host's, on bb) | 20 MB with the default service (5 MB before bb a67f21bab), 25 MB with OpenAI; 10 s per attempt, 2 attempts |
+| Transcript beside a longer recording | cut at ${LIMITS.transcriptChars} characters and marked *(transcript shortened)* |
+| Files with sessions.start / sessions.send | ${LIMITS.promptFiles} per call, ${mebibytes(LIMITS.promptFileBytes)} each; on bb images at most 10 MB, no HEIC/HEIF |
 | Submission body | ${kibibytes(LIMITS.submissionBodyBytes)} excluding uploaded bytes; ${LIMITS.answersPerSubmission} answers; ${LIMITS.answerValueChars} characters per answer |
 | Capability payload | ${kibibytes(LIMITS.capabilityPayloadBytes)} request and response, depth ${LIMITS.capabilityJsonDepth}, ${LIMITS.capabilityJsonNodes} nodes |
 | Contributed capability payload | as each method declares in the roster, at most ${mebibytes(LIMITS.contributedPayloadMaxBytes)}; ${kibibytes(LIMITS.capabilityPayloadBytes)} when it declares none |

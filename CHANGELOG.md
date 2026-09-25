@@ -12,8 +12,8 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
   itself (`microphone=(self)`); every page document keeps `microphone=()`, and
   neither the page frame nor an embed frame is given it. The page never holds
   the device.
-- A recording bar in the top bar's own chrome — live waveform, Cancel, Done —
-  is the consent: nothing leaves the reader's device until Done, Escape and
+- A recording bar in the shell's own chrome, floating at the bottom centre of
+  the page area — live waveform, Cancel, Done — is the consent: nothing leaves the reader's device until Done, Escape and
   Cancel discard, and a Done under 1 s says *Too short* and sends nothing. It
   opens only while the shell's own document has the reader's activation from a
   gesture in the page, one at a time, and it counts as a question beside the
@@ -82,11 +82,27 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
 
 ### Also
 
-- Confirmation summaries may be 1024 characters and list files one per line;
-  signed tokens may be 8 KiB.
+- Confirmation summaries may be 1024 characters and list every file whole, one
+  per line (names sanitised and shortened in the middle, keeping the
+  extension); the rest of the summary shortens to fit. Signed tokens may be
+  8 KiB.
+- An approved call's first upload opens a 30-minute upload grant, so a slow
+  connection can finish after the 2-minute challenge; the grant is used once
+  (a replayed challenge stores and starts nothing), and every path that leaves
+  stored attachments unused — a failed upload, a failed call, a mismatch, a
+  file stored twice, an expired grant — removes them where the host can and
+  logs each by project and path where it cannot (bb), and the reader is told.
+- bb's own attachment rules — images at most 10 MB, no HEIC/HEIF — are
+  checked before the dialog, and bb's own refusal message reaches the page.
+- A transcript longer than 16,000 characters is shortened and marked
+  *(transcript shortened)* instead of failing the answer; only audio files are
+  ever sent to the transcriber.
+- Text areas: `:disabled` (a disabled fieldset) and `inert` count as disabled;
+  the layer's observers start only once a text area exists; paste and drop the
+  page handled itself are left alone. `files: undefined` is no files.
 - The guide documents text areas, voice, the recorded answer and `files`, with
   their limits; the standing instruction is unchanged.
-- `test/browser/voice.mjs`: 42 checks, passing in Chromium, Firefox and WebKit.
+- `test/browser/voice.mjs`: 46 checks, passing in Chromium, Firefox and WebKit.
 
 ## 1.6.0 — 2026-09-25 — links, popups, own files, full screen, other sites, large media
 
