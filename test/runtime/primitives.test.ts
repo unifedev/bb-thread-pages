@@ -38,6 +38,38 @@ describe("the kernel's primitives", () => {
     channel.port2.close();
   });
 
+  it("raise what the original raises, and never retry through the page's method (the TypeError path)", () => {
+    const prim = capturePrimitives(globalThis as unknown as Window & typeof globalThis);
+    const handed: unknown[] = [];
+    MessagePort.prototype.postMessage = function (this: MessagePort) {
+      handed.push(this);
+    };
+    const channel = new MessageChannel();
+    // A value the structured clone refuses: the original throws, as with a page's throwing getter.
+    expect(() => prim.post(channel.port1, { run: () => undefined })).toThrow();
+    expect(handed).toHaveLength(0);
+    channel.port1.close();
+    channel.port2.close();
+  });
+
+  it("read a message event's ports with the original getter, whatever the page patched", () => {
+    const prim = capturePrimitives(globalThis as unknown as Window & typeof globalThis);
+    const channel = new MessageChannel();
+    const event = new MessageEvent("message", { data: { kind: "x" }, ports: [channel.port2] });
+    const getter = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "ports")!;
+    const seen: unknown[] = [];
+    Object.defineProperty(MessageEvent.prototype, "ports", { configurable: true, get() { seen.push(this); return []; } });
+    try {
+      expect(prim.ports(event)).toEqual([channel.port2]);
+      expect(prim.data(event)).toEqual({ kind: "x" });
+      expect(seen).toHaveLength(0);
+    } finally {
+      Object.defineProperty(MessageEvent.prototype, "ports", getter);
+      channel.port1.close();
+      channel.port2.close();
+    }
+  });
+
   it("add listeners with the original addEventListener, so a patched one never sees the handler", () => {
     const prim = capturePrimitives(globalThis as unknown as Window & typeof globalThis);
     const seen: unknown[] = [];

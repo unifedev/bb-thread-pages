@@ -7,7 +7,7 @@ import { createEmbedManager, EMBEDDED_FILES_REFUSAL } from "./embed.ts";
 import { installAudioInputs } from "./audio-input.ts";
 import { buildIntent, fileLimitProblem, formsReachedFrom, isManualForm, lockForm, ownerForm, prepareForm, statusLine, unlockForm, type PendingForm } from "./forms.ts";
 import { createLargeMedia } from "./large-media.ts";
-import { capturePrimitives } from "./primitives.ts";
+import { capturePrimitives, type KernelPrimitives } from "./primitives.ts";
 import { createReadOnlyController } from "./readonly.ts";
 import { createRecordClient } from "./record-client.ts";
 import { createTextAreaControls } from "./textareas.ts";
@@ -25,9 +25,10 @@ export interface KernelHandle {
   connect(port: Pick<MessagePort, "postMessage"> & Partial<Pick<MessagePort, "start" | "onmessage">>): void;
 }
 
-export function installKernel(win: Window & typeof globalThis, config: KernelConfig): KernelHandle {
+export function installKernel(win: Window & typeof globalThis, config: KernelConfig, options: { primitives?: KernelPrimitives } = {}): KernelHandle {
   // Taken before any page script runs: the port is reached only through these. See primitives.ts.
-  const prim = capturePrimitives(win);
+  // Tests may hand in stand-ins, since jsdom makes no trusted event.
+  const prim = options.primitives ?? capturePrimitives(win);
   const parentWindow = win.parent;
   const doc = win.document;
   let port: MessagePort | null = null;
@@ -246,16 +247,25 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     largeMedia.flush();
   }
 
+  /**
+   * The shell's handshake: a real message (trusted — a page's own dispatch of
+   * a MessageEvent is not) from the parent window, carrying one port. The
+   * kernel's listener runs before any of the page's, and stops every genuine
+   * connect from reaching them, the first and any later one, so no page
+   * listener ever sees the shell's port. Only the first is adopted.
+   */
   function acceptPort(event: MessageEvent): void {
-    if (port || prim.source(event) !== parentWindow) return;
+    if (!prim.trusted(event) || prim.source(event) !== parentWindow) return;
     const data = prim.data(event);
-    const ports = prim.ports(event);
-    if (!isRecord(data) || data.kind !== "thread-page:connect" || data.version !== HANDSHAKE_VERSION || !ports || ports.length !== 1) return;
+    if (!isRecord(data) || data.kind !== "thread-page:connect") return;
     prim.stop(event);
+    if (port || data.version !== HANDSHAKE_VERSION) return;
+    const ports = prim.ports(event);
+    if (!ports || ports.length !== 1) return;
     const next = ports[0];
     if (next) connect(next);
   }
-  win.addEventListener("message", acceptPort, true);
+  prim.on(win, "message", acceptPort as (event: Event) => void, true);
 
   if (config.stale) readOnly.apply(true);
   // The revision lets the shell notice a document newer than the token it holds for it.

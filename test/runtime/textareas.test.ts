@@ -2,7 +2,8 @@ import { JSDOM } from "jsdom";
 import { describe, expect, it, vi } from "vitest";
 import { createEmbedManager } from "../../src/runtime/kernel/embed.ts";
 import { installKernel, type KernelHandle } from "../../src/runtime/kernel/install.ts";
-import { chipName, LAYER_TAG } from "../../src/runtime/kernel/textareas.ts";
+import { capturePrimitives } from "../../src/runtime/kernel/primitives.ts";
+import { chipName, LAYER_ATTRIBUTE } from "../../src/runtime/kernel/textareas.ts";
 
 /**
  * Every text area can take voice and files, the audio capture input, and
@@ -22,7 +23,7 @@ interface Fixture {
   frame(): Promise<void>;
 }
 
-function install(body: string, options: { uploads?: boolean; embedded?: boolean; voice?: boolean } = {}): Fixture {
+function install(body: string, options: { uploads?: boolean; embedded?: boolean; voice?: boolean; trusted?: boolean } = {}): Fixture {
   const dom = new JSDOM(`<!doctype html><html><head><style>button,svg,*{display:none !important;color:red !important}</style></head><body>${body}</body></html>`, {
     url: "https://bb.example/api/v1/plugins/thread-pages/http/document?session=thr_a",
     pretendToBeVisual: true,
@@ -43,7 +44,18 @@ function install(body: string, options: { uploads?: boolean; embedded?: boolean;
   Object.defineProperty(win.HTMLElement.prototype, "getClientRects", { configurable: true, value: function (this: HTMLElement) { return this.hidden ? [] : [rect]; } });
   for (const [name, value] of [["clientWidth", 398], ["clientHeight", 118], ["clientLeft", 1], ["clientTop", 1]] as const) Object.defineProperty(proto, name, { configurable: true, get: () => value });
   const posted: Record<string, unknown>[] = [];
-  const handle = installKernel(win, { pageRevision: REV, stale: false, ...(options.uploads === false ? { uploads: false } : {}), ...(options.embedded ? { embedded: true } : {}) });
+  // Stand-in primitives: jsdom makes no trusted event, and its file inputs and boxes are stubbed per test.
+  const real = capturePrimitives(win);
+  const primitives = {
+    ...real,
+    trusted: (event: unknown) => (options.trusted === true ? typeof event === "object" && event !== null : real.trusted(event)),
+    dom: {
+      ...real.dom,
+      files: (input: HTMLInputElement) => Array.from(input.files ?? []),
+      rect: (element: Element) => element.getBoundingClientRect(),
+    },
+  };
+  const handle = installKernel(win, { pageRevision: REV, stale: false, ...(options.uploads === false ? { uploads: false } : {}), ...(options.embedded ? { embedded: true } : {}) }, { primitives });
   handle.connect({ postMessage: (message: unknown) => posted.push(message as Record<string, unknown>), start() {} });
   if (options.voice !== false) handle.deliver({ kind: "thread-page:voice", available: true });
   const frame = () => new Promise<void>((resolve) => win.requestAnimationFrame(() => setTimeout(resolve, 0)));
@@ -84,7 +96,9 @@ describe("the text-area controls (R4.55–R4.57, A126, A127, A130a)", () => {
     const before = field.outerHTML;
     await fixture.frame();
     const host = fixture.doc.documentElement.lastElementChild!;
-    expect(host.tagName.toLowerCase()).toBe(LAYER_TAG);
+    // A plain <div>, which no page can define as a custom element to reach its closed root.
+    expect(host.tagName.toLowerCase()).toBe("div");
+    expect(host.hasAttribute(LAYER_ATTRIBUTE)).toBe(true);
     // At the document's origin, so rows in document coordinates scroll with the page on their own.
     expect(host.getAttribute("style")).toContain("position:absolute !important");
     expect(host.getAttribute("style")).toContain("z-index:2147483647 !important");
@@ -145,7 +159,8 @@ describe("the text-area controls (R4.55–R4.57, A126, A127, A130a)", () => {
   });
 
   it("come right after their field with Tab, and Shift+Tab returns (R4.56)", async () => {
-    const fixture = install(`<form><textarea name="notes"></textarea><button id="next">Send</button></form>`);
+    // The reader's keys (stand-in: every event counts as trusted here).
+    const fixture = install(`<form><textarea name="notes"></textarea><button id="next">Send</button></form>`, { trusted: true });
     await fixture.frame();
     const field = fixture.doc.querySelector("textarea")!;
     const { dictate, attach } = controlsFor(fixture);
@@ -385,6 +400,16 @@ describe("dictation inside an embed (R4.51a, A131)", () => {
 });
 
 describe("after review", () => {
+  it("ignore a script's Tab: focus never moves onto Dictate under a real Enter", async () => {
+    const fixture = install(`<form><textarea name="notes"></textarea><button id="next">Send</button></form>`);
+    await fixture.frame();
+    const field = fixture.doc.querySelector("textarea")!;
+    field.focus();
+    field.dispatchEvent(new fixture.win.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    expect(fixture.roots[0]!.activeElement).toBeNull();
+    expect(fixture.doc.activeElement).toBe(field);
+  });
+
   it("give nothing to a field disabled by its fieldset or made inert", async () => {
     const fixture = install(`<form><fieldset disabled><textarea name="a"></textarea></fieldset><div inert><textarea name="b"></textarea></div><textarea name="c"></textarea></form>`);
     await fixture.frame();

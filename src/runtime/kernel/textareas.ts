@@ -1,26 +1,31 @@
 import { LIMITS, mebibytes } from "../../domain/limits.ts";
 import type { SubmitFile } from "../shared/protocol.ts";
 import { controlsOf, filesOf, isManualForm, MANUAL_ATTRIBUTE, ownerForm } from "./forms.ts";
-import type { KernelPrimitives } from "./primitives.ts";
+import type { KernelPrimitives, LayerDom } from "./primitives.ts";
 import type { RecordAnswer } from "./record-client.ts";
 
 /**
  * Every text area can take voice and files. spec R4.55–R4.62, DECISIONS D39
  *
  * The agent writes a plain `<textarea>`; the kernel draws one row over its
- * bottom-right corner, inside the field's box: the files the reader attached,
- * then Dictate and Attach files. None of it touches the field or the page's
- * CSS: everything lives in one shadow root whose host element is the last
- * child of `<html>`, fixed by inline `!important` declarations, so page rules
- * on `*`, `button` or `body …` cannot move, hide or restyle it, and it takes no
+ * bottom corner (the right one, the left one in right-to-left text), inside
+ * the field's box: the files the reader attached, then Dictate and Attach
+ * files. None of it touches the field or the page's CSS: everything lives in
+ * one closed shadow root whose host — a plain `<div>`, which no page can
+ * define as a custom element to reach its root — is the last child of
+ * `<html>`, fixed by inline `!important` declarations, so page rules on `*`,
+ * `button`, `div` or `body …` cannot move, hide or restyle it, and it takes no
  * layout space. Nothing is drawn below the field, where the page may put its
- * own content.
+ * own content. The layer's nodes are created and changed only through the
+ * functions the kernel took when it started (primitives.ts).
  *
  * The host sits at the document's origin (`position: absolute`), and each row
- * is placed in document coordinates, so scrolling the page moves the controls
- * with the field on the compositor and no script runs per scroll. A field
- * inside a scrolling element, or with a sticky ancestor, is followed on its
- * scroll events; one under a fixed ancestor gets a fixed row.
+ * is placed in document coordinates, so scrolling the page moves it with the
+ * field on the compositor and no script runs per scroll. A field under a fixed
+ * ancestor, or a sticky one stuck to the viewport, gets a fixed row. A field in
+ * a scrolling element — the body included, when it is the page's scroller — is
+ * placed again on that element's scroll events, and its row is hidden while
+ * that element scrolls, so it never trails behind the field.
  *
  * These controls are page territory: page script can cover or imitate them
  * (R3.33). Dictate only asks the shell for its recording bar, whose Done is
@@ -34,7 +39,7 @@ export interface TextAreaDeps {
   isReadOnly(): boolean;
   /**
    * Opens the shell's recording bar; resolves with the transcript.
-   * `fromControl`: the reader's own press on the kernel's Dictate control. spec R3.32a
+   * `fromControl`: the reader's own press on the kernel's Dictate control, plainly visible. spec R3.32a
    */
   dictate(prompt: string, fromControl: boolean): Promise<RecordAnswer>;
   /** The platform functions taken when the kernel started. */
@@ -53,7 +58,8 @@ export interface TextAreaControls {
   update(): void;
 }
 
-export const LAYER_TAG = "thread-page-controls";
+/** Marks the layer's host, a plain `<div>`, the last child of `<html>`. */
+export const LAYER_ATTRIBUTE = "data-thread-page-layer";
 const BUTTON = 24;
 const GAP = 2;
 const INSET = 3;
@@ -63,6 +69,10 @@ const NOTE_MS = 8_000;
 const ROW_GAP = 3;
 /** A chip's name is shortened to this, in the middle, keeping its extension. */
 const CHIP_NAME = 18;
+/** Below this much room beside the controls, the files are named only by their count. */
+const NARROW = 56;
+/** A row hidden while its scrolling element scrolls comes back this long after the last scroll. */
+const SETTLE_MS = 120;
 
 /**
  * The layer's host: at the document's origin, out of flow, above the page —
@@ -96,7 +106,8 @@ const LAYER_CSS = `
 :host{all:initial !important;display:block !important;position:absolute !important;top:0 !important;left:0 !important;width:0 !important;height:0 !important;overflow:visible !important;pointer-events:none !important;z-index:2147483647 !important}
 *{box-sizing:border-box}
 [hidden]{display:none !important}
-.group{position:absolute;display:flex;align-items:center;justify-content:flex-end;gap:${ROW_GAP}px;margin:0;padding:0;transform:translateX(-100%);pointer-events:none;font:11px/1 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink)}
+.group{position:absolute;display:flex;align-items:center;justify-content:flex-end;gap:${ROW_GAP}px;margin:0;padding:0;transform:translateX(-100%);pointer-events:none;font:11px/1 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);color-scheme:var(--scheme,normal)}
+.group.rtl{direction:rtl;transform:none}
 .group>*{pointer-events:auto}
 .chips{order:-2;display:flex;align-items:center;justify-content:flex-end;gap:${ROW_GAP}px;min-width:0;overflow:hidden;pointer-events:auto}
 button{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;width:${BUTTON}px;height:${BUTTON}px;border-radius:5px;border:1px solid transparent;color:var(--ink);opacity:.55;cursor:pointer;background:transparent}
@@ -105,14 +116,17 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
 button[aria-busy=true]{opacity:1;cursor:progress}
 svg{display:block;width:16px;height:16px;pointer-events:none}
 .chip{display:inline-flex;align-items:center;gap:3px;flex:none;height:22px;padding:0 1px 0 5px;border:1px solid var(--edge);border-radius:6px;background:var(--paper);color:var(--ink);white-space:nowrap}
+.rtl .chip{padding:0 5px 0 1px}
 .chip .name{opacity:.8}
 .chip svg{width:12px;height:12px}
 .chip>svg{opacity:.55}
 .chip button{width:18px;height:18px;border-radius:4px}
-button.more{order:-1;width:auto;height:22px;padding:0 6px;border:1px solid var(--edge);border-radius:6px;background:var(--paper);font:inherit;opacity:.8}
-.popup{position:absolute;right:0;bottom:calc(100% + 4px);display:flex;flex-direction:column;gap:2px;min-width:180px;max-width:320px;max-height:200px;overflow:auto;padding:4px;border:1px solid var(--edge);border-radius:8px;background:var(--paper);box-shadow:0 4px 14px rgba(0,0,0,.18)}
+button.more{order:-1;width:auto;height:22px;padding:0 6px;border:1px solid var(--edge);border-radius:6px;background:var(--paper);font:inherit;opacity:.8;white-space:nowrap}
+.stack{position:absolute;right:0;bottom:calc(100% + 4px);display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.rtl .stack{right:auto;left:0;align-items:flex-start}
+.popup{display:flex;flex-direction:column;gap:2px;min-width:180px;max-width:320px;max-height:200px;overflow:auto;padding:4px;border:1px solid var(--edge);border-radius:8px;background:var(--paper);box-shadow:0 4px 14px rgba(0,0,0,.18)}
 .popup .chip{border:0;justify-content:space-between;height:24px}
-.note{position:absolute;right:0;bottom:calc(100% + 4px);max-width:320px;padding:4px 8px;border:1px dashed var(--edge);border-radius:6px;background:var(--paper);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.note{max-width:320px;padding:4px 8px;border:1px dashed var(--edge);border-radius:6px;background:var(--paper);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 `;
 
 const ICON = (path: string) =>
@@ -140,9 +154,17 @@ interface Entry {
   open: boolean;
   /** What the chips show, so they are rebuilt only when that changes. */
   drawn: string;
-  /** How the row follows the field: with the document, fixed to the viewport, or on every scroll. */
+  /** How the row follows the field: with the document, or fixed to the viewport. */
   mode: "document" | "fixed";
+  /** Placed again on scroll events: in a scrolling element, or sticky. */
   follows: boolean;
+  /** The scrolling elements the field sits in; while one scrolls, the row is hidden. */
+  scrollers: Element[];
+  /** Hidden until then, because its scrolling element is scrolling. */
+  settling: number;
+  rtl: boolean;
+  /** Whether the row shows; kept here so no accessor of the node is read on every update. */
+  shown: boolean;
 }
 
 /** A file name as a chip shows it: shortened in the middle, keeping its extension. */
@@ -163,11 +185,17 @@ function sizeLabel(bytes: number): string {
   return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
 }
 
-/** `rgb(r, g, b)` / `rgba(…)` as the field computes its colour, with another alpha. */
-function withAlpha(color: string, alpha: number): string {
+/** The channels of `rgb(…)` / `rgba(…)` as computed, and its alpha. */
+function channels(color: string): { rgb: string; alpha: number } | null {
   const parts = color.match(/[\d.]+/g);
-  if (!parts || parts.length < 3) return `rgba(128,128,128,${alpha})`;
-  return `rgba(${parts[0]},${parts[1]},${parts[2]},${alpha})`;
+  if (!parts || parts.length < 3) return null;
+  return { rgb: `${parts[0]},${parts[1]},${parts[2]}`, alpha: parts.length >= 4 ? Number(parts[3]) : 1 };
+}
+
+/** The field's colour with another alpha. */
+function withAlpha(color: string, alpha: number): string {
+  const found = channels(color);
+  return found ? `rgba(${found.rgb},${alpha})` : `rgba(128,128,128,${alpha})`;
 }
 
 function isTextArea(element: unknown): element is HTMLTextAreaElement {
@@ -208,6 +236,7 @@ const TABBABLE = "a[href],area[href],button,input,select,textarea,iframe,summary
 export function createTextAreaControls(win: Window & typeof globalThis, deps: TextAreaDeps): TextAreaControls {
   const doc = win.document;
   const prim = deps.primitives;
+  const dom: LayerDom = prim.dom;
   const entries = new Map<HTMLTextAreaElement, Entry>();
   const touched = new WeakSet<HTMLTextAreaElement>();
   let voice = false;
@@ -221,17 +250,19 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
   function layer(): ShadowRoot | null {
     if (root) {
       // The host stays the last child of <html>, outside <body>. spec R4.57
-      if (host && doc.documentElement && (host.parentNode !== doc.documentElement || doc.documentElement.lastElementChild !== host)) doc.documentElement.appendChild(host);
+      if (host && doc.documentElement && dom.lastChild(doc.documentElement) !== host) dom.append(doc.documentElement, host);
       return root;
     }
-    if (!doc.documentElement || typeof (doc.documentElement as Element & { attachShadow?: unknown }).attachShadow !== "function") return null;
-    host = doc.createElement(LAYER_TAG);
-    host.setAttribute("style", HOST_STYLE);
-    root = prim.attachShadow(host, { mode: "closed" });
-    const style = doc.createElement("style");
-    style.textContent = LAYER_CSS;
-    root.appendChild(style);
-    doc.documentElement.appendChild(host);
+    if (!doc.documentElement) return null;
+    // A plain <div>: an autonomous custom element's internals would expose a closed root.
+    host = dom.create("div");
+    dom.setAttribute(host, "style", HOST_STYLE);
+    dom.setAttribute(host, LAYER_ATTRIBUTE, "");
+    root = dom.attachShadow(host, { mode: "closed" });
+    const style = dom.create("style");
+    dom.setText(style, LAYER_CSS);
+    dom.append(root, style);
+    dom.append(doc.documentElement, host);
     return root;
   }
 
@@ -281,7 +312,32 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     update();
     // The keyboard stays with the files, or returns to the field.
     const next = controls(entry).find((button) => button !== entry.dictate && button !== entry.attach);
-    (next ?? entry.field).focus?.();
+    if (next) dom.focus(next);
+    else entry.field.focus?.();
+  }
+
+  /**
+   * Whether the row is plainly there to be seen, so a press on Dictate is the
+   * reader's choice and not a click the page slid under something: no page
+   * element in the top layer, nothing after the layer, the document itself
+   * neither faded, filtered, clipped nor hidden, and the field — whose colour
+   * the icons take — visible and not transparent. spec R3.32a, R3.33
+   */
+  function plainlyVisible(entry: Entry): boolean {
+    const html = doc.documentElement;
+    if (!html || !host || dom.lastChild(html) !== host) return false;
+    for (const selector of [":popover-open", ":modal"]) {
+      try {
+        if (dom.query(doc, selector)) return false;
+      } catch {
+        // An engine without the selector has no such top layer.
+      }
+    }
+    const page = dom.computed(html);
+    if (page.opacity !== "1" || page.filter !== "none" || page.visibility !== "visible" || (page.clipPath && page.clipPath !== "none") || (page.mixBlendMode && page.mixBlendMode !== "normal")) return false;
+    if (dom.checkVisibility(entry.field, { opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true }) === false) return false;
+    const ink = channels(dom.computed(entry.field).color);
+    return ink !== null && ink.alpha >= 0.35;
   }
 
   async function dictate(entry: Entry, fromControl: boolean): Promise<void> {
@@ -292,13 +348,13 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     const start = touched.has(field) ? Math.min(field.selectionStart ?? value.length, value.length) : value.length;
     const end = touched.has(field) ? Math.min(Math.max(field.selectionEnd ?? start, start), value.length) : start;
     entry.busy = true;
-    entry.dictate.setAttribute("aria-busy", "true");
+    dom.setAttribute(entry.dictate, "aria-busy", "true");
     let answer: RecordAnswer;
     try {
       answer = await deps.dictate(value.slice(0, start).slice(-LIMITS.voicePromptChars), fromControl);
     } finally {
       entry.busy = false;
-      entry.dictate.removeAttribute("aria-busy");
+      dom.removeAttribute(entry.dictate, "aria-busy");
     }
     if (!answer.ok) {
       // Cancel and a too-short recording leave the field as it was; a failure is said. spec R4.58
@@ -339,72 +395,103 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     field.dispatchEvent(new win.Event("change", { bubbles: true }));
   }
 
+  function element<T extends HTMLElement>(tag: string, className = ""): T {
+    const node = dom.create(tag) as T;
+    if (className) dom.setClass(node, className);
+    return node;
+  }
+
   function button(label: string, icon: string, className = ""): HTMLButtonElement {
-    const element = doc.createElement("button");
-    element.type = "button";
-    element.innerHTML = icon;
-    element.setAttribute("aria-label", label);
-    element.title = label;
-    if (className) element.className = className;
+    const node = element<HTMLButtonElement>("button", className);
+    dom.setProp(node, "type", "button");
+    dom.setHtml(node, icon);
+    if (label) {
+      dom.setAttribute(node, "aria-label", label);
+      dom.setTitle(node, label);
+    }
     // Reached by Tab right after their field, which the kernel does itself (below), not at the end of the document.
-    element.tabIndex = -1;
-    return element;
+    dom.setTabIndex(node, -1);
+    return node;
+  }
+
+  function hide(node: HTMLElement, hidden: boolean): void {
+    dom.setHidden(node, hidden);
   }
 
   function create(field: HTMLTextAreaElement): Entry | null {
     const shadow = layer();
     if (!shadow) return null;
-    const group = doc.createElement("div");
-    group.className = "group";
-    group.hidden = true;
-    const chips = doc.createElement("div");
-    chips.className = "chips";
-    chips.setAttribute("role", "list");
-    chips.setAttribute("aria-label", "Attached files");
+    const group = element("div", "group");
+    hide(group, true);
+    const chips = element("div", "chips");
+    dom.setAttribute(chips, "role", "list");
+    dom.setAttribute(chips, "aria-label", "Attached files");
     const more = button("", "", "more");
-    more.hidden = true;
-    more.setAttribute("aria-expanded", "false");
-    const popup = doc.createElement("div");
-    popup.className = "popup";
-    popup.hidden = true;
-    popup.setAttribute("role", "list");
-    popup.setAttribute("aria-label", "More attached files");
-    const noteBox = doc.createElement("div");
-    noteBox.className = "note";
-    noteBox.hidden = true;
-    noteBox.setAttribute("role", "status");
+    hide(more, true);
+    dom.setAttribute(more, "aria-expanded", "false");
+    const stack = element("div", "stack");
+    const popup = element("div", "popup");
+    hide(popup, true);
+    dom.setAttribute(popup, "role", "list");
+    dom.setAttribute(popup, "aria-label", "More attached files");
+    const noteBox = element("div", "note");
+    hide(noteBox, true);
+    dom.setAttribute(noteBox, "role", "status");
+    dom.append(stack, noteBox, popup);
     const dictateButton = button("Dictate", MIC);
     const attachButton = button("Attach files", CLIP);
-    const picker = doc.createElement("input");
-    picker.type = "file";
-    picker.multiple = true;
-    picker.hidden = true;
-    picker.tabIndex = -1;
+    const picker = element<HTMLInputElement>("input");
+    dom.setProp(picker, "type", "file");
+    dom.setProp(picker, "multiple", true);
+    hide(picker, true);
+    dom.setTabIndex(picker, -1);
     // The controls come first in the tree — they are the row's first buttons, and Tab reaches them first —
     // and last on screen: the files are laid out before them (CSS order).
-    group.append(dictateButton, attachButton, picker, chips, more, popup, noteBox);
-    shadow.append(group);
-    const entry: Entry = { field, group, chips, more, popup, noteBox, dictate: dictateButton, attach: attachButton, picker, files: [], note: null, busy: false, open: false, drawn: "", mode: "document", follows: false };
-    // The handlers are added with the original addEventListener and never handed to page code;
-    // only the reader's own press — a trusted event — counts as the control. spec R3.32a
-    prim.on(dictateButton, "click", (event) => void dictate(entry, prim.trusted(event)));
-    prim.on(attachButton, "click", () => picker.click());
+    dom.append(group, dictateButton, attachButton, picker, chips, more, stack);
+    dom.append(shadow, group);
+    const entry: Entry = {
+      field,
+      group,
+      chips,
+      more,
+      popup,
+      noteBox,
+      dictate: dictateButton,
+      attach: attachButton,
+      picker,
+      files: [],
+      note: null,
+      busy: false,
+      open: false,
+      drawn: "",
+      mode: "document",
+      follows: false,
+      scrollers: [],
+      settling: 0,
+      rtl: false,
+      shown: false,
+    };
+    // Handlers are added with the original addEventListener and never handed to page code. Only the
+    // reader's own press — a trusted event — on a plainly visible control counts as the control. spec R3.32a
+    prim.on(dictateButton, "click", (event) => void dictate(entry, prim.trusted(event) && plainlyVisible(entry)));
+    prim.on(attachButton, "click", () => dom.click(picker));
     prim.on(more, "click", () => {
       entry.open = !entry.open;
       update();
-      if (entry.open) popup.querySelector<HTMLButtonElement>("button")?.focus();
+      const first = entry.open ? dom.query<HTMLButtonElement>(popup, "button") : null;
+      if (first) dom.focus(first);
     });
     prim.on(popup, "keydown", (event) => {
-      if ((event as KeyboardEvent).key !== "Escape") return;
+      if (!prim.trusted(event) || prim.key(event).key !== "Escape") return;
       entry.open = false;
       update();
-      more.focus();
+      dom.focus(more);
     });
     prim.on(picker, "change", () => {
-      add(entry, Array.from(picker.files ?? []));
-      picker.value = "";
+      add(entry, dom.files(picker));
+      dom.setProp(picker, "value", "");
     });
-    for (const control of [dictateButton, attachButton, more]) prim.on(control, "keydown", (event) => onControlKey(entry, event as KeyboardEvent));
+    for (const control of [dictateButton, attachButton, more]) prim.on(control, "keydown", (event) => onControlKey(entry, control, event));
     resizeObserver?.observe(field);
     return entry;
   }
@@ -434,40 +521,60 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ["disabled", "readonly", "hidden", "inert", "open", MANUAL_ATTRIBUTE, "form"],
+      attributeFilter: ["disabled", "readonly", "hidden", "inert", "open", MANUAL_ATTRIBUTE, "form", "dir"],
     });
+  }
+
+  /** Whether an element scrolls its own content: a scroll container with content beyond its box. */
+  function scrolls(node: Element, style: CSSStyleDeclaration): boolean {
+    const container = style.overflowX !== "visible" || style.overflowY !== "visible";
+    return container && (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth);
   }
 
   /**
    * One walk up from the field: the part of it clipping ancestors leave
-   * visible, and how its row must follow it — fixed under a fixed ancestor,
-   * on scroll events under a sticky one or inside a scrolling element.
+   * visible, and how its row must follow it — fixed under a fixed ancestor or
+   * a sticky one stuck to the viewport, placed again on scroll inside a
+   * scrolling element (the body too, when the page scrolls it rather than the
+   * viewport, measured: `html { overflow: hidden }` with `body { overflow: auto }`).
    */
-  function survey(field: HTMLElement, rect: DOMRect): { box: { left: number; top: number; right: number; bottom: number } | null; mode: "document" | "fixed"; follows: boolean } {
+  function survey(field: HTMLElement, rect: DOMRect): { box: { left: number; top: number; right: number; bottom: number } | null; mode: "document" | "fixed"; follows: boolean; scrollers: Element[] } {
     let box = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
     let mode: "document" | "fixed" = "document";
     let follows = false;
+    let sticky = false;
+    const scrollers: Element[] = [];
     const clip = (other: { left: number; top: number; right: number; bottom: number }) => {
       box = { left: Math.max(box.left, other.left), top: Math.max(box.top, other.top), right: Math.min(box.right, other.right), bottom: Math.min(box.bottom, other.bottom) };
     };
+    const htmlStyle = doc.documentElement ? dom.computed(doc.documentElement) : null;
+    const bodyScrollsAlone = htmlStyle !== null && (htmlStyle.overflowX !== "visible" || htmlStyle.overflowY !== "visible");
     for (let node: HTMLElement | null = field; node && node !== doc.documentElement; node = node.parentElement) {
-      const style = win.getComputedStyle(node);
+      const style = dom.computed(node);
       if (style.position === "fixed") mode = "fixed";
-      if (style.position === "sticky") follows = true;
-      if (node === field || node === doc.body) continue;
+      if (style.position === "sticky") sticky = true;
+      if (node === field) continue;
+      // The body's overflow is the viewport's unless <html> has one of its own.
+      if (node === doc.body && !bodyScrollsAlone) continue;
       if (style.overflowX !== "visible" || style.overflowY !== "visible") {
-        if (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth) follows = true;
+        if (scrolls(node, style)) {
+          follows = true;
+          scrollers.push(node);
+        }
         const outer = node.getBoundingClientRect();
         clip({ left: outer.left + node.clientLeft, top: outer.top + node.clientTop, right: outer.left + node.clientLeft + node.clientWidth, bottom: outer.top + node.clientTop + node.clientHeight });
       }
     }
-    return { box: box.right > box.left && box.bottom > box.top ? box : null, mode, follows };
+    // Sticky to the viewport: a fixed row is exact while it is stuck, as a compose bar mostly is.
+    if (sticky && scrollers.length === 0) mode = "fixed";
+    if (sticky) follows = true;
+    return { box: box.right > box.left && box.bottom > box.top ? box : null, mode, follows, scrollers };
   }
 
   /** Nothing of the page's lies over this point of the field — a dialog, a sticky header. */
   function uncovered(field: HTMLElement, x: number, y: number): boolean {
     if (typeof doc.elementsFromPoint !== "function") return true;
-    const stack = doc.elementsFromPoint(x, y).filter((element) => element !== host);
+    const stack = doc.elementsFromPoint(x, y).filter((node) => node !== host);
     return stack.length === 0 || stack[0] === field;
   }
 
@@ -479,26 +586,23 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     // A modal dialog or an open popover is painted above everything, the layer included: the
     // controls would sit under it, so a field there gets none rather than hidden ones.
     if (inTopLayer(field)) return false;
-    const check = (field as HTMLElement & { checkVisibility?(options: object): boolean }).checkVisibility;
-    if (typeof check === "function" && !check.call(field, { visibilityProperty: true, contentVisibilityAuto: true })) return false;
-    return win.getComputedStyle(field).visibility === "visible";
+    if (dom.checkVisibility(field, { visibilityProperty: true, contentVisibilityAuto: true }) === false) return false;
+    return dom.computed(field).visibility === "visible";
   }
 
   function chip(entry: Entry, file: File, index: number, removable: boolean): HTMLElement {
-    const item = doc.createElement("span");
-    item.className = "chip";
-    item.setAttribute("role", "listitem");
-    item.title = `${file.name} (${sizeLabel(file.size)})`;
-    item.insertAdjacentHTML("beforeend", FILE);
-    const name = doc.createElement("span");
-    name.className = "name";
-    name.textContent = chipName(file.name);
-    item.append(name);
+    const item = element("span", "chip");
+    dom.setAttribute(item, "role", "listitem");
+    dom.setTitle(item, `${file.name} (${sizeLabel(file.size)})`);
+    dom.setHtml(item, FILE);
+    const name = element("span", "name");
+    dom.setText(name, chipName(file.name));
+    dom.append(item, name);
     if (removable) {
       const drop = button(`Remove ${file.name}`, REMOVE);
       prim.on(drop, "click", () => remove(entry, index));
-      prim.on(drop, "keydown", (event) => onControlKey(entry, event as KeyboardEvent));
-      item.append(drop);
+      prim.on(drop, "keydown", (event) => onControlKey(entry, drop, event));
+      dom.append(item, drop);
     }
     return item;
   }
@@ -506,61 +610,81 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
   /**
    * The attached files, in the row before the controls, as many as fit the
    * field's width; the rest behind a "+N" that opens a list of them, each
-   * removable. spec R4.61
+   * removable. With hardly any room, only "N files". spec R4.61
    */
   function drawFiles(entry: Entry, available: number, removable: boolean): void {
+    const count = entry.files.length;
     const print = JSON.stringify([entry.files.map((file) => [file.name, file.size]), removable, entry.open, Math.round(available)]);
     if (print !== entry.drawn) {
       entry.drawn = print;
-      entry.chips.replaceChildren(...entry.files.map((file, index) => chip(entry, file, index, removable)));
-      const all = Array.from(entry.chips.children) as HTMLElement[];
+      const all = entry.files.map((file, index) => chip(entry, file, index, removable));
+      dom.replaceChildren(entry.chips, ...all);
+      hide(entry.more, false);
+      dom.setText(entry.more, `+${count}`);
       // How many fit, with room for a "+N" when some do not. Measured, since names differ in width.
-      entry.more.hidden = true;
-      const widths = all.map((element) => element.getBoundingClientRect().width);
-      entry.more.hidden = false;
-      entry.more.textContent = `+${entry.files.length}`;
-      const moreWidth = entry.more.getBoundingClientRect().width;
-      let shownCount = entry.files.length;
-      const total = (count: number) => widths.slice(0, count).reduce((sum, width) => sum + width, 0) + Math.max(0, count - 1) * ROW_GAP;
-      if (total(shownCount) > available) {
+      const widths = all.map((node) => dom.rect(node).width);
+      const moreWidth = dom.rect(entry.more).width;
+      const total = (shownCount: number) => widths.slice(0, shownCount).reduce((sum, width) => sum + width, 0) + Math.max(0, shownCount - 1) * ROW_GAP;
+      let shownCount = count;
+      if (available < NARROW) shownCount = 0;
+      else if (total(count) > available) {
         shownCount = 0;
-        while (shownCount < entry.files.length && total(shownCount + 1) + ROW_GAP + moreWidth <= available) shownCount += 1;
+        while (shownCount < count && total(shownCount + 1) + ROW_GAP + moreWidth <= available) shownCount += 1;
       }
-      // Those that do not fit leave the row: each file is in the row or in the "+N" list, never both.
-      for (const element of all.slice(shownCount)) element.remove();
-      const rest = entry.files.length - shownCount;
-      entry.more.hidden = rest === 0;
-      entry.more.textContent = `+${rest}`;
-      entry.more.setAttribute("aria-label", `Show ${rest} more ${rest === 1 ? "file" : "files"}`);
-      entry.more.title = entry.more.getAttribute("aria-label") ?? "";
+      // Those that do not fit leave the row: each file is in the row or in the list, never both.
+      for (const node of all.slice(shownCount)) dom.remove(node);
+      const rest = count - shownCount;
+      hide(entry.more, rest === 0);
+      const label = shownCount === 0 ? `${rest} ${rest === 1 ? "file" : "files"}` : `+${rest}`;
+      dom.setText(entry.more, label);
+      const spoken = shownCount === 0 ? `Show ${rest} attached ${rest === 1 ? "file" : "files"}` : `Show ${rest} more ${rest === 1 ? "file" : "files"}`;
+      dom.setAttribute(entry.more, "aria-label", spoken);
+      dom.setTitle(entry.more, spoken);
       if (rest === 0) entry.open = false;
-      entry.more.setAttribute("aria-expanded", String(entry.open));
-      entry.popup.replaceChildren(...entry.files.slice(shownCount).map((file, offset) => chip(entry, file, shownCount + offset, removable)));
+      dom.setAttribute(entry.more, "aria-expanded", String(entry.open));
+      dom.replaceChildren(entry.popup, ...entry.files.slice(shownCount).map((file, offset) => chip(entry, file, shownCount + offset, removable)));
+      // A field too narrow even for the count: the files are still attached, and Attach says so.
+      const tooNarrow = rest > 0 && available < moreWidth;
+      hide(entry.more, rest === 0 || tooNarrow);
+      const attachLabel = count > 0 ? `Attach files (${count} attached)` : "Attach files";
+      dom.setAttribute(entry.attach, "aria-label", attachLabel);
+      dom.setTitle(entry.attach, attachLabel);
     }
-    entry.popup.hidden = !entry.open || entry.more.hidden;
+    hide(entry.popup, !entry.open || count === 0);
   }
 
-  /** Places one field's row from its box: in document coordinates, or the viewport's under a fixed ancestor. */
-  function place(entry: Entry, rect: DOMRect, style: CSSStyleDeclaration): { right: number; top: number } {
+  /** Where one field's row goes: in document coordinates, or the viewport's; its right edge, or its left in RTL. */
+  function geometry(entry: Entry, rect: DOMRect, style: CSSStyleDeclaration, origin: { left: number; top: number }): { edge: number; top: number; left: number; start: number } {
     const field = entry.field;
-    const innerRight = rect.left + field.clientLeft + field.clientWidth;
+    const resizable = style.resize && style.resize !== "none";
+    const innerLeft = rect.left + field.clientLeft;
+    const innerRight = innerLeft + field.clientWidth;
     const innerBottom = rect.top + field.clientTop + field.clientHeight;
-    const right = innerRight - (style.resize && style.resize !== "none" ? HANDLE : INSET);
+    // The row's anchored edge, clear of a resize handle, and where the room for files ends.
+    const edge = entry.rtl ? innerLeft + (resizable ? HANDLE : INSET) : innerRight - (resizable ? HANDLE : INSET);
+    const start = entry.rtl ? innerRight - INSET : innerLeft + INSET;
     const top = field.clientHeight < BUTTON + 2 * INSET ? rect.top + (rect.height - BUTTON) / 2 : innerBottom - BUTTON - INSET;
-    const origin = entry.mode === "fixed" || !host ? { left: 0, top: 0 } : host.getBoundingClientRect();
-    entry.group.style.position = entry.mode === "fixed" ? "fixed" : "absolute";
-    entry.group.style.left = `${Math.round(right - origin.left)}px`;
-    entry.group.style.top = `${Math.round(top - origin.top)}px`;
-    return { right, top };
+    return { edge, top, left: Math.round(edge - origin.left), start };
+  }
+
+  function originFor(entry: Entry): { left: number; top: number } {
+    return entry.mode === "fixed" || !host ? { left: 0, top: 0 } : dom.rect(host);
+  }
+
+  function place(entry: Entry, left: number, top: number): void {
+    dom.style(entry.group, "position", entry.mode === "fixed" ? "fixed" : "absolute");
+    dom.style(entry.group, "left", `${left}px`);
+    dom.style(entry.group, "top", `${Math.round(top)}px`);
   }
 
   /** Places every field's row from its box, or hides it. */
   function update(): void {
     scheduled = 0;
     if (entries.size > 0) layer();
+    const now = Date.now();
     for (const [field, entry] of entries) {
       if (!field.isConnected) {
-        entry.group.remove();
+        dom.remove(entry.group);
         resizeObserver?.unobserve(field);
         entries.delete(field);
         continue;
@@ -569,47 +693,57 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
       const form = attachable(field);
       const withDictate = visible && voice;
       const withAttach = visible && form !== null;
-      entry.dictate.hidden = !withDictate;
-      entry.attach.hidden = !withAttach;
+      hide(entry.dictate, !withDictate);
+      hide(entry.attach, !withAttach);
       const rect = field.getBoundingClientRect();
-      const { box, mode, follows } = visible ? survey(field, rect) : { box: null, mode: "document" as const, follows: false };
-      entry.mode = mode;
-      entry.follows = follows;
-      const style = win.getComputedStyle(field);
+      const surveyed = visible ? survey(field, rect) : { box: null, mode: "document" as const, follows: false, scrollers: [] as Element[] };
+      entry.mode = surveyed.mode;
+      entry.follows = surveyed.follows;
+      entry.scrollers = surveyed.scrollers;
+      const style = dom.computed(field);
+      entry.rtl = style.direction === "rtl";
+      dom.setClass(entry.group, entry.rtl ? "group rtl" : "group");
       const ink = style.color || "rgb(0,0,0)";
-      const paper = /rgba?\([^)]*,\s*0\)|transparent/.test(style.backgroundColor) ? win.getComputedStyle(doc.body ?? doc.documentElement).backgroundColor : style.backgroundColor;
-      entry.group.style.setProperty("--ink", ink);
-      entry.group.style.setProperty("--hover", withAlpha(ink, 0.12));
-      entry.group.style.setProperty("--edge", withAlpha(ink, 0.3));
-      entry.group.style.setProperty("--paper", /rgba?\([^)]*,\s*0\)|transparent/.test(paper) ? "Canvas" : paper);
+      dom.style(entry.group, "--ink", ink);
+      dom.style(entry.group, "--hover", withAlpha(ink, 0.12));
+      dom.style(entry.group, "--edge", withAlpha(ink, 0.3));
+      dom.style(entry.group, "--paper", paperFor(field));
+      dom.style(entry.group, "--scheme", doc.documentElement ? dom.computed(doc.documentElement).colorScheme || "normal" : "normal");
 
-      // The controls over the bottom-right corner, clear of a resize handle; the files before them. spec R4.56, R4.61
+      // The controls over the field's bottom corner, clear of a resize handle; the files before them. spec R4.56, R4.61
       const count = Number(withDictate) + Number(withAttach);
       const controlsWidth = count * BUTTON + Math.max(0, count - 1) * GAP;
-      const noteText = entry.note && entry.note.until > Date.now() ? entry.note.text : "";
+      const noteText = entry.note && entry.note.until > now ? entry.note.text : "";
       if (!noteText) entry.note = null;
-      const { right, top } = place(entry, rect, style);
+      const { edge, top, left, start } = geometry(entry, rect, style, originFor(entry));
+      place(entry, left, top);
+      const box = surveyed.box;
+      const near = entry.rtl ? edge : edge - controlsWidth;
+      const far = entry.rtl ? edge + controlsWidth : edge;
       const fits =
         (count > 0 || entry.files.length > 0) &&
         box !== null &&
-        right - controlsWidth >= box.left - 0.5 &&
-        right <= box.right + 0.5 &&
+        near >= box.left - 0.5 &&
+        far <= box.right + 0.5 &&
         top >= box.top - 0.5 &&
         top + BUTTON <= box.bottom + 0.5 &&
-        uncovered(field, right - Math.max(controlsWidth, BUTTON) / 2, top + BUTTON / 2);
-      entry.group.hidden = !fits;
+        uncovered(field, (near + far) / 2, top + BUTTON / 2) &&
+        entry.settling <= now;
+      entry.shown = fits;
+      hide(entry.group, !fits);
       if (fits) {
         // The files take what the field's width leaves beside the controls.
-        const available = Math.max(0, right - (rect.left + field.clientLeft + INSET) - controlsWidth - (count > 0 ? ROW_GAP : 0));
-        entry.group.style.maxWidth = `${Math.round(right - (rect.left + field.clientLeft + INSET))}px`;
+        const span = Math.abs(edge - start);
+        const available = Math.max(0, span - controlsWidth - (count > 0 ? ROW_GAP : 0));
+        dom.style(entry.group, "max-width", `${Math.round(span)}px`);
         drawFiles(entry, available, !unusable(field) && !field.readOnly);
-        entry.noteBox.hidden = !noteText;
-        entry.noteBox.textContent = noteText;
+        hide(entry.noteBox, !noteText);
+        dom.setText(entry.noteBox, noteText);
       }
     }
     // Layout moves without telling anyone (an image loads above a field): while controls show, look
     // again now and then; while none shows there is nothing to keep in place.
-    const showing = [...entries.values()].some((entry) => !entry.group.hidden);
+    const showing = [...entries.values()].some((entry) => entry.shown);
     if (showing && ticker === null) {
       ticker = setInterval(() => {
         if (doc.visibilityState !== "hidden") schedule();
@@ -620,43 +754,80 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     }
   }
 
+  /**
+   * The chips' background: the nearest opaque background behind the field,
+   * or the canvas in the page's colour scheme.
+   */
+  function paperFor(field: HTMLElement): string {
+    for (let node: Element | null = field; node; node = node.parentElement) {
+      const background = dom.computed(node).backgroundColor;
+      const found = channels(background);
+      if (found && found.alpha > 0.9) return background;
+    }
+    return "Canvas";
+  }
+
   function schedule(): void {
     if (scheduled) return;
     scheduled = typeof win.requestAnimationFrame === "function" ? win.requestAnimationFrame(update) : (setTimeout(update, 16) as unknown as number);
   }
 
   /**
-   * A scroll: rows in document coordinates already moved with the page. Rows
-   * of fields in a scrolling element or under a sticky ancestor are placed
-   * again at once, in the same frame; everything is looked at again on the
-   * next one (a sticky header may now cover a field).
+   * A scroll. Rows in document coordinates already moved with the page. A
+   * row whose field is in the scrolling element is hidden while it scrolls —
+   * a main-thread re-place trails compositor scrolling by a frame — and comes
+   * back placed once it stops; a sticky field's row is placed again at once.
+   * All reads first, then all writes, and only for rows the scroll concerns.
    */
-  function onScroll(): void {
+  function onScroll(event: Event): void {
+    const target = event.target;
+    const now = Date.now();
+    const affected: { entry: Entry; left: number; top: number }[] = [];
+    let settling = false;
     for (const entry of entries.values()) {
-      if (!entry.follows || entry.group.hidden) continue;
-      place(entry, entry.field.getBoundingClientRect(), win.getComputedStyle(entry.field));
+      if (!entry.shown && entry.settling <= now) continue;
+      const inScroller = target !== doc && entry.scrollers.some((scroller) => scroller === target || (target instanceof win.Node && scroller.contains(target)));
+      if (inScroller) {
+        entry.settling = now + SETTLE_MS;
+        settling = true;
+        continue;
+      }
+      if (!entry.follows) continue;
+      const rect = entry.field.getBoundingClientRect();
+      const style = dom.computed(entry.field);
+      const { left, top } = geometry(entry, rect, style, originFor(entry));
+      affected.push({ entry, left, top });
     }
+    for (const { entry, left, top } of affected) place(entry, left, top);
+    for (const entry of entries.values()) {
+      if (entry.settling > now && entry.shown) {
+        entry.shown = false;
+        hide(entry.group, true);
+      }
+    }
+    if (settling) setTimeout(schedule, SETTLE_MS + 10);
     schedule();
   }
 
   // --- the keyboard: the controls come right after their field. spec R4.56 ---
+  // Only the reader's keys move focus: a script's synthetic Tab must not put a control under a real Enter.
 
   /** In the keyboard's order: Dictate, Attach files, then the files' own buttons. */
   function controls(entry: Entry): HTMLButtonElement[] {
-    if (entry.group.hidden) return [];
+    if (!entry.shown) return [];
     const files = [
-      ...Array.from(entry.chips.querySelectorAll<HTMLButtonElement>(".chip:not([hidden]) button")),
-      ...(entry.more.hidden ? [] : [entry.more]),
-      ...(entry.popup.hidden ? [] : Array.from(entry.popup.querySelectorAll<HTMLButtonElement>("button"))),
+      ...dom.queryAll<HTMLButtonElement>(entry.chips, ".chip button"),
+      ...(dom.isHidden(entry.more) ? [] : [entry.more]),
+      ...(dom.isHidden(entry.popup) ? [] : dom.queryAll<HTMLButtonElement>(entry.popup, "button")),
     ];
-    return [entry.dictate, entry.attach, ...files].filter((element) => !element.hidden);
+    return [entry.dictate, entry.attach, ...files].filter((node) => !dom.isHidden(node));
   }
 
   function tabbables(): HTMLElement[] {
-    return Array.from(doc.querySelectorAll<HTMLElement>(TABBABLE)).filter((element) => {
-      if ((element as HTMLButtonElement).disabled || element.tabIndex < 0 || element.hidden) return false;
-      if (element.tagName.toLowerCase() === "input" && (element as HTMLInputElement).type === "hidden") return false;
-      return element.getClientRects().length > 0;
+    return dom.queryAll<HTMLElement>(doc, TABBABLE).filter((node) => {
+      if ((node as HTMLButtonElement).disabled || node.tabIndex < 0 || node.hidden) return false;
+      if (node.tagName.toLowerCase() === "input" && (node as HTMLInputElement).type === "hidden") return false;
+      return node.getClientRects().length > 0;
     });
   }
 
@@ -666,33 +837,45 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     return index >= 0 ? (list[index + 1] ?? null) : null;
   }
 
-  function onControlKey(entry: Entry, event: KeyboardEvent): void {
-    if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return;
+  function onControlKey(entry: Entry, control: HTMLButtonElement, event: Event): void {
+    if (!prim.trusted(event)) return;
+    const key = prim.key(event);
+    if (key.key !== "Tab" || key.alt || key.ctrl || key.meta) return;
     const buttons = controls(entry);
-    const index = buttons.indexOf(event.currentTarget as HTMLButtonElement);
+    const index = buttons.indexOf(control);
     if (index < 0) return;
-    if (event.shiftKey) {
-      event.preventDefault();
-      (buttons[index - 1] ?? entry.field).focus();
+    if (key.shift) {
+      prim.preventDefault(event);
+      const previous = buttons[index - 1];
+      if (previous) dom.focus(previous);
+      else entry.field.focus();
       return;
     }
-    const next = buttons[index + 1] ?? after(entry.field);
-    if (!next) return;
-    event.preventDefault();
-    next.focus();
+    const next = buttons[index + 1];
+    if (next) {
+      prim.preventDefault(event);
+      dom.focus(next);
+      return;
+    }
+    const following = after(entry.field);
+    if (!following) return;
+    prim.preventDefault(event);
+    following.focus();
   }
 
-  function onDocumentKey(event: KeyboardEvent): void {
-    // Only when the page has not used the key itself: an editor may indent with Tab.
-    if (event.defaultPrevented || event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return;
+  function onDocumentKey(event: Event): void {
+    // Only the reader's own key, and only when the page has not used it: an editor may indent with Tab.
+    if (!prim.trusted(event) || prim.prevented(event)) return;
+    const key = prim.key(event);
+    if (key.key !== "Tab" || key.alt || key.ctrl || key.meta) return;
     const target = event.target as Element | null;
     if (!target || target === host) return;
-    if (!event.shiftKey) {
+    if (!key.shift) {
       const entry = isTextArea(target) ? entries.get(target) : undefined;
       const first = entry ? controls(entry)[0] : undefined;
       if (!first) return;
-      event.preventDefault();
-      first.focus();
+      prim.preventDefault(event);
+      dom.focus(first);
       return;
     }
     // Shift+Tab from what follows a field returns to the field's last control.
@@ -701,8 +884,8 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     const entry = isTextArea(previous) ? entries.get(previous) : undefined;
     const last = entry ? controls(entry).at(-1) : undefined;
     if (!last) return;
-    event.preventDefault();
-    last.focus();
+    prim.preventDefault(event);
+    dom.focus(last);
   }
 
   // --- pasting and dropping files onto a field. spec R4.61 ---
@@ -715,28 +898,31 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
   }
 
   // In the bubble phase, and only when the page's own handlers left the event alone.
-  function onPaste(event: ClipboardEvent): void {
-    if (event.defaultPrevented) return;
-    const entry = entryFor(event.target);
-    const files = Array.from(event.clipboardData?.files ?? []);
+  function onPaste(event: Event): void {
+    const paste = event as ClipboardEvent;
+    if (prim.prevented(event)) return;
+    const entry = entryFor(paste.target);
+    const files = Array.from(paste.clipboardData?.files ?? []);
     if (!entry || files.length === 0) return;
     // Text that came with the files is pasted as usual; files alone are only attached.
-    if (!event.clipboardData?.types.includes("text/plain")) event.preventDefault();
+    if (!paste.clipboardData?.types.includes("text/plain")) prim.preventDefault(event);
     add(entry, files);
   }
 
-  function onDragOver(event: DragEvent): void {
-    if (event.defaultPrevented || !entryFor(event.target) || !event.dataTransfer?.types.includes("Files")) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
+  function onDragOver(event: Event): void {
+    const drag = event as DragEvent;
+    if (prim.prevented(event) || !entryFor(drag.target) || !drag.dataTransfer?.types.includes("Files")) return;
+    prim.preventDefault(event);
+    drag.dataTransfer.dropEffect = "copy";
   }
 
-  function onDrop(event: DragEvent): void {
-    if (event.defaultPrevented) return;
-    const entry = entryFor(event.target);
-    const files = Array.from(event.dataTransfer?.files ?? []);
+  function onDrop(event: Event): void {
+    const drag = event as DragEvent;
+    if (prim.prevented(event)) return;
+    const entry = entryFor(drag.target);
+    const files = Array.from(drag.dataTransfer?.files ?? []);
     if (!entry || files.length === 0) return;
-    event.preventDefault();
+    prim.preventDefault(event);
     add(entry, files);
   }
 
@@ -754,16 +940,16 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
   }
 
   if (typeof win.ResizeObserver === "function") resizeObserver = new win.ResizeObserver(() => schedule());
-  doc.addEventListener("focusin", (event) => {
+  prim.on(doc, "focusin", (event) => {
     if (isTextArea(event.target)) touched.add(event.target);
   }, true);
-  win.addEventListener("keydown", onDocumentKey);
-  doc.addEventListener("paste", onPaste);
-  doc.addEventListener("dragover", onDragOver);
-  doc.addEventListener("drop", onDrop);
-  doc.addEventListener("scroll", onScroll, { capture: true, passive: true });
-  win.addEventListener("resize", schedule);
-  doc.addEventListener("visibilitychange", schedule);
+  prim.on(win, "keydown", onDocumentKey);
+  prim.on(doc, "paste", onPaste);
+  prim.on(doc, "dragover", onDragOver);
+  prim.on(doc, "drop", onDrop);
+  prim.on(doc, "scroll", onScroll, { capture: true, passive: true });
+  prim.on(win, "resize", schedule);
+  prim.on(doc, "visibilitychange", schedule);
 
   return {
     prepare(from) {
