@@ -473,6 +473,8 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
               (win as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
             if (Context) {
               audio = new Context();
+              // An engine may create it suspended; the waveform needs it running.
+              void audio.resume?.().catch(() => undefined);
               const analyser = audio.createAnalyser();
               analyser.fftSize = 512;
               audio.createMediaStreamSource(media).connect(analyser);
