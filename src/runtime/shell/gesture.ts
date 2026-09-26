@@ -14,17 +14,23 @@
  * forgeable or missing (the page frame can take focus without activation;
  * Chromium sends the shell no boundary events for the frame). After a bar or a
  * question closes, a short cooldown applies as well.
+ *
+ * Where the activation cannot be told to be the page's — in those windows, or
+ * in an engine without the API — the bar is not refused but opened **armed**:
+ * the microphone stays off until the reader presses Record in the bar itself,
+ * a gesture in the shell's own chrome. With no activation at all, it is refused.
  */
+export type GestureDecision = { readonly mode: "record" } | { readonly mode: "arm"; readonly reason: string } | { readonly mode: "refuse"; readonly reason: string };
+
 export interface ReaderGesture {
-  /** Null when the shell may open the bar now; otherwise why not, in words for the reader. */
-  refusal(): string | null;
+  /** Whether a bar asked for now records at once, waits for Record, or does not open. */
+  decide(): GestureDecision;
   /** A bar or a question closed just now. */
   closed(): void;
 }
 
 export const NEEDS_ACTION = "The recording bar opens only when the reader presses something in the page.";
-const AFTER_CHROME = "The recording bar opens only when the reader presses something in the page, not in the top bar; press it again in a moment.";
-const AFTER_CLOSE = "The recording bar just closed; press again in a moment.";
+export const REFUSED_WITHOUT_ACTION: GestureDecision = { mode: "refuse", reason: NEEDS_ACTION };
 const CHROME_GESTURES = ["pointerdown", "pointerup", "mousedown", "touchend", "click", "keydown", "keyup"] as const;
 
 export function createReaderGesture(win: Window & typeof globalThis, options: { cooldownMs?: number; pollMs?: number } = {}): ReaderGesture {
@@ -58,14 +64,14 @@ export function createReaderGesture(win: Window & typeof globalThis, options: { 
   for (const type of CHROME_GESTURES) win.addEventListener(type, onChrome, true);
 
   return {
-    refusal() {
+    decide() {
       const state = activation();
-      // An engine that cannot say is never taken as a yes.
-      if (!state) return "This browser cannot tell whether the reader pressed something in the page, so the recording bar stays closed.";
-      if (!state.isActive) return NEEDS_ACTION;
-      if (chromeActive) return AFTER_CHROME;
-      if (Date.now() - closedAt < cooldownMs) return AFTER_CLOSE;
-      return null;
+      // An engine that cannot say is never taken as a yes: the reader starts the recording in the bar.
+      if (!state) return { mode: "arm", reason: "this browser cannot tell who pressed" };
+      if (!state.isActive) return REFUSED_WITHOUT_ACTION;
+      if (chromeActive) return { mode: "arm", reason: "the last press was in the host's chrome" };
+      if (Date.now() - closedAt < cooldownMs) return { mode: "arm", reason: "a bar or question just closed" };
+      return { mode: "record" };
     },
     closed() {
       closedAt = Date.now();

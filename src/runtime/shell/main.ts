@@ -22,6 +22,7 @@ const time = bar?.querySelector<HTMLElement>("[data-rec-time]") ?? null;
 const recStatus = bar?.querySelector<HTMLElement>("[data-rec-status]") ?? null;
 const cancel = bar?.querySelector<HTMLButtonElement>('[data-rec="cancel"]') ?? null;
 const done = bar?.querySelector<HTMLButtonElement>('[data-rec="done"]') ?? null;
+const recordButton = bar?.querySelector<HTMLButtonElement>('[data-rec="record"]') ?? null;
 if (!frame || !status || !work || !reload || !dialog || !title) throw new Error("Thread Page shell: chrome is incomplete");
 installShell(window, config, {
   frame,
@@ -35,5 +36,5 @@ installShell(window, config, {
   read,
   archive,
   grants: grantsButton && grantsDialog ? { button: grantsButton, dialog: grantsDialog } : null,
-  recorder: bar && wave && time && recStatus && cancel && done ? { bar, wave, time, status: recStatus, cancel, done } : null,
+  recorder: bar && wave && time && recStatus && cancel && done && recordButton ? { bar, wave, time, status: recStatus, cancel, done, record: recordButton } : null,
 });

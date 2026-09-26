@@ -63,7 +63,7 @@ dialog p{white-space:pre-line}
 .rec-time{grid-area:time;color:var(--muted);font-variant-numeric:tabular-nums}
 .rec-status{grid-area:status;min-height:1.1em;color:var(--muted);font-size:.8rem}.rec[data-state=short] .rec-status{color:var(--warn);font-weight:600}
 .rec-btn{display:inline-flex;align-items:center;gap:.3rem;padding:.35rem .7rem;border:1px solid var(--line);border-radius:.4rem;color:var(--ink);background:var(--bg);cursor:pointer;font:inherit}
-.rec-btn[data-rec=cancel]{grid-area:cancel}.rec-btn[data-rec=done]{grid-area:done;color:#fff;background:var(--accent);border-color:var(--accent)}
+.rec-btn[data-rec=cancel]{grid-area:cancel}.rec-btn[data-rec=done],.rec-btn[data-rec=record]{grid-area:done;color:#fff;background:var(--accent);border-color:var(--accent)}.rec-btn[hidden]{display:none}
 .rec-btn:disabled{opacity:.5;cursor:default}
 @media(max-width:26rem){.rec{grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"mic wave time" "status status status" "cancel cancel done"}.rec-btn{justify-content:center}}
 `;
@@ -81,6 +81,7 @@ const RECORDER = `<section class="rec" data-shell-recorder hidden tabindex="-1" 
     <span class="rec-time" data-rec-time aria-hidden="true">0:00</span>
     <span class="rec-status" id="tp-rec-status" data-rec-status role="status" aria-live="polite"></span>
     <button type="button" class="rec-btn" data-rec="cancel">${CANCEL_ICON}Cancel</button>
+    <button type="button" class="rec-btn" data-rec="record" hidden>${MIC_ICON}Record</button>
     <button type="button" class="rec-btn" data-rec="done">${DONE_ICON}Done</button>
   </section>`;
 

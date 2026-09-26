@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LIMITS } from "../../src/domain/limits.ts";
 import { createConfirmer } from "../../src/runtime/shell/confirm.ts";
-import { createReaderGesture } from "../../src/runtime/shell/gesture.ts";
+import { createReaderGesture, type GestureDecision } from "../../src/runtime/shell/gesture.ts";
 import { createRelay } from "../../src/runtime/shell/relay.ts";
 import { createVoice, PREFERRED_DEVICE_KEY, VoiceFailure, type RecorderElements, type Voice } from "../../src/runtime/shell/voice.ts";
 import type { ShellConfig } from "../../src/runtime/shared/protocol.ts";
@@ -13,6 +13,7 @@ import type { ShellConfig } from "../../src/runtime/shared/protocol.ts";
  * with sessions.start and sessions.send. spec R3.32, R3.32a, R5.68–R5.79, D38–D40
  */
 const REV = "1".repeat(64);
+const RECORD = { mode: "record" } as const;
 const config: ShellConfig = {
   actionToken: "tok",
   pageRevision: REV,
@@ -88,7 +89,7 @@ class FakeRecorder extends EventTarget {
 }
 
 function recorderFixture(options: { activation?: boolean; permission?: string; getUserMedia?: (constraints: unknown) => Promise<unknown>; available?: boolean } = {}) {
-  document.body.innerHTML = `<section data-shell-recorder hidden tabindex="-1"><canvas></canvas><span data-rec-time></span><span data-rec-status></span><button data-rec="cancel">Cancel</button><button data-rec="done">Done</button></section>`;
+  document.body.innerHTML = `<section data-shell-recorder hidden tabindex="-1"><canvas></canvas><span data-rec-time></span><span data-rec-status></span><button data-rec="cancel">Cancel</button><button data-rec="record" hidden>Record</button><button data-rec="done">Done</button></section>`;
   const bar = document.querySelector<HTMLElement>("[data-shell-recorder]")!;
   const elements: RecorderElements = {
     bar,
@@ -97,6 +98,7 @@ function recorderFixture(options: { activation?: boolean; permission?: string; g
     status: bar.querySelector("[data-rec-status]")!,
     cancel: bar.querySelector('[data-rec="cancel"]')!,
     done: bar.querySelector('[data-rec="done"]')!,
+    record: bar.querySelector('[data-rec="record"]')!,
   };
   const tracks = [{ stop: vi.fn() }];
   const getUserMedia = vi.fn(options.getUserMedia ?? (async () => ({ getTracks: () => tracks })));
@@ -125,16 +127,16 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
   it("opens only on the reader's activation, one at a time, and never while a question is open", async () => {
     const without = recorderFixture();
     const work = vi.fn();
-    expect(await without.voice.capture({ maxDurationSeconds: 120, refusal: "The recording bar opens only when the reader presses something in the page.", purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/presses something/) });
+    expect(await without.voice.capture({ maxDurationSeconds: 120, gesture: { mode: "refuse", reason: "The recording bar opens only when the reader presses something in the page." }, purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/presses something/) });
     expect(without.elements.bar.hidden).toBe(true);
     expect(without.getUserMedia).not.toHaveBeenCalled();
     without.deps.questionOpen.mockReturnValue(true);
-    expect(await without.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/Another question/) });
+    expect(await without.voice.capture({ maxDurationSeconds: 120, gesture: RECORD, purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/Another question/) });
     without.deps.questionOpen.mockReturnValue(false);
-    const first = without.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "capability" }, work);
+    const first = without.voice.capture({ maxDurationSeconds: 120, gesture: RECORD, purpose: "capability" }, work);
     await flush();
     expect(without.voice.isOpen()).toBe(true);
-    expect(await without.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable" });
+    expect(await without.voice.capture({ maxDurationSeconds: 120, gesture: RECORD, purpose: "capability" }, work)).toMatchObject({ ok: false, code: "unavailable" });
     without.elements.cancel.click();
     expect(await first).toMatchObject({ ok: false, code: "cancelled" });
     expect(work).not.toHaveBeenCalled();
@@ -143,7 +145,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
   it("refuses before opening when the host has no service or the microphone is blocked", async () => {
     const off = recorderFixture({ available: false });
     expect(await off.voice.usable()).toBe(false);
-    expect(await off.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "dictate" }, vi.fn())).toEqual({ ok: false, code: "unavailable", message: "Voice transcription is not set up on this bb." });
+    expect(await off.voice.capture({ maxDurationSeconds: 120, gesture: RECORD, purpose: "dictate" }, vi.fn())).toEqual({ ok: false, code: "unavailable", message: "Voice transcription is not set up on this bb." });
     const blocked = recorderFixture({ permission: "denied" });
     expect(await blocked.voice.usable()).toBe(false);
     expect(blocked.elements.bar.hidden).toBe(true);
@@ -154,7 +156,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
     window.localStorage.setItem(PREFERRED_DEVICE_KEY, "mic-2");
     const { voice, elements, deps, getUserMedia, tracks } = recorderFixture();
     const work = vi.fn(async (recording: { blob: Blob; type: string }) => `got ${recording.type} ${recording.blob.size}`);
-    const outcome = voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "capability" }, work);
+    const outcome = voice.capture({ maxDurationSeconds: 120, gesture: RECORD, purpose: "capability" }, work);
     await vi.advanceTimersByTimeAsync(0);
     expect(elements.bar.hidden).toBe(false);
     expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: "mic-2" } } });
@@ -177,7 +179,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
     vi.useFakeTimers();
     const short = recorderFixture();
     const work = vi.fn();
-    const outcome = short.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "dictate" }, work);
+    const outcome = short.voice.capture({ maxDurationSeconds: 120, gesture: RECORD, purpose: "dictate" }, work);
     await vi.advanceTimersByTimeAsync(300);
     short.elements.done.click();
     await vi.advanceTimersByTimeAsync(0);
@@ -187,7 +189,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
     expect(work).not.toHaveBeenCalled();
 
     const escaped = recorderFixture();
-    const pending = escaped.voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "capability" }, work);
+    const pending = escaped.voice.capture({ maxDurationSeconds: 120, gesture: RECORD, purpose: "capability" }, work);
     await vi.advanceTimersByTimeAsync(2_000);
     escaped.events.dispatchEvent(Object.assign(new Event("keydown"), { key: "Escape", preventDefault() {} }));
     expect(await pending).toMatchObject({ ok: false, code: "cancelled" });
@@ -198,7 +200,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
     vi.useFakeTimers();
     const { voice, elements } = recorderFixture();
     const work = vi.fn(async () => "sent");
-    const outcome = voice.capture({ maxDurationSeconds: 2, refusal: null, purpose: "capability" }, work);
+    const outcome = voice.capture({ maxDurationSeconds: 2, gesture: RECORD, purpose: "capability" }, work);
     await vi.advanceTimersByTimeAsync(2_100);
     expect(FakeRecorder.created.at(-1)!.state).toBe("inactive");
     expect(elements.status.textContent).toMatch(/Reached 0:02/);
@@ -212,7 +214,7 @@ describe("the recording bar (R3.32, R3.32a, R5.68–R5.71, R8.37)", () => {
     const { voice, deps } = recorderFixture({ getUserMedia: async () => Promise.reject(Object.assign(new Error("denied"), { name: "NotAllowedError" })) });
     const changes: boolean[] = [];
     voice.onChange((usable) => changes.push(usable));
-    expect(await voice.capture({ maxDurationSeconds: 120, refusal: null, purpose: "dictate" }, vi.fn())).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/not allowed/) });
+    expect(await voice.capture({ maxDurationSeconds: 120, gesture: RECORD, purpose: "dictate" }, vi.fn())).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/not allowed/) });
     await flush();
     expect(changes).toEqual([false]);
     expect(await voice.usable()).toBe(false);
@@ -258,14 +260,14 @@ function stubVoice(overrides: Partial<Voice> = {}) {
   return { voice: voice as unknown as Voice & typeof voice, recording };
 }
 
-function relayFixture(fetchImpl: (url: string, init: RequestInit) => Promise<Response>, voice?: Voice, refusal: string | null = null) {
+function relayFixture(fetchImpl: (url: string, init: RequestInit) => Promise<Response>, voice?: Voice, gesture: GestureDecision = RECORD) {
   document.body.innerHTML = `<dialog><form method="dialog"><p></p><button type="button" value="cancel">Cancel</button><button type="button" value="confirm">Confirm</button></form></dialog>`;
   const dialog = document.querySelector("dialog")!;
   dialog.showModal = () => dialog.setAttribute("open", "");
   dialog.close = () => dialog.removeAttribute("open");
   const navigator = { inPlace: vi.fn(), reserveWindow: vi.fn(), external: vi.fn(), release: vi.fn() };
   const fetchMock = vi.fn(fetchImpl);
-  const relay = createRelay({ config, confirmer: createConfirmer(dialog), navigator, onDirty: vi.fn(), fetchImpl: fetchMock as never, ...(voice ? { voice } : {}), readerRefusal: () => refusal, onStatus: vi.fn() });
+  const relay = createRelay({ config, confirmer: createConfirmer(dialog), navigator, onDirty: vi.fn(), fetchImpl: fetchMock as never, ...(voice ? { voice } : {}), readerGesture: () => gesture, onStatus: vi.fn() });
   const sent: unknown[] = [];
   const port = { postMessage: (message: unknown) => sent.push(message) } as unknown as MessagePort;
   return { relay, dialog, fetchMock, sent, port };
@@ -280,7 +282,7 @@ describe("the relay and voice (R5.68, R5.73, R4.58, R4.24a)", () => {
     }, voice);
     fixture.relay.handle(fixture.port, { v: 1, id: "tp-1", method: "voice.captureAndTranscribe", params: { prompt: "ctx" }, pageRevision: REV });
     await flush();
-    expect(voice.capture).toHaveBeenCalledWith({ maxDurationSeconds: 30, refusal: null, purpose: "capability" }, expect.any(Function));
+    expect(voice.capture).toHaveBeenCalledWith({ maxDurationSeconds: 30, gesture: RECORD, purpose: "capability" }, expect.any(Function));
     expect(voice.transcribe).toHaveBeenCalledWith(expect.objectContaining({ type: "audio/webm;codecs=opus", prompt: "ctx", language: "en" }));
     expect(fixture.sent[0]).toEqual({ v: 1, id: "tp-1", ok: true, result: { text: "the reader said this" } });
     fixture.relay.handle(fixture.port, { v: 1, id: "tp-2", method: "voice.captureAndTranscribe", params: { keepAudio: true }, pageRevision: REV });
@@ -297,10 +299,10 @@ describe("the relay and voice (R5.68, R5.73, R4.58, R4.24a)", () => {
     const fixture = relayFixture(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as { request: { id: string } };
       return jsonResponse({ record: { requestId: body.request.id, params: { maxDurationSeconds: 120, keepAudio: false } } }, 401);
-    }, voice, "The top bar was used");
+    }, voice, { mode: "arm", reason: "The top bar was used" });
     fixture.relay.handle(fixture.port, { v: 1, id: "tp-1", method: "voice.captureAndTranscribe", params: null, pageRevision: REV });
     await flush();
-    expect(voice.capture).toHaveBeenCalledWith(expect.objectContaining({ refusal: "The top bar was used" }), expect.any(Function));
+    expect(voice.capture).toHaveBeenCalledWith(expect.objectContaining({ gesture: { mode: "arm", reason: "The top bar was used" } }), expect.any(Function));
     expect(fixture.sent[0]).toMatchObject({ id: "tp-1", ok: false, error: { code: "cancelled" } });
   });
 
@@ -475,37 +477,76 @@ describe("the reader's gesture, told apart from the shell's own chrome (R3.32a)"
     return { gesture, fire };
   }
 
-  it("refuses while an activation the chrome caused is live, and allows once it lapsed and the page acts", async () => {
+  it("arms the bar while an activation the chrome caused is live, and records at once once it lapsed and the page acts", async () => {
     vi.useFakeTimers();
     const activation = { isActive: true };
     const { gesture, fire } = gestureFixture(activation);
     // Activation with no gesture in the chrome: it came from the page.
-    expect(gesture.refusal()).toBeNull();
-    // The reader clicks Cancel in the bar: the page re-asking now is refused.
+    expect(gesture.decide()).toEqual({ mode: "record" });
+    // The reader clicks Cancel in the bar: the page re-asking now gets an armed bar, the microphone off.
     fire("pointerdown");
     fire("click");
-    expect(gesture.refusal()).toMatch(/not in the top bar/);
+    expect(gesture.decide()).toMatchObject({ mode: "arm" });
     await vi.advanceTimersByTimeAsync(3_000);
-    expect(gesture.refusal()).toMatch(/not in the top bar/);
-    // The chrome's activation lapses; a later one can only be the page's.
+    expect(gesture.decide()).toMatchObject({ mode: "arm" });
+    // The chrome's activation lapses; with none at all, nothing opens.
     activation.isActive = false;
     await vi.advanceTimersByTimeAsync(150);
-    expect(gesture.refusal()).toMatch(/presses something in the page/);
+    expect(gesture.decide()).toMatchObject({ mode: "refuse", reason: expect.stringMatching(/presses something in the page/) });
+    // A later activation can only be the page's.
     activation.isActive = true;
-    expect(gesture.refusal()).toBeNull();
+    expect(gesture.decide()).toEqual({ mode: "record" });
     // A script's synthetic event is no gesture of the reader's.
     fire("pointerdown", false);
-    expect(gesture.refusal()).toBeNull();
+    expect(gesture.decide()).toEqual({ mode: "record" });
   });
 
-  it("waits a moment after a bar or question closes, and never allows without the API", async () => {
+  it("arms the bar a moment after a bar or question closes, and whenever the engine cannot tell", async () => {
     vi.useFakeTimers();
     const { gesture } = gestureFixture({ isActive: true });
     gesture.closed();
-    expect(gesture.refusal()).toMatch(/just closed/);
+    expect(gesture.decide()).toMatchObject({ mode: "arm" });
     await vi.advanceTimersByTimeAsync(2_100);
-    expect(gesture.refusal()).toBeNull();
-    expect(gestureFixture(undefined).gesture.refusal()).toMatch(/cannot tell/);
+    expect(gesture.decide()).toEqual({ mode: "record" });
+    expect(gestureFixture(undefined).gesture.decide()).toMatchObject({ mode: "arm" });
+  });
+
+  it("an armed bar starts the microphone only on the reader's Record, and Cancel there is cancelled", async () => {
+    vi.useFakeTimers();
+    const armed = recorderFixture();
+    const work = vi.fn(async () => "sent");
+    // jsdom can make no trusted click; the reader's is stood in for by calling the listener with one.
+    const onRecord: ((event: { isTrusted: boolean }) => void)[] = [];
+    const add = armed.elements.record.addEventListener.bind(armed.elements.record);
+    vi.spyOn(armed.elements.record, "addEventListener").mockImplementation(((type: string, listener: (event: { isTrusted: boolean }) => void) => {
+      onRecord.push(listener);
+      add(type, listener as never);
+    }) as never);
+    const outcome = armed.voice.capture({ maxDurationSeconds: 120, gesture: { mode: "arm", reason: "chrome" }, purpose: "dictate" }, work);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(armed.elements.bar.hidden).toBe(false);
+    expect(armed.elements.bar.dataset.state).toBe("armed");
+    expect(armed.elements.record.hidden).toBe(false);
+    expect(armed.elements.done.hidden).toBe(true);
+    expect(armed.getUserMedia).not.toHaveBeenCalled();
+    // A script's click is not the reader's.
+    armed.elements.record.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(armed.getUserMedia).not.toHaveBeenCalled();
+    onRecord.forEach((listener) => listener({ isTrusted: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(armed.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(armed.elements.done.hidden).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_500);
+    armed.elements.done.click();
+    expect(await outcome).toEqual({ ok: true, value: "sent" });
+
+    const cancelled = recorderFixture();
+    const pending = cancelled.voice.capture({ maxDurationSeconds: 120, gesture: { mode: "arm", reason: "chrome" }, purpose: "capability" }, work);
+    await vi.advanceTimersByTimeAsync(500);
+    cancelled.elements.cancel.click();
+    expect(await pending).toMatchObject({ ok: false, code: "cancelled" });
+    expect(cancelled.getUserMedia).not.toHaveBeenCalled();
   });
 
   it("a relay without the shell's gesture tracking treats nothing as the reader's action", async () => {
@@ -515,7 +556,7 @@ describe("the reader's gesture, told apart from the shell's own chrome (R3.32a)"
     const sent: unknown[] = [];
     relay.handle({ postMessage: (message: unknown) => sent.push(message) } as unknown as MessagePort, { kind: "thread-page:record", id: "tp-record-1", purpose: "dictate" });
     await flush();
-    expect(voice.capture).toHaveBeenCalledWith(expect.objectContaining({ refusal: expect.stringMatching(/presses something/) }), expect.any(Function));
+    expect(voice.capture).toHaveBeenCalledWith(expect.objectContaining({ gesture: { mode: "refuse", reason: expect.stringMatching(/presses something/) } }), expect.any(Function));
   });
 });
 

@@ -6,7 +6,7 @@ import type { Confirmer } from "./confirm.ts";
 import type { Navigator } from "./navigate.ts";
 import type { OwnFiles } from "./own-files.ts";
 import { shortenTranscript } from "../../domain/submissions/parse.ts";
-import { NEEDS_ACTION } from "./gesture.ts";
+import { REFUSED_WITHOUT_ACTION, type GestureDecision } from "./gesture.ts";
 import { recordingExtension, type Voice, type VoiceOutcome } from "./voice.ts";
 
 /**
@@ -33,8 +33,8 @@ export interface RelayDeps {
   onGranted?(grant: { sessionId: string; title: string }): void;
   /** The shell's recorder and its bar. spec R3.32, D38 */
   voice?: Voice;
-  /** Null when the reader has just acted in the page, as the shell's own document tells; otherwise why not. spec R3.32a */
-  readerRefusal?(): string | null;
+  /** Whether a bar asked for now records at once, opens armed, or is refused, as the shell's own document tells. spec R3.32a */
+  readerGesture?(): GestureDecision;
   /** The shell's status line, for what the reader must be told. spec R2.44 */
   onStatus?(text: string, warn: boolean): void;
   fetchImpl?: typeof fetch;
@@ -57,7 +57,7 @@ export function createRelay(deps: RelayDeps): Relay {
   const { config, confirmer, navigator } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
   // Without the shell's own gesture tracking nothing counts as the reader's action.
-  const readerRefusal = deps.readerRefusal ?? (() => NEEDS_ACTION);
+  const readerGesture = deps.readerGesture ?? (() => REFUSED_WITHOUT_ACTION);
 
   function reply(port: MessagePort, message: ShellMessage): void {
     port.postMessage(message);
@@ -98,7 +98,7 @@ export function createRelay(deps: RelayDeps): Relay {
     reply(port, body.response);
   }
 
-  async function relayBridge(port: MessagePort, message: BridgeRequestMessage, refusal: string | null): Promise<void> {
+  async function relayBridge(port: MessagePort, message: BridgeRequestMessage, gesture: GestureDecision): Promise<void> {
     const files = message.files ?? [];
     let request: BridgeRequestMessage = message;
     // The host is told about files only by the shell, from files it holds. spec R3.20a
@@ -118,7 +118,7 @@ export function createRelay(deps: RelayDeps): Relay {
     try {
       const first = await postBridge({ actionToken: config.actionToken, request });
       if (isRecord(first) && isRecord(first.record)) {
-        await relayRecording(port, request, first.record, refusal);
+        await relayRecording(port, request, first.record, gesture);
         return;
       }
       if (isRecord(first) && isRecord(first.confirm)) {
@@ -245,7 +245,7 @@ export function createRelay(deps: RelayDeps): Relay {
    * transcriber; the page gets the text, and the recording itself only when it
    * asked. spec R5.68–R5.73
    */
-  async function relayRecording(port: MessagePort, request: BridgeRequestMessage, record: Record<string, unknown>, refusal: string | null): Promise<void> {
+  async function relayRecording(port: MessagePort, request: BridgeRequestMessage, record: Record<string, unknown>, gesture: GestureDecision): Promise<void> {
     const params = isRecord(record.params) ? record.params : {};
     if (record.requestId !== request.id || !deps.voice) {
       reply(port, makeFailure(request.id, deps.voice ? "invalid_response" : "unavailable", deps.voice ? "The Thread Page bridge returned an invalid answer" : "This page cannot record here."));
@@ -254,7 +254,7 @@ export function createRelay(deps: RelayDeps): Relay {
     const seconds = typeof params.maxDurationSeconds === "number" ? params.maxDurationSeconds : LIMITS.voiceDefaultSeconds;
     const prompt = typeof params.prompt === "string" ? params.prompt : undefined;
     const language = typeof params.language === "string" ? params.language : undefined;
-    const outcome = await deps.voice.capture({ maxDurationSeconds: seconds, refusal, purpose: "capability" }, async (recording) => {
+    const outcome = await deps.voice.capture({ maxDurationSeconds: seconds, gesture, purpose: "capability" }, async (recording) => {
       const text = await deps.voice!.transcribe({ blob: recording.blob, type: recording.type, ...(prompt ? { prompt } : {}), ...(language ? { language } : {}) });
       return { text, recording };
     });
@@ -268,7 +268,7 @@ export function createRelay(deps: RelayDeps): Relay {
   }
 
   /** Dictate and the audio capture input: the kernel's own asks, answered on the same port. spec R4.58, R4.24a */
-  async function relayRecord(port: MessagePort, data: Record<string, unknown>, refusal: string | null): Promise<void> {
+  async function relayRecord(port: MessagePort, data: Record<string, unknown>, gesture: GestureDecision): Promise<void> {
     const id = data.id as string;
     const answer = (message: RecordedMessage) => reply(port, message);
     if (!deps.voice) {
@@ -279,12 +279,12 @@ export function createRelay(deps: RelayDeps): Relay {
     const prompt = typeof data.prompt === "string" ? data.prompt.slice(-LIMITS.voicePromptChars) : "";
     let outcome: VoiceOutcome<{ text?: string; file?: File }>;
     if (data.purpose === "audio") {
-      outcome = await voice.capture({ maxDurationSeconds: LIMITS.voiceDefaultSeconds, refusal, purpose: "audio" }, async (recording) => {
+      outcome = await voice.capture({ maxDurationSeconds: LIMITS.voiceDefaultSeconds, gesture, purpose: "audio" }, async (recording) => {
         const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
         return { file: new File([recording.blob], `recording-${stamp}.${recordingExtension(recording.type)}`, { type: recording.type }) };
       });
     } else {
-      outcome = await voice.capture({ maxDurationSeconds: LIMITS.voiceDefaultSeconds, refusal, purpose: "dictate" }, async (recording) => ({
+      outcome = await voice.capture({ maxDurationSeconds: LIMITS.voiceDefaultSeconds, gesture, purpose: "dictate" }, async (recording) => ({
         text: await voice.transcribe({ blob: recording.blob, type: recording.type, ...(prompt ? { prompt } : {}) }),
       }));
     }
@@ -403,7 +403,7 @@ export function createRelay(deps: RelayDeps): Relay {
       if (data.kind === "thread-page:record") {
         if (!isValidRequestId(data.id) || (data.purpose !== "dictate" && data.purpose !== "audio")) return;
         // The reader's gesture, as the shell's own document sees it, when the ask arrives. spec R3.32a
-        void relayRecord(port, data, readerRefusal());
+        void relayRecord(port, data, readerGesture());
         return;
       }
       // Escape pressed in the page while the bar is open cancels it; cancelling is always safe. spec R3.32
@@ -415,7 +415,7 @@ export function createRelay(deps: RelayDeps): Relay {
         reply(port, makeFailure(data.id, "invalid_request", "Invalid Thread Page bridge request"));
         return;
       }
-      void relayBridge(port, data, data.method === VOICE_METHOD ? readerRefusal() : NEEDS_ACTION);
+      void relayBridge(port, data, data.method === VOICE_METHOD ? readerGesture() : REFUSED_WITHOUT_ACTION);
     },
   };
 }

@@ -43,7 +43,7 @@ describe("the authoring guide", () => {
     expect(voice).toContain("20 MB of audio with its default transcription");
     expect(voice).toContain("25 MB with OpenAI; each attempt 10 s,\n  2 attempts");
     expect(voice).toContain("bottom centre of the page area");
-    expect(voice).toMatch(/never re-ask by yourself after `cancelled`/);
+    expect(voice).toMatch(/the bar opens \*\*armed\*\*/);
     expect(coreGuide).not.toContain("top bar's recording bar");
     expect(coreGuide).toContain("no HEIC or HEIF");
     expect(voice).toContain(`from 1 to ${LIMITS.voiceMaxSeconds}, default ${LIMITS.voiceDefaultSeconds}`);

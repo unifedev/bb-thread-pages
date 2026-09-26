@@ -136,7 +136,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     onGranted: (grant) => grantsChrome?.add(grant),
     ownFiles: createOwnFiles(win, config, request, confirmer),
     ...(voice ? { voice } : {}),
-    readerRefusal: () => gesture.refusal(),
+    readerGesture: () => gesture.decide(),
     onStatus: (text, warn) => view.setStatus(text, warn),
     ...(fetchImpl ? { fetchImpl } : {}),
   });

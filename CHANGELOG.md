@@ -13,11 +13,18 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
   neither the page frame nor an embed frame is given it. The page never holds
   the device.
 - A recording bar in the shell's own chrome, floating at the bottom centre of
-  the page area — live waveform, Cancel, Done — is the consent: nothing leaves the reader's device until Done, Escape and
-  Cancel discard, and a Done under 1 s says *Too short* and sends nothing. It
-  opens only while the shell's own document has the reader's activation from a
-  gesture in the page, one at a time, and it counts as a question beside the
-  confirmation dialog. The recorder copies bb's composer: the first supported
+  the page area — live waveform, Cancel, Done — is the consent: nothing leaves
+  the reader's device until Done, Escape (in the page too) and Cancel discard,
+  and a Done under 1 s says *Too short* and sends nothing. A bar open when the
+  page's document changes is cancelled. It opens only while the shell's own
+  document has the reader's activation from a gesture in the page, one at a
+  time, and it counts as a question beside the confirmation dialog. Where the
+  shell cannot tell the activation is the page's — after a press on its own
+  chrome, until that activation lapses; 2 s after a bar or dialog closes; or in
+  an engine without `navigator.userActivation` — the bar opens **armed**: the
+  microphone stays off until the reader presses Record in the bar (Cancel or
+  Escape there is `cancelled`). Dictate right after Done takes one more press,
+  and a page that re-asks after Cancel only shows an armed bar again. The recorder copies bb's composer: the first supported
   of webm, mp4 and ogg, the chunk's type (Firefox leaves the recorder's empty),
   250 ms slices, and bb's preferred microphone
   (`bb.voiceInput.audioInputDeviceId`).
@@ -82,6 +89,9 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
 
 ### Also
 
+- Every confirmation is used once: replaying an approved call's challenge
+  within its two minutes, with or without files, is `confirmation_invalid` and
+  starts or sends nothing.
 - Confirmation summaries may be 1024 characters and list every file whole, one
   per line (names sanitised and shortened in the middle, keeping the
   extension); the rest of the summary shortens to fit. Signed tokens may be
@@ -102,7 +112,7 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
   page handled itself are left alone. `files: undefined` is no files.
 - The guide documents text areas, voice, the recorded answer and `files`, with
   their limits; the standing instruction is unchanged.
-- `test/browser/voice.mjs`: 46 checks, passing in Chromium, Firefox and WebKit.
+- `test/browser/voice.mjs`: 49 checks, passing in Chromium, Firefox and WebKit.
 
 ## 1.6.0 — 2026-09-25 — links, popups, own files, full screen, other sites, large media
 

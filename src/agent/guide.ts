@@ -492,8 +492,10 @@ recorder with no code (above).
   call without the action, or while another bar or confirmation is open, is
   \`unavailable\`. A press in the host's own chrome (the top bar, a dialog, the
   bar's Cancel or Done) is not the reader acting in your page: for about 5 s
-  after one, and 2 s after a bar or dialog closes, the bar does not open —
-  never re-ask by yourself after \`cancelled\`.
+  after one, and 2 s after a bar or dialog closes, the bar opens **armed** —
+  the microphone stays off until the reader presses Record in it. So Dictate
+  right after Done works with one more press; and a page that re-asks after
+  \`cancelled\` only puts an armed bar back in front of the reader. Don't.
 - \`cancelled\`: Cancel, Escape, or Done before ${LIMITS.voiceMinMs / 1000} s (the bar says *Too short*).
   \`request_too_large\`: over the host's size limit. \`unavailable\`, with the
   reason: no transcription service on this host, a browser or app that cannot

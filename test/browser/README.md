@@ -77,14 +77,15 @@ the shell. The activation checks therefore click by coordinates and evaluate
 nothing while they wait.
 
 Results of 26 September 2026 (Playwright 1.63; Chromium 153, Firefox 155,
-WebKit 26.6): 46 of 46 in each engine. After a press in the shell's own chrome
-the bar waits until that activation lapses (about 5 s), so the pass waits too
-before each page-initiated bar. In particular, a real click in the
+WebKit 26.6): 49 of 49 in each engine. After a press in the shell's own chrome,
+until that activation lapses (about 5 s), a bar opens armed and records only on
+its Record; the pass waits before the page-initiated bars it means to record at
+once, and checks the armed ones separately. In particular, a real click in the
 sandboxed page frame makes the **shell's** `navigator.userActivation.isActive`
 true in all three (User Activation v2 propagates to ancestors), it is false
 when nobody pressed anything, and a call from a timer six seconds after a click
-is refused. A page that re-asks the moment the reader clicks Cancel gets no
-bar. Measured on the way: the page frame can take focus from the shell without
+is refused. A page that re-asks the moment the reader clicks Cancel gets only
+an armed bar, with no `getUserMedia` call until Record. Measured on the way: the page frame can take focus from the shell without
 activation in all three engines, and Chromium sends the shell no pointer
 boundary events for the frame, so neither is evidence of the reader's action.
 Firefox keeps the files of a script-built paste event to itself, so

@@ -49,6 +49,16 @@ await context.addInitScript(() => {
     return attach.call(this, { ...init, mode: "open" });
   };
   if (window.top === window) {
+    // Every time the shell asks for the microphone.
+    window.__gum = 0;
+    const proto = window.MediaDevices && window.MediaDevices.prototype;
+    if (proto && proto.getUserMedia) {
+      const ask = proto.getUserMedia;
+      proto.getUserMedia = function (constraints) {
+        window.__gum += 1;
+        return ask.call(this, constraints);
+      };
+    }
     window.__probe = [];
     addEventListener("message", (event) => {
       const kind = event.data && event.data.kind;
@@ -157,16 +167,32 @@ const sentAudio = (await callsOf("voice.transcribe"))[0];
 ok("A123 the recording went to the transcriber once, with the page's context", sentAudio && sentAudio.args[0].prompt === "the page asked" && sentAudio.args[0].size > 0, JSON.stringify(sentAudio?.args[0]));
 ok("A120 the shell records in this engine", Boolean(sentAudio), sentAudio?.args[0].mimeType);
 
-// A page that re-asks the moment the reader cancels, riding the click on Cancel, gets no bar. R3.32a
+// A page that re-asks the moment the reader cancels, riding the click on Cancel, gets only an armed
+// bar: the microphone stays off until the reader presses Record in the bar itself. R3.32a
+const gum = () => shell.evaluate(() => window.__gum);
+const barState = () => bar.evaluate((node) => (node.hidden ? "hidden" : node.dataset.state));
 await settle();
 await pageFrame().locator("#speak-again").click();
 await bar.waitFor({ state: "visible", timeout: 10_000 });
 await sleep(1_200);
+const gumBefore = await gum();
 await shell.locator('[data-rec="cancel"]').click();
+await sleep(800);
+const armedState = await barState();
+const gumArmed = await gum();
+const recordShown = await shell.locator('[data-rec="record"]').isVisible();
+const doneShown = await done.isVisible();
+ok("R3.32a after Cancel, the page re-asking at once gets an armed bar with the microphone off", armedState === "armed" && gumArmed === gumBefore && recordShown && !doneShown, `${armedState}; getUserMedia ${gumBefore} → ${gumArmed}`);
+await shell.locator('[data-rec="record"]').click();
+await sleep(1_500);
+const afterRecord = await barState();
+ok("R3.32a Record in the armed bar starts the microphone and recording", afterRecord === "recording" && (await gum()) === gumArmed + 1, `${afterRecord}; getUserMedia ${await gum()}`);
+await done.click();
 const again = await output("again-result");
-ok("R3.32a after the reader clicks Cancel, the page re-asking at once opens no bar", again?.first === "cancelled" && again?.second === "unavailable" && !(await barOpen()), JSON.stringify(again));
+ok("R3.32a the armed recording is delivered after Done", again?.first === "cancelled" && again?.second === "ok", JSON.stringify(again));
 
 // Escape and Cancel. A122
+await set("reset=1");
 for (const how of ["Escape", "Cancel", "Escape in the page"]) {
   await clearOutput("voice-result");
   await settle();
@@ -181,7 +207,7 @@ for (const how of ["Escape", "Cancel", "Escape in the page"]) {
     await shell.keyboard.press("Escape");
   }
   const cancelled = await output("voice-result");
-  ok(`A122 ${how} rejects with cancelled and sends nothing`, cancelled && cancelled.code === "cancelled" && (await callsOf("voice.transcribe")).length === 1, JSON.stringify(cancelled));
+  ok(`A122 ${how} rejects with cancelled and sends nothing`, cancelled && cancelled.code === "cancelled" && (await callsOf("voice.transcribe")).length === 0, JSON.stringify(cancelled));
 }
 
 // One at a time, questions included, and Too short. A122a
@@ -195,7 +221,7 @@ ok("A122a a second bar, and a confirmation, are declined while the bar is open",
 await done.click();
 const shortText = await shell.locator("[data-rec-status]").textContent();
 const short = await output("voice-result");
-ok("A122a Done under 1 s says Too short, sends nothing and is cancelled", shortText === "Too short" && short && short.code === "cancelled" && (await callsOf("voice.transcribe")).length === 1, `${shortText} / ${JSON.stringify(short)}`);
+ok("A122a Done under 1 s says Too short, sends nothing and is cancelled", shortText === "Too short" && short && short.code === "cancelled" && (await callsOf("voice.transcribe")).length === 0, `${shortText} / ${JSON.stringify(short)}`);
 
 // --- the text-area controls (A126, A127, A130a) ---------------------------------------------------
 const layer = await pageFrame().evaluate(() => {
@@ -260,6 +286,18 @@ const dictated = await pageFrame().evaluate(() => ({ value: document.getElementB
 const dictatePrompt = (await callsOf("voice.transcribe"))[0]?.args[0].prompt;
 ok("A128 dictation inserts at the caret with a separating space and fires input and change", dictated.value === `Hello ${TRANSCRIPT} world` && dictated.events.join() === "input,change", JSON.stringify(dictated));
 ok("A128 the text before the caret went as context", dictatePrompt === "Hello", dictatePrompt);
+// Right after Done, Dictate again: the last press was in the shell's chrome, so the bar comes armed. R3.32a
+const gumBeforeAgain = await gum();
+await pageFrame().locator('button[aria-label="Dictate"]').first().click();
+await bar.waitFor({ state: "visible", timeout: 10_000 });
+await sleep(500);
+const againState = await barState();
+const gumStill = await gum();
+await shell.locator('[data-rec="record"]').click();
+await recordAndFinish();
+await sleep(300);
+const twice = await pageFrame().evaluate(() => document.getElementById("notes").value);
+ok("R3.32a Dictate right after Done opens an armed bar; Record, then Done, inserts again", againState === "armed" && gumStill === gumBeforeAgain && twice.includes(`${TRANSCRIPT} ${TRANSCRIPT}`) , `${againState}; ${twice}`);
 
 // --- Attach, paste, drop (A129, A130, A130a) -----------------------------------------------------
 const afterBefore = await pageFrame().locator("#after").boundingBox();

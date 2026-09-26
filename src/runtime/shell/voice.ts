@@ -2,6 +2,7 @@ import { LIMITS } from "../../domain/limits.ts";
 import type { BridgeErrorCode } from "../../domain/errors.ts";
 import { isRecord, type ShellConfig } from "../shared/protocol.ts";
 import { encodeBase64 } from "./base64.ts";
+import type { GestureDecision } from "./gesture.ts";
 
 /**
  * The shell's recorder and its recording bar. spec R3.30–R3.34, R5.68–R5.73,
@@ -25,6 +26,8 @@ export interface RecorderElements {
   status: HTMLElement;
   cancel: HTMLButtonElement;
   done: HTMLButtonElement;
+  /** Starts an armed bar's recording: the reader's own press in the shell's chrome. spec R3.32a */
+  record: HTMLButtonElement;
 }
 
 export interface Recording {
@@ -38,8 +41,11 @@ export type VoiceOutcome<T> = { ok: true; value: T } | { ok: false; code: Bridge
 
 export interface CaptureOptions {
   maxDurationSeconds: number;
-  /** Null when the reader had just acted in the page as the request arrived; otherwise why not. spec R3.32a */
-  refusal: string | null;
+  /**
+   * As the shell judged the reader's gesture when the request arrived: record
+   * at once, open armed (the microphone starts only on Record), or refuse. spec R3.32a
+   */
+  gesture: GestureDecision;
   /** What the bar says it is for. */
   purpose: "capability" | "dictate" | "audio";
 }
@@ -79,6 +85,8 @@ export const PREFERRED_DEVICE_KEY = "bb.voiceInput.audioInputDeviceId";
 const RECORDING_TYPES = ["audio/webm", "audio/mp4", "audio/ogg"];
 const SLICE_MS = 250;
 const TOO_SHORT_MS = 900;
+/** An armed bar's Record ignores a click this long after it appears. spec R3.22a */
+const ARM_MS = 400;
 
 export class VoiceFailure extends Error {
   readonly code: BridgeErrorCode;
@@ -206,7 +214,7 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
     return media.getUserMedia({ audio: true });
   }
 
-  const { bar, wave, time, status, cancel, done } = elements;
+  const { bar, wave, time, status, cancel, done, record: recordButton } = elements;
 
   function say(text: string): void {
     status.textContent = text;
@@ -218,6 +226,8 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
     bar.dataset.purpose = purpose;
     time.textContent = "0:00";
     done.disabled = true;
+    done.hidden = false;
+    recordButton.hidden = true;
     cancel.disabled = false;
     say("Starting the microphone…");
     // The bar takes the keyboard, so Escape reaches it wherever the reader was typing.
@@ -240,7 +250,7 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
   function capture<T>(options: CaptureOptions, work: (recording: Recording) => Promise<T>): Promise<VoiceOutcome<T>> {
     // One question at a time, only on the reader's action. spec R3.32a
     if (open || deps.questionOpen()) return Promise.resolve({ ok: false, code: "unavailable", message: "Another question is open in the top bar; answer it first." });
-    if (options.refusal !== null) return Promise.resolve({ ok: false, code: "unavailable", message: options.refusal });
+    if (options.gesture.mode === "refuse") return Promise.resolve({ ok: false, code: "unavailable", message: options.gesture.reason });
     open = true;
     return surfaceProblem().then((problem) => {
       if (problem) {
@@ -271,6 +281,7 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
       let stopped: Promise<void> | null = null;
       let finished = false;
       let busy = false;
+      let disarm: (() => void) | null = null;
 
       function release(): void {
         if (ticker !== null) clearInterval(ticker);
@@ -300,6 +311,9 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
         win.removeEventListener("pagehide", onCancel);
         cancel.removeEventListener("click", onCancel);
         done.removeEventListener("click", onDoneClick);
+        disarm?.();
+        recordButton.hidden = true;
+        done.hidden = false;
         open = false;
         cancelOpen = null;
         hide();
@@ -423,87 +437,114 @@ export function createVoice(win: Window & typeof globalThis, config: ShellConfig
       cancel.addEventListener("click", onCancel);
       done.addEventListener("click", onDoneClick);
 
-      openStream().then(
-        (media) => {
-          if (finished) {
-            for (const track of media.getTracks()) track.stop();
-            return;
-          }
-          stream = media;
-          const type = recordingType(win);
-          try {
-            recorder = type ? new win.MediaRecorder(media, { mimeType: type }) : new win.MediaRecorder(media);
-          } catch {
-            finish({ ok: false, code: "unavailable", message: "This browser cannot record here." });
-            return;
-          }
-          recorder.addEventListener("dataavailable", (event: BlobEvent) => {
-            if (event.data && event.data.size > 0) {
-              chunks.push(event.data);
-              // Firefox leaves the recorder's own type empty; the chunk has it. spec R5.71
-              if (!chunkType && event.data.type) chunkType = event.data.type;
+      /** Opens the microphone and records: at once, or when an armed bar's Record is pressed. */
+      function begin(): void {
+        openStream().then(
+          (media) => {
+            if (finished) {
+              for (const track of media.getTracks()) track.stop();
+              return;
             }
-          });
-          recorder.addEventListener("error", () => finish({ ok: false, code: "unavailable", message: "The recording failed." }));
-          try {
-            recorder.start(SLICE_MS);
-          } catch {
-            finish({ ok: false, code: "unavailable", message: "The recording could not start." });
-            return;
-          }
-          startedAt = Date.now();
-          bar.dataset.state = "recording";
-          done.disabled = false;
-          say("Recording. Press Done to send it, Cancel or Escape to discard it.");
-          const limitMs = options.maxDurationSeconds * 1000;
-          ticker = setInterval(() => {
-            time.textContent = clock(Date.now() - startedAt);
-          }, SLICE_MS);
-          // At the cap the recorder stops; nothing leaves until Done. spec R5.70
-          cap = setTimeout(() => {
-            void stop().then(() => {
-              if (finished) return;
-              time.textContent = clock(limitMs);
-              bar.dataset.state = "limit";
-              say(`Reached ${clock(limitMs)}, the most for this recording. Done sends it; Cancel discards it.`);
+            stream = media;
+            const type = recordingType(win);
+            try {
+              recorder = type ? new win.MediaRecorder(media, { mimeType: type }) : new win.MediaRecorder(media);
+            } catch {
+              finish({ ok: false, code: "unavailable", message: "This browser cannot record here." });
+              return;
+            }
+            recorder.addEventListener("dataavailable", (event: BlobEvent) => {
+              if (event.data && event.data.size > 0) {
+                chunks.push(event.data);
+                // Firefox leaves the recorder's own type empty; the chunk has it. spec R5.71
+                if (!chunkType && event.data.type) chunkType = event.data.type;
+              }
             });
-          }, limitMs);
-          try {
-            const Context = (win as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext ??
-              (win as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-            if (Context) {
-              audio = new Context();
-              // An engine may create it suspended; the waveform needs it running.
-              void audio.resume?.().catch(() => undefined);
-              const analyser = audio.createAnalyser();
-              analyser.fftSize = 512;
-              audio.createMediaStreamSource(media).connect(analyser);
-              animate(analyser);
+            recorder.addEventListener("error", () => finish({ ok: false, code: "unavailable", message: "The recording failed." }));
+            try {
+              recorder.start(SLICE_MS);
+            } catch {
+              finish({ ok: false, code: "unavailable", message: "The recording could not start." });
+              return;
             }
-          } catch {
-            // The waveform is a courtesy; the recording goes on without it.
-          }
-          const lock = (win.navigator as Navigator & { wakeLock?: { request(type: "screen"): Promise<{ release(): Promise<void> }> } }).wakeLock;
-          lock?.request("screen").then(
-            (held) => {
-              if (finished) void held.release().catch(() => undefined);
-              else wakeLock = held;
-            },
-            () => undefined,
-          );
-        },
-        (error: unknown) => {
-          const name = (error as { name?: string }).name;
-          if (name === "NotAllowedError" || name === "SecurityError") {
-            // Refused where it looked possible: no voice here until the reader reloads. spec R8.37
-            refused = true;
-            void notify();
-            finish({ ok: false, code: "unavailable", message: "The microphone was not allowed. Reload the page to try again." });
-            return;
-          }
-          finish({ ok: false, code: "unavailable", message: name === "NotFoundError" ? "No microphone was found." : "The microphone could not be started." });
-        },
-      );
+            startedAt = Date.now();
+            bar.dataset.state = "recording";
+            done.disabled = false;
+            say("Recording. Press Done to send it, Cancel or Escape to discard it.");
+            const limitMs = options.maxDurationSeconds * 1000;
+            ticker = setInterval(() => {
+              time.textContent = clock(Date.now() - startedAt);
+            }, SLICE_MS);
+            // At the cap the recorder stops; nothing leaves until Done. spec R5.70
+            cap = setTimeout(() => {
+              void stop().then(() => {
+                if (finished) return;
+                time.textContent = clock(limitMs);
+                bar.dataset.state = "limit";
+                say(`Reached ${clock(limitMs)}, the most for this recording. Done sends it; Cancel discards it.`);
+              });
+            }, limitMs);
+            try {
+              const Context = (win as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext ??
+                (win as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+              if (Context) {
+                audio = new Context();
+                // An engine may create it suspended; the waveform needs it running.
+                void audio.resume?.().catch(() => undefined);
+                const analyser = audio.createAnalyser();
+                analyser.fftSize = 512;
+                audio.createMediaStreamSource(media).connect(analyser);
+                animate(analyser);
+              }
+            } catch {
+              // The waveform is a courtesy; the recording goes on without it.
+            }
+            const lock = (win.navigator as Navigator & { wakeLock?: { request(type: "screen"): Promise<{ release(): Promise<void> }> } }).wakeLock;
+            lock?.request("screen").then(
+              (held) => {
+                if (finished) void held.release().catch(() => undefined);
+                else wakeLock = held;
+              },
+              () => undefined,
+            );
+          },
+          (error: unknown) => {
+            const name = (error as { name?: string }).name;
+            if (name === "NotAllowedError" || name === "SecurityError") {
+              // Refused where it looked possible: no voice here until the reader reloads. spec R8.37
+              refused = true;
+              void notify();
+              finish({ ok: false, code: "unavailable", message: "The microphone was not allowed. Reload the page to try again." });
+              return;
+            }
+            finish({ ok: false, code: "unavailable", message: name === "NotFoundError" ? "No microphone was found." : "The microphone could not be started." });
+          },
+        );
+      }
+
+      if (options.gesture.mode === "arm") {
+        // The shell could not tell the ask came from the reader's press in the page: the microphone
+        // stays off, and only the reader's own press on Record, in the shell's chrome, starts it.
+        // Record ignores a click for a moment after it appears, so it cannot be slid under one.
+        const armedAt = Date.now();
+        bar.dataset.state = "armed";
+        done.hidden = true;
+        recordButton.hidden = false;
+        say("Press Record to start recording, or Cancel.");
+        const onRecord = (event: Event) => {
+          if (!event.isTrusted || finished || Date.now() - armedAt < ARM_MS) return;
+          recordButton.removeEventListener("click", onRecord);
+          recordButton.hidden = true;
+          done.hidden = false;
+          bar.dataset.state = "starting";
+          say("Starting the microphone…");
+          begin();
+        };
+        recordButton.addEventListener("click", onRecord);
+        disarm = () => recordButton.removeEventListener("click", onRecord);
+      } else {
+        begin();
+      }
     });
   }
 
