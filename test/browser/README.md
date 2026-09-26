@@ -90,3 +90,18 @@ activation in all three engines, and Chromium sends the shell no pointer
 boundary events for the frame, so neither is evidence of the reader's action.
 Firefox keeps the files of a script-built paste event to itself, so
 that one step is noted, not checked, there; a real paste carries them.
+
+## Hostile pages against the kernel (review of 26 September 2026)
+
+`kernel-hostile.mjs` needs no bb either: it serves this worktree's bundled
+kernel inside a sandboxed frame whose parent plays the shell's handshake, and
+checks the review's proofs of concept — a synthetic handshake, a throwing
+original under a patched `postMessage`, a script's Tab before a real Enter,
+`ElementInternals` and a patched `createElement`, a top-layer overlay and a
+filtered-away page over Dictate — plus the rows under scripted and wheel
+scrolling in body, element and sticky scrollers, right-to-left, and a narrow
+field.
+
+    PLAYWRIGHT=<…>/playwright/index.mjs node test/browser/kernel-hostile.mjs
+
+Results of 26 September 2026: 45 of 45 across Chromium, Firefox and WebKit.
