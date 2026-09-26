@@ -75,31 +75,53 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
 - **The controls stay on their field while scrolling.** The layer's host now
   sits at the document's origin (`position: absolute`) and each row is placed
   in document coordinates, so page scrolling moves it with the field on the
-  compositor, with no script per scroll. A field in a scrolling element or
-  under a sticky ancestor is placed again on its scroll events, in the same
-  frame; one under a fixed ancestor gets a fixed row. Measured every animation
-  frame during fast scripted and wheel scrolling: 0 px off in all three
-  engines (1.7.0 as merged: up to 966 px).
+  compositor, with no script per scroll. A field under a fixed ancestor, or a
+  sticky one stuck to the viewport, gets a fixed row. A field inside a
+  scrolling element — the body too, when `<html>` has an overflow of its own
+  and the body scrolls — is placed again on that element's scroll events and
+  its row is hidden while the element scrolls, coming back 120 ms after it
+  stops: a main-thread re-place would trail compositor scrolling by a frame.
+  Measured every animation frame during scripted and wheel scrolling: 0 px off
+  while shown in all three engines (1.7.0 as merged: up to 966 px, and 30 px
+  on a body-scrolling page before this).
 - **Attached files sit in the row, inside the field.** One row at the field's
-  bottom-right: a chip per file (a line file icon, the name shortened in the
-  middle keeping its extension, a remove button named *Remove <name>*), then
-  Dictate and Attach files; what does not fit the field's width is behind a
-  *+N* chip (*Show N more files*) that opens a list of them, each removable.
-  Refusals show above the row for 8 s. Nothing is drawn below the field any
-  more.
-- **A text area's microphone always records at once**, right after Done or
-  Cancel too. The kernel asks the shell to record immediately only from its
-  own Dictate control and only for a trusted press; the shell still requires
-  its own `navigator.userActivation.isActive`, but skips the chrome window and
-  the cooldown for that ask. `voice.captureAndTranscribe` from page script
-  still opens armed in those windows. The kernel takes `postMessage`, the port
-  handler setter, `MessageEvent` getters, `addEventListener`, `attachShadow`,
-  `stopImmediatePropagation` and `Reflect.apply` when it starts, before any page
-  script, so a page that patches prototypes later can neither reach the port
-  nor claim the control. The kernel is still page territory (R3.33): a page
-  that subverted it could at most open a bar that records at once within the
-  few seconds after a press on the shell's chrome — Done is still the reader's.
-  Inside an embed, Dictate stays on the ordinary path (armed in those windows).
+  bottom-right (bottom-left in right-to-left text): a chip per file (a line
+  file icon, the name shortened in the middle keeping its extension, a remove
+  button named *Remove <name>*), then Dictate and Attach files; what does not
+  fit is behind *+N* (*Show N more files*), which opens a list of them, each
+  removable; with hardly any room, one *N files* chip. Refusals show above the
+  row, stacked with the list. Chips take the nearest opaque background behind
+  the field, or the canvas in the page's colour scheme. Nothing is drawn below
+  the field any more.
+- **A text area's microphone records at once**, right after Done or Cancel
+  too — when the reader's own press (a trusted event) lands on a plainly
+  visible control: no page element in the top layer, nothing painted after the
+  layer, the document neither faded, filtered, clipped nor hidden, and the
+  field's colour not transparent. Otherwise, and for
+  `voice.captureAndTranscribe` from page script, the bar opens armed in the
+  windows after a press on the shell's chrome. The shell still requires its
+  own live activation.
+- **Hardening of the kernel.** The handshake is accepted only as a trusted
+  message from the parent, and every genuine one is stopped before any page
+  listener, so a page can neither slip in its own port nor catch the shell's.
+  The kernel takes `postMessage`, the port's `onmessage` setter and `start`,
+  the `MessageEvent` getters, `addEventListener`, `stopImmediatePropagation`,
+  the keyboard event getters, `Reflect.apply` and every DOM operation it uses
+  on the layer when it starts, before any page script; an error an original
+  raises is raised, never retried through a live, page-patchable method. The
+  layer's host is a plain `<div>`, so a page cannot define it as a custom
+  element and read its closed root through `ElementInternals`. Only trusted
+  keys move focus onto the controls. What this does not change: the kernel is
+  page territory (R3.33). A page can still cover, hide or remove the controls,
+  lure the reader into pressing one, or break the kernel before a gesture
+  reaches it; the most a page gains is a recording bar that records at once,
+  with the bar visible and Done still the reader's.
+- Inside an embed, Dictate stays on the ordinary path (armed in those windows).
+- `test/browser/kernel-hostile.mjs`: the review's hostile pages (a synthetic
+  handshake, a throwing original under a patched `postMessage`, a script's Tab,
+  `ElementInternals` and a patched `createElement`, a top-layer overlay, a
+  filtered page), scrolling in body, element and sticky scrollers with the
+  wheel, right-to-left and a narrow field: 45 of 45 across the three engines.
 
 ### Files with `sessions.start` and `sessions.send` (D40)
 

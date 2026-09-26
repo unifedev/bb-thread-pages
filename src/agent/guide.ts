@@ -131,8 +131,10 @@ drawn by the host in the field's own text colour: the files attached to it,
 then **Dictate** (a microphone) and **Attach files** (a paperclip). The row
 lives in a layer of the host's outside your document tree — your CSS does not
 reach it, the field's markup, attributes and style are untouched, nothing
-moves, nothing is drawn below the field, and it scrolls with the field — and
-its buttons are reached by Tab right after the field. Dictate records the
+moves, nothing is drawn below the field, and it scrolls with the field (inside
+a scrolling element of yours it hides while that element scrolls) — and its
+buttons are reached by Tab right after the field. In right-to-left text the row
+sits at the bottom-left. Dictate records the
 reader in the host's recording bar at once and inserts the host's transcript at
 the caret, then fires \`input\` and \`change\`. Attach — or pasting or dropping
 files onto the field — adds a chip per file to the row (the name shortened in
@@ -499,8 +501,10 @@ recorder with no code (above).
   after one, and 2 s after a bar or dialog closes, a call from your page opens
   the bar **armed** — the microphone stays off until the reader presses Record
   in it. A page that re-asks after \`cancelled\` therefore only puts an armed
-  bar back in front of the reader. Don't. (A text area's own Dictate always
-  records at once: the host's kernel knows the reader pressed it.)
+  bar back in front of the reader. Don't. (A text area's own Dictate records
+  at once when the reader presses it where it is plainly visible — not under
+  anything of yours in the top layer, on a document you have not faded or
+  filtered away.)
 - \`cancelled\`: Cancel, Escape, or Done before ${LIMITS.voiceMinMs / 1000} s (the bar says *Too short*).
   \`request_too_large\`: over the host's size limit. \`unavailable\`, with the
   reason: no transcription service on this host, a browser or app that cannot
