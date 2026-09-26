@@ -7,6 +7,7 @@ import { createEmbedManager, EMBEDDED_FILES_REFUSAL } from "./embed.ts";
 import { installAudioInputs } from "./audio-input.ts";
 import { buildIntent, fileLimitProblem, formsReachedFrom, isManualForm, lockForm, ownerForm, prepareForm, statusLine, unlockForm, type PendingForm } from "./forms.ts";
 import { createLargeMedia } from "./large-media.ts";
+import { capturePrimitives } from "./primitives.ts";
 import { createReadOnlyController } from "./readonly.ts";
 import { createRecordClient } from "./record-client.ts";
 import { createTextAreaControls } from "./textareas.ts";
@@ -25,6 +26,9 @@ export interface KernelHandle {
 }
 
 export function installKernel(win: Window & typeof globalThis, config: KernelConfig): KernelHandle {
+  // Taken before any page script runs: the port is reached only through these. See primitives.ts.
+  const prim = capturePrimitives(win);
+  const parentWindow = win.parent;
   const doc = win.document;
   let port: MessagePort | null = null;
   const pendingForms = new Map<string, PendingForm>();
@@ -33,7 +37,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   function post(message: KernelMessage): boolean {
     if (!port) return false;
     try {
-      port.postMessage(message);
+      prim.post(port, message);
       return true;
     } catch {
       return false;
@@ -64,7 +68,9 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     embedded: config.embedded === true,
     uploads: config.uploads !== false,
     isReadOnly: () => readOnly.isReadOnly(),
-    dictate: (prompt) => recorder.request("dictate", prompt),
+    // Only the reader's own press on the kernel's control asks the shell to record at once. spec R3.32a
+    dictate: (prompt, fromControl) => recorder.request("dictate", prompt, fromControl),
+    primitives: prim,
     markDirty: (form) => {
       if (!isManualForm(form)) dirty.markForm(form);
     },
@@ -232,28 +238,28 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
 
   function connect(next: MessagePort): void {
     port = next;
-    next.onmessage = (message) => onShellMessage(message.data);
-    next.start?.();
+    prim.listen(next, (message) => onShellMessage(prim.data(message)));
     bridge.attach((request) => {
-      next.postMessage(request);
+      prim.post(next, request);
     });
     if (dirty.isDirty()) post({ kind: "thread-page:dirty" });
     largeMedia.flush();
   }
 
   function acceptPort(event: MessageEvent): void {
-    if (port || event.source !== win.parent) return;
-    const data = event.data as unknown;
-    if (!isRecord(data) || data.kind !== "thread-page:connect" || data.version !== HANDSHAKE_VERSION || !event.ports || event.ports.length !== 1) return;
-    event.stopImmediatePropagation();
-    const next = event.ports[0];
+    if (port || prim.source(event) !== parentWindow) return;
+    const data = prim.data(event);
+    const ports = prim.ports(event);
+    if (!isRecord(data) || data.kind !== "thread-page:connect" || data.version !== HANDSHAKE_VERSION || !ports || ports.length !== 1) return;
+    prim.stop(event);
+    const next = ports[0];
     if (next) connect(next);
   }
   win.addEventListener("message", acceptPort, true);
 
   if (config.stale) readOnly.apply(true);
   // The revision lets the shell notice a document newer than the token it holds for it.
-  win.parent.postMessage({ kind: "thread-page:ready", version: HANDSHAKE_VERSION, revision: config.pageRevision }, "*");
+  parentWindow.postMessage({ kind: "thread-page:ready", version: HANDSHAKE_VERSION, revision: config.pageRevision }, "*");
 
   return { deliver: (message) => onShellMessage(message), connect: (fake) => connect(fake as MessagePort) };
 }

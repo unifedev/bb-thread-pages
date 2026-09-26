@@ -2,7 +2,7 @@ import { JSDOM } from "jsdom";
 import { describe, expect, it, vi } from "vitest";
 import { createEmbedManager } from "../../src/runtime/kernel/embed.ts";
 import { installKernel, type KernelHandle } from "../../src/runtime/kernel/install.ts";
-import { LAYER_TAG } from "../../src/runtime/kernel/textareas.ts";
+import { chipName, LAYER_TAG } from "../../src/runtime/kernel/textareas.ts";
 
 /**
  * Every text area can take voice and files, the audio capture input, and
@@ -50,14 +50,18 @@ function install(body: string, options: { uploads?: boolean; embedded?: boolean;
   return { win, doc: win.document, handle, posted, roots, frame };
 }
 
-function controlsFor(fixture: Fixture, index = 0): { group: HTMLElement; dictate: HTMLButtonElement; attach: HTMLButtonElement; list: HTMLElement; picker: HTMLInputElement } {
+function controlsFor(fixture: Fixture, index = 0): { group: HTMLElement; dictate: HTMLButtonElement; attach: HTMLButtonElement; list: HTMLElement; note: HTMLElement; more: HTMLButtonElement; popup: HTMLElement; picker: HTMLInputElement } {
   const root = fixture.roots[0]!;
   const group = root.querySelectorAll<HTMLElement>(".group")[index]!;
   return {
     group,
     dictate: group.querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')!,
     attach: group.querySelector<HTMLButtonElement>('button[aria-label="Attach files"]')!,
-    list: root.querySelectorAll<HTMLElement>(".list")[index]!,
+    // The files sit in the row itself now, before the controls. Owner feedback, 1.7.0
+    list: group.querySelector<HTMLElement>(".chips")!,
+    note: group.querySelector<HTMLElement>(".note")!,
+    more: group.querySelector<HTMLButtonElement>("button.more")!,
+    popup: group.querySelector<HTMLElement>(".popup")!,
     picker: group.querySelector<HTMLInputElement>('input[type="file"]')!,
   };
 }
@@ -81,7 +85,8 @@ describe("the text-area controls (R4.55–R4.57, A126, A127, A130a)", () => {
     await fixture.frame();
     const host = fixture.doc.documentElement.lastElementChild!;
     expect(host.tagName.toLowerCase()).toBe(LAYER_TAG);
-    expect(host.getAttribute("style")).toContain("position:fixed !important");
+    // At the document's origin, so rows in document coordinates scroll with the page on their own.
+    expect(host.getAttribute("style")).toContain("position:absolute !important");
     expect(host.getAttribute("style")).toContain("z-index:2147483647 !important");
     expect(fixture.doc.body.contains(host)).toBe(false);
     const { dictate, attach, group } = controlsFor(fixture);
@@ -89,6 +94,9 @@ describe("the text-area controls (R4.55–R4.57, A126, A127, A130a)", () => {
     expect(dictate.tagName).toBe("BUTTON");
     // Over the bottom-right corner, clear of the resize handle (jsdom computes no `resize`, so the inset applies).
     expect(group.style.top).toBe(`${100 + 1 + 118 - 24 - 3}px`);
+    // Anchored by its right edge, at the field's inner right edge less the inset; it grows leftward.
+    expect(group.style.left).toBe(`${100 + 1 + 398 - 3}px`);
+    expect(group.style.position).toBe("absolute");
     expect(dictate.querySelector("svg")).not.toBeNull();
     expect(field.outerHTML).toBe(before);
     // That the page's rules on `*`, `button` and `svg` reach nothing inside is the browser pass's to see (jsdom's cascade ignores shadow boundaries).
@@ -197,7 +205,7 @@ describe("Dictate (R4.58, A128)", () => {
     fixture.handle.deliver({ kind: "thread-page:recorded", id: second.id as string, ok: false, code: "unavailable", message: "The recording could not be transcribed." });
     await fixture.frame();
     expect(field.value).toBe("Start");
-    expect(list.textContent).toContain("Dictation failed: The recording could not be transcribed.");
+    expect(controlsFor(fixture).note.textContent).toContain("Dictation failed: The recording could not be transcribed.");
     dictate.click();
     const third = fixture.posted.filter((message) => message.kind === "thread-page:record").at(-1)!;
     fixture.handle.deliver({ kind: "thread-page:recorded", id: third.id as string, ok: true, text: "and more." });
@@ -208,7 +216,7 @@ describe("Dictate (R4.58, A128)", () => {
 });
 
 describe("Attach (R4.60–R4.62, A129, A130, A132)", () => {
-  it("lists chosen, pasted and dropped files under the field, removes one, and sends the rest beside the field", async () => {
+  it("shows chosen, pasted and dropped files in the row before the controls, removes one, and sends the rest beside the field", async () => {
     const fixture = install(FORM);
     await fixture.frame();
     const field = fixture.doc.querySelector("textarea")!;
@@ -224,9 +232,10 @@ describe("Attach (R4.60–R4.62, A129, A130, A132)", () => {
     field.dispatchEvent(drop);
     expect(drop.defaultPrevented).toBe(true);
     await fixture.frame();
-    expect(list.hidden).toBe(false);
-    expect(Array.from(list.querySelectorAll(".chip span")).map((node) => node.textContent)).toEqual(["shot.png (3 B)", "memo.ogg (3 B)", "extra.txt (1 B)"]);
-    expect(list.style.top).toBe("224px");
+    expect(list.parentElement!.hidden).toBe(false);
+    expect(Array.from(list.querySelectorAll(".chip .name")).map((node) => node.textContent)).toEqual(["shot.png", "memo.ogg", "extra.txt"]);
+    // In the row, before Dictate and Attach files; nothing below the field.
+    expect(list.nextElementSibling?.nextElementSibling?.getAttribute("aria-label")).toBe("Dictate");
     expect(fixture.posted).toContainEqual({ kind: "thread-page:dirty" });
     list.querySelector<HTMLButtonElement>('button[aria-label="Remove extra.txt"]')!.click();
     await fixture.frame();
@@ -247,13 +256,13 @@ describe("Attach (R4.60–R4.62, A129, A130, A132)", () => {
     const { picker, list } = controlsFor(fixture);
     choose(picker, [new fixture.win.File(["x"], "ninth.txt")]);
     await fixture.frame();
-    expect(list.textContent).toContain("Not added: at most 8 files per form");
+    expect(controlsFor(fixture).note.textContent).toContain("Not added: at most 8 files per form");
     const big = new fixture.win.File(["x"], "big.bin");
     Object.defineProperty(big, "size", { value: 25 * 1024 * 1024 });
     Object.defineProperty(upload, "files", { configurable: true, value: [] });
     choose(picker, [big]);
     await fixture.frame();
-    expect(list.textContent).toContain("“big.bin” is larger than 24 MiB");
+    expect(controlsFor(fixture).note.textContent).toContain("“big.bin” is larger than 24 MiB");
     // Nine through the file input alone: the form is not sent, and says why.
     Object.defineProperty(upload, "files", { configurable: true, value: Array.from({ length: 9 }, (_, index) => new fixture.win.File(["x"], `g${index}.txt`)) });
     const form = fixture.doc.querySelector("form")!;
@@ -390,7 +399,7 @@ describe("after review", () => {
     field.addEventListener("paste", (event) => event.preventDefault());
     field.dispatchEvent(Object.assign(new fixture.win.Event("paste", { bubbles: true, cancelable: true }), { clipboardData: { files: [new fixture.win.File(["x"], "x.txt")], types: ["Files"] } }));
     await fixture.frame();
-    expect(controlsFor(fixture).list.hidden).toBe(true);
+    expect(controlsFor(fixture).list.children).toHaveLength(0);
     field.dispatchEvent(new fixture.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(fixture.posted).toContainEqual({ kind: "thread-page:escape" });
   });
@@ -401,5 +410,50 @@ describe("after review", () => {
     const request = fixture.posted.find((message) => message.method === "sessions.start")!;
     expect(request.params).toEqual({ projectId: "proj_a", prompt: "go" });
     expect(request).not.toHaveProperty("files");
+  });
+});
+
+describe("files in the row (owner feedback, 1.7.0)", () => {
+  it("shorten a long name in the middle, keeping its extension", () => {
+    expect(chipName("report.pdf")).toBe("report.pdf");
+    expect(chipName("quarterly-financial-report-final.pdf")).toBe("quarterl…final.pdf");
+    expect(chipName("quarterly-financial-report-final.pdf").length).toBe(18);
+    expect(chipName("a-very-long-name-without-extension")).toMatch(/^a-very-long…/);
+  });
+
+  it("show as many chips as fit beside the controls, the rest behind +N, which lists them removable", async () => {
+    const fixture = install(FORM);
+    // Chips 120 px wide, the "+N" 30 px: 339 px of room beside the controls in this field.
+    Object.defineProperty(fixture.win.HTMLSpanElement.prototype, "getBoundingClientRect", { configurable: true, value: () => ({ width: 120 }) });
+    Object.defineProperty(fixture.win.HTMLButtonElement.prototype, "getBoundingClientRect", { configurable: true, value: () => ({ width: 30 }) });
+    await fixture.frame();
+    const { picker, list, more, popup } = controlsFor(fixture);
+    choose(picker, ["a.txt", "b.txt", "c.txt"].map((name) => new fixture.win.File(["x"], name)));
+    await fixture.frame();
+    const shown = Array.from(list.querySelectorAll<HTMLElement>(".chip")).filter((chip) => !chip.hidden);
+    expect(shown.map((chip) => chip.querySelector(".name")!.textContent)).toEqual(["a.txt", "b.txt"]);
+    expect(more.hidden).toBe(false);
+    expect(more.textContent).toBe("+1");
+    expect(more.getAttribute("aria-label")).toBe("Show 1 more file");
+    expect(popup.hidden).toBe(true);
+    more.click();
+    expect(popup.hidden).toBe(false);
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    popup.querySelector<HTMLButtonElement>('button[aria-label="Remove c.txt"]')!.click();
+    await fixture.frame();
+    expect(more.hidden).toBe(true);
+    const form = fixture.doc.querySelector("form")!;
+    form.dispatchEvent(new fixture.win.SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    const sent = fixture.posted.find((message) => message.kind === "thread-page:submit")!;
+    expect((sent.files as { file: File }[]).map((entry) => entry.file.name)).toEqual(["a.txt", "b.txt"]);
+  });
+
+  it("send the control flag only for the reader's own press, never for a script's click", async () => {
+    const fixture = install(FORM);
+    await fixture.frame();
+    controlsFor(fixture).dictate.click();
+    const ask = fixture.posted.find((message) => message.kind === "thread-page:record")!;
+    expect(ask.purpose).toBe("dictate");
+    expect(ask).not.toHaveProperty("control");
   });
 });

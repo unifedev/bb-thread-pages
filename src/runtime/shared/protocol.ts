@@ -56,7 +56,12 @@ export type KernelMessage =
   /** An own media file too large to carry: the shell fetches it and hands the bytes back. spec R4.25a, D37 */
   | { kind: "thread-page:file-request"; id: string; path: string }
   /** Dictate, or an audio capture input: open the shell's recording bar. spec R4.58, R4.24a, D38 */
-  | { kind: "thread-page:record"; id: string; purpose: RecordPurpose; prompt?: string }
+  /**
+   * `control`: the reader's own press on the kernel's Dictate control. The
+   * shell then records at once whenever its own document has the reader's
+   * activation, even right after a press on its chrome. spec R3.32a
+   */
+  | { kind: "thread-page:record"; id: string; purpose: RecordPurpose; prompt?: string; control?: true }
   /** Escape pressed in the page: an open recording bar is cancelled. Cancelling is always safe. spec R3.32 */
   | { kind: "thread-page:escape" }
   | BridgeRequestMessage;

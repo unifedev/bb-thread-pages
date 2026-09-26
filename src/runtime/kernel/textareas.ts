@@ -1,18 +1,26 @@
 import { LIMITS, mebibytes } from "../../domain/limits.ts";
 import type { SubmitFile } from "../shared/protocol.ts";
 import { controlsOf, filesOf, isManualForm, MANUAL_ATTRIBUTE, ownerForm } from "./forms.ts";
+import type { KernelPrimitives } from "./primitives.ts";
 import type { RecordAnswer } from "./record-client.ts";
 
 /**
  * Every text area can take voice and files. spec R4.55–R4.62, DECISIONS D39
  *
- * The agent writes a plain `<textarea>`; the kernel draws two controls over
- * its bottom-right corner — Dictate and Attach files — and, under it, the
- * files the reader attached. None of it touches the field or the page's CSS:
- * everything lives in one shadow root whose host element is the last child of
- * `<html>`, placed from the field's box by inline `!important` declarations,
- * so page rules on `*`, `button` or `body …` cannot move, hide or restyle it,
- * and it takes no layout space.
+ * The agent writes a plain `<textarea>`; the kernel draws one row over its
+ * bottom-right corner, inside the field's box: the files the reader attached,
+ * then Dictate and Attach files. None of it touches the field or the page's
+ * CSS: everything lives in one shadow root whose host element is the last
+ * child of `<html>`, fixed by inline `!important` declarations, so page rules
+ * on `*`, `button` or `body …` cannot move, hide or restyle it, and it takes no
+ * layout space. Nothing is drawn below the field, where the page may put its
+ * own content.
+ *
+ * The host sits at the document's origin (`position: absolute`), and each row
+ * is placed in document coordinates, so scrolling the page moves the controls
+ * with the field on the compositor and no script runs per scroll. A field
+ * inside a scrolling element, or with a sticky ancestor, is followed on its
+ * scroll events; one under a fixed ancestor gets a fixed row.
  *
  * These controls are page territory: page script can cover or imitate them
  * (R3.33). Dictate only asks the shell for its recording bar, whose Done is
@@ -24,8 +32,13 @@ export interface TextAreaDeps {
   /** Whether this page's forms can upload at all (not the built-in home, R4.60). */
   uploads: boolean;
   isReadOnly(): boolean;
-  /** Opens the shell's recording bar; resolves with the transcript. */
-  dictate(prompt: string): Promise<RecordAnswer>;
+  /**
+   * Opens the shell's recording bar; resolves with the transcript.
+   * `fromControl`: the reader's own press on the kernel's Dictate control. spec R3.32a
+   */
+  dictate(prompt: string, fromControl: boolean): Promise<RecordAnswer>;
+  /** The platform functions taken when the kernel started. */
+  primitives: KernelPrimitives;
   /** Attaching or removing a file marks the page dirty, as typing does. spec R4.61 */
   markDirty(form: HTMLFormElement): void;
 }
@@ -47,11 +60,18 @@ const INSET = 3;
 /** Clear of the resize handle a resizable field draws in its corner. */
 const HANDLE = 14;
 const NOTE_MS = 8_000;
+const ROW_GAP = 3;
+/** A chip's name is shortened to this, in the middle, keeping its extension. */
+const CHIP_NAME = 18;
 
-/** The layer's host: fixed, out of flow, above the page — declared inline and `!important`, so no page rule moves or hides it. spec R4.57 */
+/**
+ * The layer's host: at the document's origin, out of flow, above the page —
+ * declared inline and `!important`, so no page rule moves or hides it. It
+ * scrolls with the document, and so do the rows inside it. spec R4.57
+ */
 const HOST_STYLE = [
   "all:initial",
-  "position:fixed",
+  "position:absolute",
   "top:0",
   "left:0",
   "width:0",
@@ -73,21 +93,26 @@ const HOST_STYLE = [
   .join(";");
 
 const LAYER_CSS = `
-:host{all:initial !important;display:block !important;position:fixed !important;top:0 !important;left:0 !important;width:0 !important;height:0 !important;overflow:visible !important;pointer-events:none !important;z-index:2147483647 !important}
+:host{all:initial !important;display:block !important;position:absolute !important;top:0 !important;left:0 !important;width:0 !important;height:0 !important;overflow:visible !important;pointer-events:none !important;z-index:2147483647 !important}
 *{box-sizing:border-box}
-.group{position:fixed;display:flex;gap:${GAP}px;pointer-events:auto;margin:0;padding:0}
-.group[hidden],.list[hidden],[hidden]{display:none !important}
+[hidden]{display:none !important}
+.group{position:absolute;display:flex;align-items:center;justify-content:flex-end;gap:${ROW_GAP}px;margin:0;padding:0;transform:translateX(-100%);pointer-events:none;font:11px/1 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink)}
+.group>*{pointer-events:auto}
+.chips{display:flex;align-items:center;justify-content:flex-end;gap:${ROW_GAP}px;min-width:0;overflow:hidden;pointer-events:auto}
 button{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;width:${BUTTON}px;height:${BUTTON}px;border-radius:5px;border:1px solid transparent;color:var(--ink);opacity:.55;cursor:pointer;background:transparent}
 button:hover,button:focus-visible{opacity:1;background:var(--hover);border-color:var(--edge)}
 button:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
 button[aria-busy=true]{opacity:1;cursor:progress}
 svg{display:block;width:16px;height:16px;pointer-events:none}
-.list{position:fixed;display:flex;flex-wrap:wrap;gap:4px;margin:0;padding:0;list-style:none;pointer-events:auto;font:12px/1.35 system-ui,-apple-system,"Segoe UI",sans-serif}
-.chip,.note{display:inline-flex;align-items:center;gap:2px;max-width:100%;min-height:20px;padding:1px 2px 1px 8px;border:1px solid var(--edge);border-radius:999px;color:var(--ink);background:var(--paper)}
-.note{padding-right:8px;border-style:dashed}
-.chip span,.note span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.chip button{width:18px;height:18px;border-radius:999px}
+.chip{display:inline-flex;align-items:center;gap:3px;flex:none;height:22px;padding:0 1px 0 5px;border:1px solid var(--edge);border-radius:6px;background:var(--paper);color:var(--ink);white-space:nowrap}
+.chip .name{opacity:.8}
 .chip svg{width:12px;height:12px}
+.chip>svg{opacity:.55}
+.chip button{width:18px;height:18px;border-radius:4px}
+button.more{width:auto;height:22px;padding:0 6px;border:1px solid var(--edge);border-radius:6px;background:var(--paper);font:inherit;opacity:.8}
+.popup{position:absolute;right:0;bottom:calc(100% + 4px);display:flex;flex-direction:column;gap:2px;min-width:180px;max-width:320px;max-height:200px;overflow:auto;padding:4px;border:1px solid var(--edge);border-radius:8px;background:var(--paper);box-shadow:0 4px 14px rgba(0,0,0,.18)}
+.popup .chip{border:0;justify-content:space-between;height:24px}
+.note{position:absolute;right:0;bottom:calc(100% + 4px);max-width:320px;padding:4px 8px;border:1px dashed var(--edge);border-radius:6px;background:var(--paper);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 `;
 
 const ICON = (path: string) =>
@@ -95,19 +120,40 @@ const ICON = (path: string) =>
 const MIC = ICON('<path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/>');
 const CLIP = ICON('<path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/>');
 const REMOVE = ICON('<path d="M6 6l12 12M18 6L6 18"/>');
+const FILE = ICON('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>');
 
 interface Entry {
   field: HTMLTextAreaElement;
+  /** The row: attached files, then Dictate and Attach files. */
   group: HTMLElement;
+  chips: HTMLElement;
+  more: HTMLButtonElement;
+  popup: HTMLElement;
+  noteBox: HTMLElement;
   dictate: HTMLButtonElement;
   attach: HTMLButtonElement;
-  list: HTMLElement;
   picker: HTMLInputElement;
   files: File[];
   note: { text: string; until: number } | null;
   busy: boolean;
-  /** What the list shows, so it is redrawn only when that changes. */
+  /** Whether the list of files the row cannot show is open. */
+  open: boolean;
+  /** What the chips show, so they are rebuilt only when that changes. */
   drawn: string;
+  /** How the row follows the field: with the document, fixed to the viewport, or on every scroll. */
+  mode: "document" | "fixed";
+  follows: boolean;
+}
+
+/** A file name as a chip shows it: shortened in the middle, keeping its extension. */
+export function chipName(name: string, max = CHIP_NAME): string {
+  if (name.length <= max) return name;
+  const extension = /\.[^.\s]{1,8}$/.exec(name)?.[0] ?? "";
+  const keep = Math.max(1, max - extension.length - 1);
+  const front = Math.ceil(keep * 0.6);
+  const back = keep - front;
+  const stem = name.slice(0, name.length - extension.length);
+  return `${stem.slice(0, front)}…${back > 0 ? stem.slice(-back) : ""}${extension}`;
 }
 
 /** A size in the words the list uses. */
@@ -161,6 +207,7 @@ const TABBABLE = "a[href],area[href],button,input,select,textarea,iframe,summary
 
 export function createTextAreaControls(win: Window & typeof globalThis, deps: TextAreaDeps): TextAreaControls {
   const doc = win.document;
+  const prim = deps.primitives;
   const entries = new Map<HTMLTextAreaElement, Entry>();
   const touched = new WeakSet<HTMLTextAreaElement>();
   let voice = false;
@@ -180,7 +227,7 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     if (!doc.documentElement || typeof (doc.documentElement as Element & { attachShadow?: unknown }).attachShadow !== "function") return null;
     host = doc.createElement(LAYER_TAG);
     host.setAttribute("style", HOST_STYLE);
-    root = host.attachShadow({ mode: "closed" });
+    root = prim.attachShadow(host, { mode: "closed" });
     const style = doc.createElement("style");
     style.textContent = LAYER_CSS;
     root.appendChild(style);
@@ -204,7 +251,7 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     return filesOf(form, collected(form)).length;
   }
 
-  /** Adds files to a field's list, refusing visibly what would go over the form's limits. spec R4.62 */
+  /** Adds files to a field's row, refusing visibly what would go over the form's limits. spec R4.62 */
   function add(entry: Entry, files: File[]): void {
     const form = attachable(entry.field);
     if (!form || files.length === 0) return;
@@ -231,15 +278,13 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     const form = attachable(entry.field) ?? ownerForm(entry.field);
     entry.files.splice(index, 1);
     if (form) deps.markDirty(form);
-    schedule();
-    // The keyboard stays in the list, or returns to the field.
-    setTimeout(() => {
-      const next = entry.list.querySelector("button");
-      (next ?? entry.field).focus?.();
-    }, 0);
+    update();
+    // The keyboard stays with the files, or returns to the field.
+    const next = controls(entry).find((button) => button !== entry.dictate && button !== entry.attach);
+    (next ?? entry.field).focus?.();
   }
 
-  async function dictate(entry: Entry): Promise<void> {
+  async function dictate(entry: Entry, fromControl: boolean): Promise<void> {
     if (entry.busy) return;
     const field = entry.field;
     const value = field.value;
@@ -250,7 +295,7 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     entry.dictate.setAttribute("aria-busy", "true");
     let answer: RecordAnswer;
     try {
-      answer = await deps.dictate(value.slice(0, start).slice(-LIMITS.voicePromptChars));
+      answer = await deps.dictate(value.slice(0, start).slice(-LIMITS.voicePromptChars), fromControl);
     } finally {
       entry.busy = false;
       entry.dictate.removeAttribute("aria-busy");
@@ -294,44 +339,70 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     field.dispatchEvent(new win.Event("change", { bubbles: true }));
   }
 
+  function button(label: string, icon: string, className = ""): HTMLButtonElement {
+    const element = doc.createElement("button");
+    element.type = "button";
+    element.innerHTML = icon;
+    element.setAttribute("aria-label", label);
+    element.title = label;
+    if (className) element.className = className;
+    // Reached by Tab right after their field, which the kernel does itself (below), not at the end of the document.
+    element.tabIndex = -1;
+    return element;
+  }
+
   function create(field: HTMLTextAreaElement): Entry | null {
     const shadow = layer();
     if (!shadow) return null;
     const group = doc.createElement("div");
     group.className = "group";
     group.hidden = true;
-    const dictateButton = doc.createElement("button");
-    dictateButton.type = "button";
-    dictateButton.innerHTML = MIC;
-    dictateButton.setAttribute("aria-label", "Dictate");
-    dictateButton.title = "Dictate";
-    const attachButton = doc.createElement("button");
-    attachButton.type = "button";
-    attachButton.innerHTML = CLIP;
-    attachButton.setAttribute("aria-label", "Attach files");
-    attachButton.title = "Attach files";
-    // Reached by Tab right after their field, which the kernel does itself (below), not at the end of the document.
-    dictateButton.tabIndex = -1;
-    attachButton.tabIndex = -1;
+    const chips = doc.createElement("div");
+    chips.className = "chips";
+    chips.setAttribute("role", "list");
+    chips.setAttribute("aria-label", "Attached files");
+    const more = button("", "", "more");
+    more.hidden = true;
+    more.setAttribute("aria-expanded", "false");
+    const popup = doc.createElement("div");
+    popup.className = "popup";
+    popup.hidden = true;
+    popup.setAttribute("role", "list");
+    popup.setAttribute("aria-label", "More attached files");
+    const noteBox = doc.createElement("div");
+    noteBox.className = "note";
+    noteBox.hidden = true;
+    noteBox.setAttribute("role", "status");
+    const dictateButton = button("Dictate", MIC);
+    const attachButton = button("Attach files", CLIP);
     const picker = doc.createElement("input");
     picker.type = "file";
     picker.multiple = true;
     picker.hidden = true;
     picker.tabIndex = -1;
-    group.append(dictateButton, attachButton, picker);
-    const list = doc.createElement("ul");
-    list.className = "list";
-    list.hidden = true;
-    list.setAttribute("aria-label", "Attached files");
-    shadow.append(group, list);
-    const entry: Entry = { field, group, dictate: dictateButton, attach: attachButton, list, picker, files: [], note: null, busy: false, drawn: "" };
-    dictateButton.addEventListener("click", () => void dictate(entry));
-    attachButton.addEventListener("click", () => picker.click());
-    picker.addEventListener("change", () => {
+    group.append(popup, noteBox, chips, more, dictateButton, attachButton, picker);
+    shadow.append(group);
+    const entry: Entry = { field, group, chips, more, popup, noteBox, dictate: dictateButton, attach: attachButton, picker, files: [], note: null, busy: false, open: false, drawn: "", mode: "document", follows: false };
+    // The handlers are added with the original addEventListener and never handed to page code;
+    // only the reader's own press — a trusted event — counts as the control. spec R3.32a
+    prim.on(dictateButton, "click", (event) => void dictate(entry, prim.trusted(event)));
+    prim.on(attachButton, "click", () => picker.click());
+    prim.on(more, "click", () => {
+      entry.open = !entry.open;
+      update();
+      if (entry.open) popup.querySelector<HTMLButtonElement>("button")?.focus();
+    });
+    prim.on(popup, "keydown", (event) => {
+      if ((event as KeyboardEvent).key !== "Escape") return;
+      entry.open = false;
+      update();
+      more.focus();
+    });
+    prim.on(picker, "change", () => {
       add(entry, Array.from(picker.files ?? []));
       picker.value = "";
     });
-    for (const button of [dictateButton, attachButton]) button.addEventListener("keydown", (event) => onControlKey(entry, event));
+    for (const control of [dictateButton, attachButton, more]) prim.on(control, "keydown", (event) => onControlKey(entry, event as KeyboardEvent));
     resizeObserver?.observe(field);
     return entry;
   }
@@ -351,8 +422,8 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
   /**
    * Watched only once there is a text area: a field disabled while its form
    * sends, made read-only, inert, hidden or opted out loses its controls
-   * (R4.55). Its size and visibility come from the ResizeObserver, its
-   * movement from scrolling and, while controls show, a periodic look.
+   * (R4.55). Its size and visibility come from the ResizeObserver; a row in
+   * document coordinates needs nothing on scroll.
    */
   function observe(): void {
     if (observing || typeof win.MutationObserver !== "function" || !doc.documentElement) return;
@@ -365,21 +436,30 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     });
   }
 
-  /** The part of the field the reader can actually see: the viewport, and every clipping ancestor. */
-  function visibleBox(field: HTMLElement, rect: DOMRect): { left: number; top: number; right: number; bottom: number } | null {
+  /**
+   * One walk up from the field: the part of it clipping ancestors leave
+   * visible, and how its row must follow it — fixed under a fixed ancestor,
+   * on scroll events under a sticky one or inside a scrolling element.
+   */
+  function survey(field: HTMLElement, rect: DOMRect): { box: { left: number; top: number; right: number; bottom: number } | null; mode: "document" | "fixed"; follows: boolean } {
     let box = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+    let mode: "document" | "fixed" = "document";
+    let follows = false;
     const clip = (other: { left: number; top: number; right: number; bottom: number }) => {
       box = { left: Math.max(box.left, other.left), top: Math.max(box.top, other.top), right: Math.min(box.right, other.right), bottom: Math.min(box.bottom, other.bottom) };
     };
-    clip({ left: 0, top: 0, right: win.innerWidth, bottom: win.innerHeight });
-    for (let node = field.parentElement; node && node !== doc.documentElement && node !== doc.body; node = node.parentElement) {
+    for (let node: HTMLElement | null = field; node && node !== doc.documentElement; node = node.parentElement) {
       const style = win.getComputedStyle(node);
+      if (style.position === "fixed") mode = "fixed";
+      if (style.position === "sticky") follows = true;
+      if (node === field || node === doc.body) continue;
       if (style.overflowX !== "visible" || style.overflowY !== "visible") {
+        if (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth) follows = true;
         const outer = node.getBoundingClientRect();
         clip({ left: outer.left + node.clientLeft, top: outer.top + node.clientTop, right: outer.left + node.clientLeft + node.clientWidth, bottom: outer.top + node.clientTop + node.clientHeight });
       }
     }
-    return box.right > box.left && box.bottom > box.top ? box : null;
+    return { box: box.right > box.left && box.bottom > box.top ? box : null, mode, follows };
   }
 
   /** Nothing of the page's lies over this point of the field — a dialog, a sticky header. */
@@ -402,49 +482,84 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     return win.getComputedStyle(field).visibility === "visible";
   }
 
-  function drawList(entry: Entry, removable: boolean): void {
-    const noteText = entry.note && entry.note.until > Date.now() ? entry.note.text : "";
-    if (!noteText) entry.note = null;
-    const print = JSON.stringify([entry.files.map((file) => [file.name, file.size]), noteText, removable]);
-    if (print === entry.drawn) return;
-    entry.drawn = print;
-    entry.list.replaceChildren();
-    entry.files.forEach((file, index) => {
-      const item = doc.createElement("li");
-      item.className = "chip";
-      const name = doc.createElement("span");
-      name.textContent = `${file.name} (${sizeLabel(file.size)})`;
-      item.title = file.name;
-      item.append(name);
-      if (removable) {
-        const drop = doc.createElement("button");
-        drop.type = "button";
-        drop.innerHTML = REMOVE;
-        drop.setAttribute("aria-label", `Remove ${file.name}`);
-        drop.addEventListener("click", () => remove(entry, index));
-        item.append(drop);
-      }
-      entry.list.append(item);
-    });
-    if (noteText) {
-      const item = doc.createElement("li");
-      item.className = "note";
-      item.setAttribute("role", "status");
-      const text = doc.createElement("span");
-      text.textContent = noteText;
-      item.append(text);
-      entry.list.append(item);
+  function chip(entry: Entry, file: File, index: number, removable: boolean): HTMLElement {
+    const item = doc.createElement("span");
+    item.className = "chip";
+    item.setAttribute("role", "listitem");
+    item.title = `${file.name} (${sizeLabel(file.size)})`;
+    item.insertAdjacentHTML("beforeend", FILE);
+    const name = doc.createElement("span");
+    name.className = "name";
+    name.textContent = chipName(file.name);
+    item.append(name);
+    if (removable) {
+      const drop = button(`Remove ${file.name}`, REMOVE);
+      prim.on(drop, "click", () => remove(entry, index));
+      prim.on(drop, "keydown", (event) => onControlKey(entry, event as KeyboardEvent));
+      item.append(drop);
     }
+    return item;
   }
 
-  /** Places every field's controls and list from its box, or hides them. */
+  /**
+   * The attached files, in the row before the controls, as many as fit the
+   * field's width; the rest behind a "+N" that opens a list of them, each
+   * removable. spec R4.61
+   */
+  function drawFiles(entry: Entry, available: number, removable: boolean): void {
+    const print = JSON.stringify([entry.files.map((file) => [file.name, file.size]), removable, entry.open, Math.round(available)]);
+    if (print !== entry.drawn) {
+      entry.drawn = print;
+      entry.chips.replaceChildren(...entry.files.map((file, index) => chip(entry, file, index, removable)));
+      const all = Array.from(entry.chips.children) as HTMLElement[];
+      // How many fit, with room for a "+N" when some do not. Measured, since names differ in width.
+      entry.more.hidden = true;
+      const widths = all.map((element) => element.getBoundingClientRect().width);
+      entry.more.hidden = false;
+      entry.more.textContent = `+${entry.files.length}`;
+      const moreWidth = entry.more.getBoundingClientRect().width;
+      let shownCount = entry.files.length;
+      const total = (count: number) => widths.slice(0, count).reduce((sum, width) => sum + width, 0) + Math.max(0, count - 1) * ROW_GAP;
+      if (total(shownCount) > available) {
+        shownCount = 0;
+        while (shownCount < entry.files.length && total(shownCount + 1) + ROW_GAP + moreWidth <= available) shownCount += 1;
+      }
+      all.forEach((element, index) => {
+        element.hidden = index >= shownCount;
+      });
+      const rest = entry.files.length - shownCount;
+      entry.more.hidden = rest === 0;
+      entry.more.textContent = `+${rest}`;
+      entry.more.setAttribute("aria-label", `Show ${rest} more ${rest === 1 ? "file" : "files"}`);
+      entry.more.title = entry.more.getAttribute("aria-label") ?? "";
+      if (rest === 0) entry.open = false;
+      entry.more.setAttribute("aria-expanded", String(entry.open));
+      entry.popup.replaceChildren(...entry.files.slice(shownCount).map((file, offset) => chip(entry, file, shownCount + offset, removable)));
+    }
+    entry.popup.hidden = !entry.open || entry.more.hidden;
+  }
+
+  /** Places one field's row from its box: in document coordinates, or the viewport's under a fixed ancestor. */
+  function place(entry: Entry, rect: DOMRect, style: CSSStyleDeclaration): { right: number; top: number } {
+    const field = entry.field;
+    const innerRight = rect.left + field.clientLeft + field.clientWidth;
+    const innerBottom = rect.top + field.clientTop + field.clientHeight;
+    const right = innerRight - (style.resize && style.resize !== "none" ? HANDLE : INSET);
+    const top = field.clientHeight < BUTTON + 2 * INSET ? rect.top + (rect.height - BUTTON) / 2 : innerBottom - BUTTON - INSET;
+    const origin = entry.mode === "fixed" || !host ? { left: 0, top: 0 } : host.getBoundingClientRect();
+    entry.group.style.position = entry.mode === "fixed" ? "fixed" : "absolute";
+    entry.group.style.left = `${Math.round(right - origin.left)}px`;
+    entry.group.style.top = `${Math.round(top - origin.top)}px`;
+    return { right, top };
+  }
+
+  /** Places every field's row from its box, or hides it. */
   function update(): void {
     scheduled = 0;
     if (entries.size > 0) layer();
     for (const [field, entry] of entries) {
       if (!field.isConnected) {
         entry.group.remove();
-        entry.list.remove();
         resizeObserver?.unobserve(field);
         entries.delete(field);
         continue;
@@ -456,53 +571,44 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
       entry.dictate.hidden = !withDictate;
       entry.attach.hidden = !withAttach;
       const rect = field.getBoundingClientRect();
-      const box = visible ? visibleBox(field, rect) : null;
+      const { box, mode, follows } = visible ? survey(field, rect) : { box: null, mode: "document" as const, follows: false };
+      entry.mode = mode;
+      entry.follows = follows;
       const style = win.getComputedStyle(field);
       const ink = style.color || "rgb(0,0,0)";
       const paper = /rgba?\([^)]*,\s*0\)|transparent/.test(style.backgroundColor) ? win.getComputedStyle(doc.body ?? doc.documentElement).backgroundColor : style.backgroundColor;
-      for (const node of [entry.group, entry.list]) {
-        node.style.setProperty("--ink", ink);
-        node.style.setProperty("--hover", withAlpha(ink, 0.12));
-        node.style.setProperty("--edge", withAlpha(ink, 0.3));
-        node.style.setProperty("--paper", /rgba?\([^)]*,\s*0\)|transparent/.test(paper) ? "Canvas" : paper);
-      }
+      entry.group.style.setProperty("--ink", ink);
+      entry.group.style.setProperty("--hover", withAlpha(ink, 0.12));
+      entry.group.style.setProperty("--edge", withAlpha(ink, 0.3));
+      entry.group.style.setProperty("--paper", /rgba?\([^)]*,\s*0\)|transparent/.test(paper) ? "Canvas" : paper);
 
-      // The two controls, over the bottom-right corner, clear of a resize handle. spec R4.56
+      // The controls over the bottom-right corner, clear of a resize handle; the files before them. spec R4.56, R4.61
       const count = Number(withDictate) + Number(withAttach);
-      const width = count * BUTTON + Math.max(0, count - 1) * GAP;
-      const innerRight = rect.left + field.clientLeft + field.clientWidth;
-      const innerBottom = rect.top + field.clientTop + field.clientHeight;
-      const right = innerRight - (style.resize && style.resize !== "none" ? HANDLE : INSET);
-      const left = right - width;
-      const top = field.clientHeight < BUTTON + 2 * INSET ? rect.top + (rect.height - BUTTON) / 2 : innerBottom - BUTTON - INSET;
+      const controlsWidth = count * BUTTON + Math.max(0, count - 1) * GAP;
+      const noteText = entry.note && entry.note.until > Date.now() ? entry.note.text : "";
+      if (!noteText) entry.note = null;
+      const { right, top } = place(entry, rect, style);
       const fits =
-        count > 0 &&
+        (count > 0 || entry.files.length > 0) &&
         box !== null &&
-        left >= box.left - 0.5 &&
+        right - controlsWidth >= box.left - 0.5 &&
         right <= box.right + 0.5 &&
         top >= box.top - 0.5 &&
         top + BUTTON <= box.bottom + 0.5 &&
-        uncovered(field, left + width / 2, top + BUTTON / 2);
+        uncovered(field, right - Math.max(controlsWidth, BUTTON) / 2, top + BUTTON / 2);
       entry.group.hidden = !fits;
       if (fits) {
-        entry.group.style.left = `${Math.round(left)}px`;
-        entry.group.style.top = `${Math.round(top)}px`;
-      }
-
-      // The attached files, just below the field's bottom edge, over what follows it. spec R4.61
-      const listed = entry.files.length > 0 || entry.note !== null;
-      const edgeVisible = box !== null && box.bottom >= rect.bottom - 1 && uncovered(field, rect.left + Math.min(rect.width / 2, 8), rect.bottom - 2);
-      entry.list.hidden = !(listed && visible && edgeVisible);
-      if (!entry.list.hidden) {
-        drawList(entry, !unusable(field) && !field.readOnly);
-        entry.list.style.left = `${Math.round(rect.left)}px`;
-        entry.list.style.top = `${Math.round(rect.bottom + 4)}px`;
-        entry.list.style.maxWidth = `${Math.max(120, Math.round(rect.width))}px`;
+        // The files take what the field's width leaves beside the controls.
+        const available = Math.max(0, right - (rect.left + field.clientLeft + INSET) - controlsWidth - (count > 0 ? ROW_GAP : 0));
+        entry.group.style.maxWidth = `${Math.round(right - (rect.left + field.clientLeft + INSET))}px`;
+        drawFiles(entry, available, !unusable(field) && !field.readOnly);
+        entry.noteBox.hidden = !noteText;
+        entry.noteBox.textContent = noteText;
       }
     }
     // Layout moves without telling anyone (an image loads above a field): while controls show, look
     // again now and then; while none shows there is nothing to keep in place.
-    const showing = [...entries.values()].some((entry) => !entry.group.hidden || !entry.list.hidden);
+    const showing = [...entries.values()].some((entry) => !entry.group.hidden);
     if (showing && ticker === null) {
       ticker = setInterval(() => {
         if (doc.visibilityState !== "hidden") schedule();
@@ -518,11 +624,31 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     scheduled = typeof win.requestAnimationFrame === "function" ? win.requestAnimationFrame(update) : (setTimeout(update, 16) as unknown as number);
   }
 
+  /**
+   * A scroll: rows in document coordinates already moved with the page. Rows
+   * of fields in a scrolling element or under a sticky ancestor are placed
+   * again at once, in the same frame; everything is looked at again on the
+   * next one (a sticky header may now cover a field).
+   */
+  function onScroll(): void {
+    for (const entry of entries.values()) {
+      if (!entry.follows || entry.group.hidden) continue;
+      place(entry, entry.field.getBoundingClientRect(), win.getComputedStyle(entry.field));
+    }
+    schedule();
+  }
+
   // --- the keyboard: the controls come right after their field. spec R4.56 ---
 
+  /** In the keyboard's order: Dictate, Attach files, then the files' own buttons. */
   function controls(entry: Entry): HTMLButtonElement[] {
     if (entry.group.hidden) return [];
-    return [entry.dictate, entry.attach].filter((button) => !button.hidden);
+    const files = [
+      ...Array.from(entry.chips.querySelectorAll<HTMLButtonElement>(".chip:not([hidden]) button")),
+      ...(entry.more.hidden ? [] : [entry.more]),
+      ...(entry.popup.hidden ? [] : Array.from(entry.popup.querySelectorAll<HTMLButtonElement>("button"))),
+    ];
+    return [entry.dictate, entry.attach, ...files].filter((element) => !element.hidden);
   }
 
   function tabbables(): HTMLElement[] {
@@ -634,7 +760,7 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
   doc.addEventListener("paste", onPaste);
   doc.addEventListener("dragover", onDragOver);
   doc.addEventListener("drop", onDrop);
-  doc.addEventListener("scroll", schedule, { capture: true, passive: true });
+  doc.addEventListener("scroll", onScroll, { capture: true, passive: true });
   win.addEventListener("resize", schedule);
   doc.addEventListener("visibilitychange", schedule);
 

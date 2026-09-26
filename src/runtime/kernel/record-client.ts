@@ -12,21 +12,22 @@ export type RecordAnswer =
   | { ok: false; code: BridgeErrorCode | "cancelled"; message: string };
 
 export interface RecordClient {
-  request(purpose: RecordPurpose, prompt?: string): Promise<RecordAnswer>;
+  /** `fromControl`: the reader pressed the kernel's own Dictate control (a trusted event). */
+  request(purpose: RecordPurpose, prompt?: string, fromControl?: boolean): Promise<RecordAnswer>;
   /** A shell message; true when it was a recording's answer. */
   receive(data: Record<string, unknown>): boolean;
 }
 
-export function createRecordClient(post: (message: { kind: "thread-page:record"; id: string; purpose: RecordPurpose; prompt?: string }) => boolean): RecordClient {
+export function createRecordClient(post: (message: { kind: "thread-page:record"; id: string; purpose: RecordPurpose; prompt?: string; control?: true }) => boolean): RecordClient {
   const pending = new Map<string, (answer: RecordAnswer) => void>();
   let counter = 0;
   return {
-    request(purpose, prompt) {
+    request(purpose, prompt, fromControl) {
       return new Promise<RecordAnswer>((resolve) => {
         counter += 1;
         const id = `tp-record-${counter}-${Math.random().toString(36).slice(2, 8)}`;
         pending.set(id, resolve);
-        if (!post({ kind: "thread-page:record", id, purpose, ...(prompt ? { prompt } : {}) })) {
+        if (!post({ kind: "thread-page:record", id, purpose, ...(prompt ? { prompt } : {}), ...(fromControl === true && purpose === "dictate" ? { control: true as const } : {}) })) {
           pending.delete(id);
           resolve({ ok: false, code: "unavailable", message: "The page is not connected yet; try again in a moment." });
         }

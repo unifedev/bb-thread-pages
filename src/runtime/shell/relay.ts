@@ -34,7 +34,7 @@ export interface RelayDeps {
   /** The shell's recorder and its bar. spec R3.32, D38 */
   voice?: Voice;
   /** Whether a bar asked for now records at once, opens armed, or is refused, as the shell's own document tells. spec R3.32a */
-  readerGesture?(): GestureDecision;
+  readerGesture?(options?: { control?: boolean }): GestureDecision;
   /** The shell's status line, for what the reader must be told. spec R2.44 */
   onStatus?(text: string, warn: boolean): void;
   fetchImpl?: typeof fetch;
@@ -403,7 +403,8 @@ export function createRelay(deps: RelayDeps): Relay {
       if (data.kind === "thread-page:record") {
         if (!isValidRequestId(data.id) || (data.purpose !== "dictate" && data.purpose !== "audio")) return;
         // The reader's gesture, as the shell's own document sees it, when the ask arrives. spec R3.32a
-        void relayRecord(port, data, readerGesture());
+        // The kernel's own control, pressed by the reader, records at once while the activation lasts. spec R3.32a
+        void relayRecord(port, data, readerGesture({ control: data.purpose === "dictate" && data.control === true }));
         return;
       }
       // Escape pressed in the page while the bar is open cancels it; cancelling is always safe. spec R3.32

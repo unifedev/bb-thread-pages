@@ -19,12 +19,23 @@
  * in an engine without the API — the bar is not refused but opened **armed**:
  * the microphone stays off until the reader presses Record in the bar itself,
  * a gesture in the shell's own chrome. With no activation at all, it is refused.
+ *
+ * One ask skips the windows: the kernel's own Dictate control, pressed by the
+ * reader (a trusted event, read with primitives the kernel took before any
+ * page script ran). A text area's microphone therefore always records at once,
+ * right after Done too. Only `voice.captureAndTranscribe`, which any page
+ * script can call, is armed in the windows.
  */
 export type GestureDecision = { readonly mode: "record" } | { readonly mode: "arm"; readonly reason: string } | { readonly mode: "refuse"; readonly reason: string };
 
 export interface ReaderGesture {
-  /** Whether a bar asked for now records at once, waits for Record, or does not open. */
-  decide(): GestureDecision;
+  /**
+   * Whether a bar asked for now records at once, waits for Record, or does
+   * not open. `control`: the kernel says the reader pressed its own Dictate
+   * control; then a live activation records at once, even right after a
+   * press on the chrome — the reader just pressed Dictate. spec R3.32a
+   */
+  decide(options?: { control?: boolean }): GestureDecision;
   /** A bar or a question closed just now. */
   closed(): void;
 }
@@ -64,11 +75,12 @@ export function createReaderGesture(win: Window & typeof globalThis, options: { 
   for (const type of CHROME_GESTURES) win.addEventListener(type, onChrome, true);
 
   return {
-    decide() {
+    decide(options = {}) {
       const state = activation();
       // An engine that cannot say is never taken as a yes: the reader starts the recording in the bar.
       if (!state) return { mode: "arm", reason: "this browser cannot tell who pressed" };
       if (!state.isActive) return REFUSED_WITHOUT_ACTION;
+      if (options.control === true) return { mode: "record" };
       if (chromeActive) return { mode: "arm", reason: "the last press was in the host's chrome" };
       if (Date.now() - closedAt < cooldownMs) return { mode: "arm", reason: "a bar or question just closed" };
       return { mode: "record" };

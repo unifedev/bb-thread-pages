@@ -625,3 +625,43 @@ describe("the relay after review", () => {
     expect(fixture.sent[0]).toMatchObject({ ok: false, error: { code: "unavailable", message: expect.stringContaining("One file already attached stays") } });
   });
 });
+
+describe("the kernel's own Dictate control (owner feedback, 1.7.0)", () => {
+  it("records at once while the activation lasts, even right after a press on the chrome; never without one", async () => {
+    vi.useFakeTimers();
+    const listeners = new Map<string, ((event: { isTrusted: boolean }) => void)[]>();
+    const activation = { isActive: true };
+    const win = { navigator: { userActivation: activation }, addEventListener: (type: string, listener: (event: { isTrusted: boolean }) => void) => listeners.set(type, [...(listeners.get(type) ?? []), listener]) } as unknown as Window & typeof globalThis;
+    const gesture = createReaderGesture(win);
+    for (const listener of listeners.get("pointerdown") ?? []) listener({ isTrusted: true });
+    gesture.closed();
+    expect(gesture.decide()).toMatchObject({ mode: "arm" });
+    expect(gesture.decide({ control: true })).toEqual({ mode: "record" });
+    activation.isActive = false;
+    expect(gesture.decide({ control: true })).toMatchObject({ mode: "refuse" });
+  });
+
+  it("the relay asks for the control's path only for a Dictate the kernel marks as its control", async () => {
+    const { voice } = stubVoice();
+    const asked: unknown[] = [];
+    document.body.innerHTML = `<dialog><p></p></dialog>`;
+    const relay = createRelay({
+      config,
+      confirmer: createConfirmer(document.querySelector("dialog")!),
+      navigator: { inPlace: vi.fn(), reserveWindow: vi.fn(), external: vi.fn(), release: vi.fn() } as never,
+      onDirty: vi.fn(),
+      voice,
+      fetchImpl: vi.fn() as never,
+      readerGesture: (options) => {
+        asked.push(options);
+        return RECORD;
+      },
+    });
+    const port = { postMessage: () => undefined } as unknown as MessagePort;
+    relay.handle(port, { kind: "thread-page:record", id: "tp-record-1", purpose: "dictate", control: true });
+    relay.handle(port, { kind: "thread-page:record", id: "tp-record-2", purpose: "dictate" });
+    relay.handle(port, { kind: "thread-page:record", id: "tp-record-3", purpose: "audio", control: true });
+    await flush();
+    expect(asked).toEqual([{ control: true }, { control: false }, { control: false }]);
+  });
+});
