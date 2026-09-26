@@ -106,8 +106,11 @@ async function clearOutput(id, frame = pageFrame()) {
 }
 /** A press in the shell's chrome is not the reader acting in the page: the bar waits until its activation lapses. */
 const settle = () => sleep(5_500);
+/** The microphone is open and the recording runs: the clock starts here, not when the bar appears. */
+const recording = () => shell.locator('[data-shell-recorder][data-state="recording"]').waitFor({ timeout: 10_000 });
 async function recordAndFinish(ms = 1_300) {
   await bar.waitFor({ state: "visible", timeout: 10_000 });
+  await recording();
   await sleep(ms);
   await done.click();
   await bar.waitFor({ state: "hidden", timeout: 10_000 });
@@ -158,6 +161,7 @@ await shell.mouse.click(speak.x, speak.y);
 await bar.waitFor({ state: "visible", timeout: 10_000 });
 const waveform = await shell.locator("[data-shell-recorder] canvas").boundingBox();
 ok("A121 the bar opens in the shell with a waveform, Cancel and Done", waveform !== null && (await shell.locator('[data-rec="cancel"]').isVisible()) && (await done.isVisible()));
+await recording();
 await sleep(1_300);
 ok("A121 nothing reaches the transcriber before Done", (await callsOf("voice.transcribe")).length === 0);
 await done.click();
@@ -174,6 +178,7 @@ const barState = () => bar.evaluate((node) => (node.hidden ? "hidden" : node.dat
 await settle();
 await pageFrame().locator("#speak-again").click();
 await bar.waitFor({ state: "visible", timeout: 10_000 });
+await recording();
 await sleep(1_200);
 const gumBefore = await gum();
 await shell.locator('[data-rec="cancel"]').click();
@@ -198,6 +203,7 @@ for (const how of ["Escape", "Cancel", "Escape in the page"]) {
   await settle();
   await pageFrame().locator("#speak").click();
   await bar.waitFor({ state: "visible", timeout: 10_000 });
+  await recording();
   await sleep(1_200);
   if (how === "Escape") await shell.keyboard.press("Escape");
   else if (how === "Cancel") await shell.locator('[data-rec="cancel"]').click();
@@ -286,18 +292,28 @@ const dictated = await pageFrame().evaluate(() => ({ value: document.getElementB
 const dictatePrompt = (await callsOf("voice.transcribe"))[0]?.args[0].prompt;
 ok("A128 dictation inserts at the caret with a separating space and fires input and change", dictated.value === `Hello ${TRANSCRIPT} world` && dictated.events.join() === "input,change", JSON.stringify(dictated));
 ok("A128 the text before the caret went as context", dictatePrompt === "Hello", dictatePrompt);
-// Right after Done, Dictate again: the last press was in the shell's chrome, so the bar comes armed. R3.32a
+// Right after Done, the text area's microphone records at once: the reader pressed the kernel's own
+// control, and the shell's own document has the activation. Owner feedback on 1.7.0, R3.32a
 const gumBeforeAgain = await gum();
 await pageFrame().locator('button[aria-label="Dictate"]').first().click();
 await bar.waitFor({ state: "visible", timeout: 10_000 });
-await sleep(500);
+await sleep(700);
 const againState = await barState();
-const gumStill = await gum();
-await shell.locator('[data-rec="record"]').click();
-await recordAndFinish();
+const gumAgain = await gum();
+await sleep(700);
+await done.click();
+await bar.waitFor({ state: "hidden", timeout: 10_000 });
 await sleep(300);
 const twice = await pageFrame().evaluate(() => document.getElementById("notes").value);
-ok("R3.32a Dictate right after Done opens an armed bar; Record, then Done, inserts again", againState === "armed" && gumStill === gumBeforeAgain && twice.includes(`${TRANSCRIPT} ${TRANSCRIPT}`) , `${againState}; ${twice}`);
+ok("R3.32a the text area's microphone right after Done records at once, no Record", againState === "recording" && gumAgain === gumBeforeAgain + 1 && twice.includes(`${TRANSCRIPT} ${TRANSCRIPT}`), `${againState}; getUserMedia ${gumBeforeAgain} → ${gumAgain}; ${twice}`);
+// A script's click on the control — a page that got hold of it — right after a press on the chrome gets an armed bar.
+await pageFrame().evaluate(() => document.documentElement.lastElementChild.shadowRoot.querySelector('button[aria-label="Dictate"]').click());
+await bar.waitFor({ state: "visible", timeout: 10_000 });
+const scripted = await barState();
+const gumScripted = await gum();
+await shell.locator('[data-rec="cancel"]').click();
+await bar.waitFor({ state: "hidden", timeout: 10_000 });
+ok("R3.32a a script's click on the control, right after a press on the chrome, only opens an armed bar", scripted === "armed" && gumScripted === gumAgain, `${scripted}; getUserMedia ${gumScripted}`);
 
 // --- Attach, paste, drop (A129, A130, A130a) -----------------------------------------------------
 const afterBefore = await pageFrame().locator("#after").boundingBox();
@@ -334,7 +350,28 @@ const chips = await pageFrame().evaluate(() => [...document.documentElement.last
 ok("A130 files chosen, pasted and dropped are listed under the field", chips.some((text) => text.startsWith("shot.png")) && chips.some((text) => text.startsWith("memo.ogg")) && chips.some((text) => text.startsWith("dropped.txt")) && (!pasted || chips.some((text) => text.startsWith("pasted.txt"))), `${JSON.stringify(chips)}${pasted ? "" : " (this engine cannot build a paste event with files)"}`);
 const afterAfter = await pageFrame().locator("#after").boundingBox();
 ok("A130a the attachment list takes no layout space", afterBefore.y === afterAfter.y && afterBefore.x === afterAfter.x, `${afterBefore.y} → ${afterAfter.y}`);
-await pageFrame().locator('button[aria-label="Remove dropped.txt"]').click();
+// The files sit in the row with the controls, inside the field's box; nothing below it. Owner feedback on 1.7.0
+const row = await pageFrame().evaluate(() => {
+  const root = document.documentElement.lastElementChild.shadowRoot;
+  const field = document.getElementById("notes").getBoundingClientRect();
+  // The first row is #notes's.
+  const own = root.querySelector(".group");
+  const group = own.getBoundingClientRect();
+  const chips = [...own.querySelectorAll(".chips .chip")].filter((chip) => !chip.hidden).map((chip) => chip.getBoundingClientRect());
+  const dictate = own.querySelector('button[aria-label="Dictate"]').getBoundingClientRect();
+  const more = own.querySelector("button.more");
+  return {
+    inside: group.left >= field.left - 1 && group.right <= field.right + 1 && group.top >= field.top - 1 && group.bottom <= field.bottom + 1,
+    sameRow: chips.every((chip) => Math.abs(chip.top + chip.height / 2 - (dictate.top + dictate.height / 2)) <= 2 && chip.right <= dictate.left + 1),
+    chips: chips.length,
+    more: more.hidden ? "" : `${more.textContent} (${more.getAttribute("aria-label")})`,
+    below: [...own.children].some((node) => !node.hidden && node.getBoundingClientRect().top > field.bottom),
+  };
+});
+ok("owner: attached files sit in the row before the icons, inside the field, nothing below it", row.inside && row.sameRow && row.chips >= 1 && !row.below, JSON.stringify(row));
+// A file the row has no room for is behind "+N": open it first.
+if (!(await pageFrame().locator('button[aria-label="Remove dropped.txt"]:visible').isVisible())) await pageFrame().locator("button.more").first().click();
+await pageFrame().locator('button[aria-label="Remove dropped.txt"]:visible').click();
 await set("reset=1");
 await pageFrame().locator("#send").click();
 await pageFrame().locator("[data-thread-page-status]").filter({ hasText: /Sent|fail|larger|Could/ }).waitFor({ timeout: 15_000 });
@@ -439,6 +476,75 @@ const picker = shell.waitForEvent("filechooser", { timeout: 5_000 }).then(() => 
 await pageFrame().locator("#voice").click();
 ok("A133 with voice unavailable the audio input is a file picker", (await picker) && !(await barOpen()));
 await set("voice=on");
+
+// --- the controls follow their field on fast scroll, frame by frame (owner feedback on 1.7.0) -----
+await open();
+await pageFrame().locator("#inner-scroll").waitFor();
+// The field in the scrolling element whole in view, so its row shows.
+await pageFrame().evaluate(() => (document.getElementById("scroller").scrollTop = 60));
+await sleep(500);
+const followed = await pageFrame().evaluate(async () => {
+  const root = document.documentElement.lastElementChild.shadowRoot;
+  const fields = { page: document.getElementById("notes"), scroller: document.getElementById("inner-scroll"), fixed: document.getElementById("fixed-field") };
+  const groups = [...root.querySelectorAll(".group")];
+  // Each field's row, by where it sat when all were at rest.
+  const rowOf = (field) => groups.find((group) => {
+    const box = group.getBoundingClientRect();
+    const rect = field.getBoundingClientRect();
+    return !group.hidden && box.right <= rect.right + 1 && box.right >= rect.right - 20 && box.bottom <= rect.bottom + 1 && box.bottom >= rect.bottom - 30;
+  });
+  const rows = Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, rowOf(field)]));
+  const offset = (name) => {
+    const rect = fields[name].getBoundingClientRect();
+    const box = rows[name].getBoundingClientRect();
+    return { x: box.right - rect.right, y: box.bottom - rect.bottom };
+  };
+  const rest = Object.fromEntries(Object.keys(fields).filter((name) => rows[name]).map((name) => [name, offset(name)]));
+  const worst = Object.fromEntries(Object.keys(rest).map((name) => [name, 0]));
+  const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+  const scroller = fields.scroller.parentElement;
+  for (let step = 0; step < 40; step += 1) {
+    await frame();
+    // Measured at the start of each frame, after the browser dispatched the last frame's scroll events.
+    for (const name of Object.keys(rest)) {
+      if (rows[name].hidden) continue;
+      const now = offset(name);
+      worst[name] = Math.max(worst[name], Math.abs(now.x - rest[name].x), Math.abs(now.y - rest[name].y));
+    }
+    // Fast: several scrolls within one frame, of the page and of the scrolling element.
+    window.scrollBy(0, step < 20 ? 37 : -41);
+    window.scrollBy(0, step < 20 ? 23 : -19);
+    scroller.scrollTop += step % 2 ? 12 : -12;
+    scroller.scrollTop += step % 2 ? 7 : -7;
+  }
+  window.scrollTo(0, 0);
+  return { found: Object.keys(rest), worst };
+});
+ok("owner: on fast scroll the controls stay within 2 px of their field, each frame (page, scrolling element, fixed panel)", followed.found.length === 3 && Object.values(followed.worst).every((value) => value <= 2), JSON.stringify(followed));
+// Real wheel scrolling over the page, sampled every frame.
+const sampling = pageFrame().evaluate(async () => {
+  const root = document.documentElement.lastElementChild.shadowRoot;
+  const field = document.getElementById("notes");
+  const group = [...root.querySelectorAll(".group")].find((candidate) => !candidate.hidden);
+  const at = () => ({ x: group.getBoundingClientRect().right - field.getBoundingClientRect().right, y: group.getBoundingClientRect().bottom - field.getBoundingClientRect().bottom });
+  const start = at();
+  let worst = 0;
+  let moved = 0;
+  const top = window.scrollY;
+  for (let frame = 0; frame < 60; frame += 1) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const now = at();
+    worst = Math.max(worst, Math.abs(now.x - start.x), Math.abs(now.y - start.y));
+    moved = Math.max(moved, Math.abs(window.scrollY - top));
+  }
+  return { worst, moved };
+});
+const frameBox = await shell.locator(".stage iframe:not([data-incoming])").boundingBox();
+await shell.mouse.move(frameBox.x + 300, frameBox.y + 400);
+for (let turn = 0; turn < 8; turn += 1) await shell.mouse.wheel(0, turn < 4 ? 400 : -300);
+const wheeled = await sampling;
+ok("owner: under real wheel scrolling the controls stay within 2 px of their field, each frame", wheeled.worst <= 2 && wheeled.moved > 100, JSON.stringify(wheeled));
+await pageFrame().evaluate(() => window.scrollTo(0, 0));
 
 // A bar open when the page's document changes is cancelled: it was not the new document's to finish. R3.32
 await open();

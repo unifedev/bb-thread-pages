@@ -46,6 +46,19 @@
 <p><a id="to-embedded" href="embedded.html">Another document of this page</a></p>
 <div id="embed-box"></div>
 
+<!-- Where the controls must follow a field: a scrolling element, a fixed panel, and a long page. -->
+<form id="scrolling-form" data-title="Scrolling">
+  <div id="scroller" style="height:160px;overflow:auto;border:1px solid #ccc;width:460px">
+    <div style="height:120px"></div>
+    <textarea id="inner-scroll" name="inner" style="height:80px"></textarea>
+    <div style="height:600px"></div>
+  </div>
+</form>
+<div id="fixed-panel" style="position:fixed;right:12px;top:60px;width:240px;padding:8px;background:#eef;border:1px solid #99a">
+  <textarea id="fixed-field" aria-label="In a fixed panel" style="width:220px;height:70px"></textarea>
+</div>
+<div id="spacer" style="height:3000px"></div>
+
 <script>
   const out = (id, value) => { document.getElementById(id).textContent = typeof value === "string" ? value : JSON.stringify(value); };
   async function speak() {
