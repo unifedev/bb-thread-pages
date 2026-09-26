@@ -126,18 +126,22 @@ dialog form that is not meant to answer you.`;
 
 const textAreas = () => `### Every text area takes voice and files
 
-Each <textarea> you write shows two small controls over its bottom-right
-corner, drawn by the host in the field's own text colour: **Dictate** (a
-microphone) and **Attach files** (a paperclip). They live in a layer of the
-host's outside your document tree — your CSS does not reach them, the field's
-markup, attributes and style are untouched, nothing moves, and they are reached
-by Tab right after the field. Dictate records the reader in the host's
-recording bar and inserts the host's transcript at the caret, then fires
-\`input\` and \`change\`. Attach — or pasting or dropping files onto the field —
-lists the files under the field; they are uploaded with the form, and the answer
-reports their paths beside that field's text, under **Attached here:** (an
-audio file with its transcript), within the form's limits (${mebibytes(LIMITS.uploadFileBytes)} per file, ${LIMITS.uploadsPerForm} per
-form, file inputs included). A text area outside any form, on the built-in home
+Each <textarea> you write shows one small row inside its bottom-right corner,
+drawn by the host in the field's own text colour: the files attached to it,
+then **Dictate** (a microphone) and **Attach files** (a paperclip). The row
+lives in a layer of the host's outside your document tree — your CSS does not
+reach it, the field's markup, attributes and style are untouched, nothing
+moves, nothing is drawn below the field, and it scrolls with the field — and
+its buttons are reached by Tab right after the field. Dictate records the
+reader in the host's recording bar at once and inserts the host's transcript at
+the caret, then fires \`input\` and \`change\`. Attach — or pasting or dropping
+files onto the field — adds a chip per file to the row (the name shortened in
+the middle, each removable; what does not fit is behind a "+N" that lists it).
+The files are uploaded with the form, and the answer reports their paths beside
+that field's text, under **Attached here:** (an audio file with its
+transcript), within the form's limits (${mebibytes(LIMITS.uploadFileBytes)} per file, ${LIMITS.uploadsPerForm} per form, file
+inputs included). The row covers the field's last line where it runs that far,
+as a resize handle does. A text area outside any form, on the built-in home
 page or inside another page's embed gets Dictate only; a disabled, read-only,
 hidden or modal-dialog one gets neither, and a field loses them while its form
 sends; Dictate is absent where the reader cannot record (see *Voice*). Put
@@ -492,10 +496,11 @@ recorder with no code (above).
   call without the action, or while another bar or confirmation is open, is
   \`unavailable\`. A press in the host's own chrome (the top bar, a dialog, the
   bar's Cancel or Done) is not the reader acting in your page: for about 5 s
-  after one, and 2 s after a bar or dialog closes, the bar opens **armed** —
-  the microphone stays off until the reader presses Record in it. So Dictate
-  right after Done works with one more press; and a page that re-asks after
-  \`cancelled\` only puts an armed bar back in front of the reader. Don't.
+  after one, and 2 s after a bar or dialog closes, a call from your page opens
+  the bar **armed** — the microphone stays off until the reader presses Record
+  in it. A page that re-asks after \`cancelled\` therefore only puts an armed
+  bar back in front of the reader. Don't. (A text area's own Dictate always
+  records at once: the host's kernel knows the reader pressed it.)
 - \`cancelled\`: Cancel, Escape, or Done before ${LIMITS.voiceMinMs / 1000} s (the bar says *Too short*).
   \`request_too_large\`: over the host's size limit. \`unavailable\`, with the
   reason: no transcription service on this host, a browser or app that cannot

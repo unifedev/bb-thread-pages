@@ -70,6 +70,37 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
   built-in home. Dictate works inside an embed through the embedding page's
   shell. `data-thread-page-manual` on a text area removes its controls only.
 
+### After the owner's first live use
+
+- **The controls stay on their field while scrolling.** The layer's host now
+  sits at the document's origin (`position: absolute`) and each row is placed
+  in document coordinates, so page scrolling moves it with the field on the
+  compositor, with no script per scroll. A field in a scrolling element or
+  under a sticky ancestor is placed again on its scroll events, in the same
+  frame; one under a fixed ancestor gets a fixed row. Measured every animation
+  frame during fast scripted and wheel scrolling: 0 px off in all three
+  engines (1.7.0 as merged: up to 966 px).
+- **Attached files sit in the row, inside the field.** One row at the field's
+  bottom-right: a chip per file (a line file icon, the name shortened in the
+  middle keeping its extension, a remove button named *Remove <name>*), then
+  Dictate and Attach files; what does not fit the field's width is behind a
+  *+N* chip (*Show N more files*) that opens a list of them, each removable.
+  Refusals show above the row for 8 s. Nothing is drawn below the field any
+  more.
+- **A text area's microphone always records at once**, right after Done or
+  Cancel too. The kernel asks the shell to record immediately only from its
+  own Dictate control and only for a trusted press; the shell still requires
+  its own `navigator.userActivation.isActive`, but skips the chrome window and
+  the cooldown for that ask. `voice.captureAndTranscribe` from page script
+  still opens armed in those windows. The kernel takes `postMessage`, the port
+  handler setter, `MessageEvent` getters, `addEventListener`, `attachShadow`,
+  `stopImmediatePropagation` and `Reflect.apply` when it starts, before any page
+  script, so a page that patches prototypes later can neither reach the port
+  nor claim the control. The kernel is still page territory (R3.33): a page
+  that subverted it could at most open a bar that records at once within the
+  few seconds after a press on the shell's chrome — Done is still the reader's.
+  Inside an embed, Dictate stays on the ordinary path (armed in those windows).
+
 ### Files with `sessions.start` and `sessions.send` (D40)
 
 - `files` — a `FileList`, an array of `File` or an `<input type="file">` — goes
@@ -112,7 +143,7 @@ pages keep working; `window.threadPage.version` and the bridge protocol stay
   page handled itself are left alone. `files: undefined` is no files.
 - The guide documents text areas, voice, the recorded answer and `files`, with
   their limits; the standing instruction is unchanged.
-- `test/browser/voice.mjs`: 49 checks, passing in Chromium, Firefox and WebKit.
+- `test/browser/voice.mjs`: 53 checks, passing in Chromium, Firefox and WebKit.
 
 ## 1.6.0 — 2026-09-25 — links, popups, own files, full screen, other sites, large media
 

@@ -31,7 +31,9 @@ describe("the authoring guide", () => {
     expect(areas).toContain("**Dictate**");
     expect(areas).toContain("**Attach files**");
     expect(areas).toContain("**Attached here:**");
-    expect(areas).toContain(`${LIMITS.uploadsPerForm} per\nform`);
+    expect(areas).toMatch(new RegExp(`${LIMITS.uploadsPerForm} per\\s+form`));
+    expect(areas).toContain("nothing is drawn below the field");
+    expect(areas).toMatch(/Dictate records the\s+reader in the host's recording bar at once/);
     expect(areas).toContain("`data-thread-page-manual` on a <textarea>");
     expect(areas).toMatch(/Dictate only/);
     const uploads = section(coreGuide, "## Files the reader sends you", "## Files you show the reader");
@@ -43,7 +45,7 @@ describe("the authoring guide", () => {
     expect(voice).toContain("20 MB of audio with its default transcription");
     expect(voice).toContain("25 MB with OpenAI; each attempt 10 s,\n  2 attempts");
     expect(voice).toContain("bottom centre of the page area");
-    expect(voice).toMatch(/the bar opens \*\*armed\*\*/);
+    expect(voice).toMatch(/opens\s+the bar \*\*armed\*\*/);
     expect(coreGuide).not.toContain("top bar's recording bar");
     expect(coreGuide).toContain("no HEIC or HEIF");
     expect(voice).toContain(`from 1 to ${LIMITS.voiceMaxSeconds}, default ${LIMITS.voiceDefaultSeconds}`);
