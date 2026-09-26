@@ -81,6 +81,8 @@ export const LIMITS = Object.freeze({
   actionTokenMs: 2 * 60 * 60 * 1000,
   /** Confirmation challenge lifetime. R3.19 */
   confirmationMs: 2 * 60 * 1000,
+  /** Approvals remembered as used, so none is redeemed twice. R3.19 */
+  redeemedConfirmations: 4096,
   /** Folder-picker selection token lifetime; single use. R5.36 */
   selectionTokenMs: 10 * 60 * 1000,
   selectionTokens: 32,

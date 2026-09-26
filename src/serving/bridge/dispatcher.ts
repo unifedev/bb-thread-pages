@@ -56,6 +56,28 @@ export function parseEnvelope(value: unknown): Envelope {
 
 export function createDispatcher(serving: ServingContext, handlers: readonly CapabilityHandler[]) {
   const byMethod = new Map(handlers.map((entry) => [entry.method, entry]));
+  /**
+   * Approvals already used. A challenge approves one invocation (R3.19): once
+   * redeemed, the same approval — replayed within its life, or with an upload
+   * grant that outlives it — is refused, and nothing happens twice. Confirmed
+   * calls carry no idempotency key of their own (R2.33 is the forms'), so a
+   * repeat is refused rather than answered from the first outcome; a page
+   * that retries asks again, and the reader confirms again. spec R3.17–R3.21
+   */
+  const redeemed = new Map<string, number>();
+  function redeem(session: string, requestId: string, method: string): void {
+    const now = serving.now();
+    for (const [key, until] of redeemed) if (until <= now) redeemed.delete(key);
+    const key = `${session}:${requestId}:${method}`;
+    if (redeemed.has(key)) throw new PageError("confirmation_invalid", "This confirmation was already used; nothing was done again");
+    while (redeemed.size >= LIMITS.redeemedConfirmations) {
+      const oldest = redeemed.keys().next().value;
+      if (oldest === undefined) break;
+      redeemed.delete(oldest);
+    }
+    // As long as any approval of it can still be presented: the challenge's life, or an upload grant's.
+    redeemed.set(key, now + Math.max(LIMITS.confirmationMs, LIMITS.attachGrantMs));
+  }
   for (const spec of serving.registry.list()) {
     if (spec.implemented && !byMethod.has(spec.method)) throw new Error(`No handler for capability ${spec.method}`);
   }
@@ -112,6 +134,7 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
         if (!covered && (!challenge || !challengeMatches(challenge, binding))) {
           throw new PageError("confirmation_invalid", "The confirmation is expired or does not match this request");
         }
+        redeem(token.session, request.id, request.method);
       }
 
       // Confirmed once per pair: the same signed challenge, remembered on approval. spec R5.64
@@ -126,6 +149,7 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
         if (!challenge || !challengeMatches(challenge, binding)) {
           throw new PageError("confirmation_invalid", "The confirmation is expired or does not match this request");
         }
+        redeem(token.session, request.id, request.method);
         await grant.record();
         serving.host.log.info(`grant given: ${token.session} → ${grant.target.sessionId}`);
       }

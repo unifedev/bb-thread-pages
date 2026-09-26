@@ -132,6 +132,23 @@ describe("protocol errors", () => {
 });
 
 describe("confirmed effects", () => {
+  // As /tmp/verify-1.5/replay.mjs: the approved call's body, posted again with its challenge, within the challenge's life.
+  it("uses a confirmation once: a replay of the approved call is refused and starts nothing (R3.19)", async () => {
+    const { first, second } = await confirmed("sessions.start", { projectId: "proj_a", prompt: "Once" });
+    expect(second.body.response?.ok).toBe(true);
+    const replay = await call("sessions.start", { projectId: "proj_a", prompt: "Once" }, { confirmation: first.body.confirm!.challenge, id: first.id });
+    expect(replay.body.response?.error?.code).toBe("confirmation_invalid");
+    expect(fixture.state.calls.filter((entry) => entry.method === "sessions.start")).toHaveLength(1);
+    // Still refused a minute later, inside the challenge's two minutes.
+    fixture.clock.now += 60_000;
+    expect((await call("sessions.start", { projectId: "proj_a", prompt: "Once" }, { confirmation: first.body.confirm!.challenge, id: first.id })).body.response?.error?.code).toBe("confirmation_invalid");
+    // A send is the same: one approval, one message.
+    const send = await confirmed("sessions.send", { sessionId: "thr_b", prompt: "hi" });
+    expect(send.second.body.response?.ok).toBe(true);
+    expect((await call("sessions.send", { sessionId: "thr_b", prompt: "hi" }, { confirmation: send.first.body.confirm!.challenge, id: send.first.id })).body.response?.error?.code).toBe("confirmation_invalid");
+    expect(fixture.state.calls.filter((entry) => entry.method === "sessions.send")).toHaveLength(1);
+  });
+
   it("challenges with a host-authored summary, then acts only with the matching challenge", async () => {
     const { first, second } = await confirmed("sessions.send", { sessionId: "thr_b", prompt: "Please continue." });
     expect(first.body.confirm?.summary).toBe("Send to “Other session”: “Please continue.”");
