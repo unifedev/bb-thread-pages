@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7.0 — unreleased — voice, text areas that take voice and files, files with sessions
+## 1.7.0 — 2026-09-26 — voice, text areas that take voice and files, files with sessions
 
 Implements spec 1.5 (`bartsoj/bb-thread-pages`, DECISIONS D38–D40). Existing
 pages keep working; `window.threadPage.version` and the bridge protocol stay
