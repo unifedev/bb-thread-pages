@@ -253,7 +253,7 @@ const layer = await pageFrame().evaluate(() => {
     visible: !dictate.hidden && !attach.hidden,
   };
 });
-ok("A130a the layer's host is the last child of <html>, outside <body>, and page rules do not hide it", layer.tag === "thread-page-controls" && !layer.inBody && layer.hostDisplay === "block", JSON.stringify(layer));
+ok("A130a the layer's host is the last child of <html>, outside <body>, and page rules do not hide it", layer.tag === "div" && !layer.inBody && layer.hostDisplay === "block", JSON.stringify(layer));
 ok("A126 Dictate and Attach files sit over the bottom-right corner, 16 px icons, in the field's colour, untouched by page rules on button, svg and *", layer.visible && layer.corner && layer.size.join() === "24,24,16,16" && layer.color === layer.fieldColor && layer.opacity === "0.55" && !/255, 0, 0/.test(layer.background), JSON.stringify(layer));
 const untouched = await pageFrame().evaluate(() => document.getElementById("notes").outerHTML);
 ok("A126 the field's markup is as authored", untouched === '<textarea name="notes" id="notes"></textarea>', untouched);

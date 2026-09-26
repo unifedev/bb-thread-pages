@@ -654,7 +654,7 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
   }
 
   /** Where one field's row goes: in document coordinates, or the viewport's; its right edge, or its left in RTL. */
-  function geometry(entry: Entry, rect: DOMRect, style: CSSStyleDeclaration, origin: { left: number; top: number }): { edge: number; top: number; left: number; start: number } {
+  function geometry(entry: Entry, rect: DOMRect, style: CSSStyleDeclaration, origin: { left: number; top: number }): { edge: number; top: number; left: number; placedTop: number; start: number } {
     const field = entry.field;
     const resizable = style.resize && style.resize !== "none";
     const innerLeft = rect.left + field.clientLeft;
@@ -664,7 +664,8 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     const edge = entry.rtl ? innerLeft + (resizable ? HANDLE : INSET) : innerRight - (resizable ? HANDLE : INSET);
     const start = entry.rtl ? innerRight - INSET : innerLeft + INSET;
     const top = field.clientHeight < BUTTON + 2 * INSET ? rect.top + (rect.height - BUTTON) / 2 : innerBottom - BUTTON - INSET;
-    return { edge, top, left: Math.round(edge - origin.left), start };
+    // `edge` and `top` in the viewport, for what is visible; `left` and `placedTop` in the layer's own coordinates.
+    return { edge, top, left: Math.round(edge - origin.left), placedTop: Math.round(top - origin.top), start };
   }
 
   function originFor(entry: Entry): { left: number; top: number } {
@@ -674,7 +675,7 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
   function place(entry: Entry, left: number, top: number): void {
     dom.style(entry.group, "position", entry.mode === "fixed" ? "fixed" : "absolute");
     dom.style(entry.group, "left", `${left}px`);
-    dom.style(entry.group, "top", `${Math.round(top)}px`);
+    dom.style(entry.group, "top", `${top}px`);
   }
 
   /** Places every field's row from its box, or hides it. */
@@ -715,8 +716,8 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
       const controlsWidth = count * BUTTON + Math.max(0, count - 1) * GAP;
       const noteText = entry.note && entry.note.until > now ? entry.note.text : "";
       if (!noteText) entry.note = null;
-      const { edge, top, left, start } = geometry(entry, rect, style, originFor(entry));
-      place(entry, left, top);
+      const { edge, top, left, placedTop, start } = geometry(entry, rect, style, originFor(entry));
+      place(entry, left, placedTop);
       const box = surveyed.box;
       const near = entry.rtl ? edge : edge - controlsWidth;
       const far = entry.rtl ? edge + controlsWidth : edge;
@@ -795,8 +796,8 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
       if (!entry.follows) continue;
       const rect = entry.field.getBoundingClientRect();
       const style = dom.computed(entry.field);
-      const { left, top } = geometry(entry, rect, style, originFor(entry));
-      affected.push({ entry, left, top });
+      const { left, placedTop } = geometry(entry, rect, style, originFor(entry));
+      affected.push({ entry, left, top: placedTop });
     }
     for (const { entry, left, top } of affected) place(entry, left, top);
     for (const entry of entries.values()) {

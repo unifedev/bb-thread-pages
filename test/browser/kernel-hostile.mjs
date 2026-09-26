@@ -52,6 +52,8 @@ const pages = {
 };
 
 const layouts = {
+  // The ordinary page: the document scrolls, and the row moves with it on the compositor.
+  page: `<style>body{margin:0}</style><div style="height:300px"></div><textarea id="t" style="width:300px;height:100px"></textarea><div style="height:3000px"></div>`,
   body: `<style>html{overflow:hidden;height:100%}body{margin:0;height:100%;overflow:auto}</style><div style="height:300px"></div><textarea id="t" style="width:300px;height:100px"></textarea><div style="height:3000px"></div>`,
   main: `<style>html,body{height:100%;margin:0}main{height:100%;overflow:auto}</style><main id="s"><div style="height:300px"></div><textarea id="t" style="width:300px;height:100px"></textarea><div style="height:3000px"></div></main>`,
   sticky: `<style>body{margin:0}footer{position:sticky;bottom:0;background:#eee;padding:8px}</style><div style="height:3000px"></div><footer><textarea id="t" style="width:300px;height:60px"></textarea></footer><div style="height:600px"></div>`,
@@ -151,6 +153,7 @@ for (const engine of engines) {
     await page.waitForTimeout(500);
     const scripted = await page.evaluate(async (layout) => {
       const scroller = layout === "body" ? document.body : layout === "main" ? document.getElementById("s") : document.scrollingElement;
+      // The ordinary page's row is never hidden by scrolling: it moves with the document.
       scroller.scrollTop = layout === "sticky" ? 0 : 100;
       await new Promise((resolve) => setTimeout(resolve, 300));
       const root = document.documentElement.lastElementChild.shadowRoot;
