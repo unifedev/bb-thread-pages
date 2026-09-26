@@ -98,7 +98,7 @@ const LAYER_CSS = `
 [hidden]{display:none !important}
 .group{position:absolute;display:flex;align-items:center;justify-content:flex-end;gap:${ROW_GAP}px;margin:0;padding:0;transform:translateX(-100%);pointer-events:none;font:11px/1 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink)}
 .group>*{pointer-events:auto}
-.chips{display:flex;align-items:center;justify-content:flex-end;gap:${ROW_GAP}px;min-width:0;overflow:hidden;pointer-events:auto}
+.chips{order:-2;display:flex;align-items:center;justify-content:flex-end;gap:${ROW_GAP}px;min-width:0;overflow:hidden;pointer-events:auto}
 button{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;width:${BUTTON}px;height:${BUTTON}px;border-radius:5px;border:1px solid transparent;color:var(--ink);opacity:.55;cursor:pointer;background:transparent}
 button:hover,button:focus-visible{opacity:1;background:var(--hover);border-color:var(--edge)}
 button:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
@@ -109,7 +109,7 @@ svg{display:block;width:16px;height:16px;pointer-events:none}
 .chip svg{width:12px;height:12px}
 .chip>svg{opacity:.55}
 .chip button{width:18px;height:18px;border-radius:4px}
-button.more{width:auto;height:22px;padding:0 6px;border:1px solid var(--edge);border-radius:6px;background:var(--paper);font:inherit;opacity:.8}
+button.more{order:-1;width:auto;height:22px;padding:0 6px;border:1px solid var(--edge);border-radius:6px;background:var(--paper);font:inherit;opacity:.8}
 .popup{position:absolute;right:0;bottom:calc(100% + 4px);display:flex;flex-direction:column;gap:2px;min-width:180px;max-width:320px;max-height:200px;overflow:auto;padding:4px;border:1px solid var(--edge);border-radius:8px;background:var(--paper);box-shadow:0 4px 14px rgba(0,0,0,.18)}
 .popup .chip{border:0;justify-content:space-between;height:24px}
 .note{position:absolute;right:0;bottom:calc(100% + 4px);max-width:320px;padding:4px 8px;border:1px dashed var(--edge);border-radius:6px;background:var(--paper);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -380,7 +380,9 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
     picker.multiple = true;
     picker.hidden = true;
     picker.tabIndex = -1;
-    group.append(popup, noteBox, chips, more, dictateButton, attachButton, picker);
+    // The controls come first in the tree — they are the row's first buttons, and Tab reaches them first —
+    // and last on screen: the files are laid out before them (CSS order).
+    group.append(dictateButton, attachButton, picker, chips, more, popup, noteBox);
     shadow.append(group);
     const entry: Entry = { field, group, chips, more, popup, noteBox, dictate: dictateButton, attach: attachButton, picker, files: [], note: null, busy: false, open: false, drawn: "", mode: "document", follows: false };
     // The handlers are added with the original addEventListener and never handed to page code;
@@ -524,9 +526,8 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
         shownCount = 0;
         while (shownCount < entry.files.length && total(shownCount + 1) + ROW_GAP + moreWidth <= available) shownCount += 1;
       }
-      all.forEach((element, index) => {
-        element.hidden = index >= shownCount;
-      });
+      // Those that do not fit leave the row: each file is in the row or in the "+N" list, never both.
+      for (const element of all.slice(shownCount)) element.remove();
       const rest = entry.files.length - shownCount;
       entry.more.hidden = rest === 0;
       entry.more.textContent = `+${rest}`;

@@ -234,8 +234,8 @@ describe("Attach (R4.60–R4.62, A129, A130, A132)", () => {
     await fixture.frame();
     expect(list.parentElement!.hidden).toBe(false);
     expect(Array.from(list.querySelectorAll(".chip .name")).map((node) => node.textContent)).toEqual(["shot.png", "memo.ogg", "extra.txt"]);
-    // In the row, before Dictate and Attach files; nothing below the field.
-    expect(list.nextElementSibling?.nextElementSibling?.getAttribute("aria-label")).toBe("Dictate");
+    // In the row, laid out before Dictate and Attach files (CSS order), which stay the row's first buttons.
+    expect(list.parentElement!.querySelector("button")!.getAttribute("aria-label")).toBe("Dictate");
     expect(fixture.posted).toContainEqual({ kind: "thread-page:dirty" });
     list.querySelector<HTMLButtonElement>('button[aria-label="Remove extra.txt"]')!.click();
     await fixture.frame();
