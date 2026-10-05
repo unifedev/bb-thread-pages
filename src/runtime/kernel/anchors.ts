@@ -1,4 +1,4 @@
-import { isDocumentPath } from "../../domain/document-path.ts";
+import { documentFragment, isDocumentPath } from "../../domain/document-path.ts";
 import { downloadName, isOwnFilePath } from "../../domain/own-files.ts";
 
 /**
@@ -19,7 +19,7 @@ import { downloadName, isOwnFilePath } from "../../domain/own-files.ts";
  */
 export type AnchorDecision =
   | { kind: "default" }
-  | { kind: "document"; path: string }
+  | { kind: "document"; path: string; fragment: string }
   | { kind: "file"; path: string; download: boolean; name: string | null }
   | { kind: "external"; url: string; label: string }
   | { kind: "handler"; url: string }
@@ -58,7 +58,7 @@ export function decideAnchor(anchor: HTMLAnchorElement, documentUrl: string, sit
   if (siteRoot && target.href.startsWith(siteRoot)) {
     const path = pathWithin(target, siteRoot);
     if (path === null || !isOwnFilePath(path)) return { kind: "block" };
-    if (isDocumentPath(path) && !download) return { kind: "document", path };
+    if (isDocumentPath(path) && !download) return { kind: "document", path, fragment: documentFragment(target.hash) };
     if (embedded) return { kind: "block" };
     return { kind: "file", path, download, name: download ? downloadName(anchor.getAttribute("download")) : null };
   }
@@ -83,7 +83,8 @@ function pathWithin(target: URL, siteRoot: string): string | null {
 }
 
 export interface AnchorHandlers {
-  document(path: string): void;
+  /** `fragment`: the link's `#fragment`, or "". */
+  document(path: string, fragment: string): void;
   file(path: string, download: boolean, name: string | null): void;
   external(url: string, label: string): void;
   /** A `mailto:`, `tel:` or `sms:` link with no target of its own: a popup of the reader's handler. */
@@ -104,7 +105,7 @@ export function installAnchorInterception(doc: Document, handlers: AnchorHandler
       const decision = decideAnchor(anchor, doc.baseURI, siteBase, root, embedded);
       if (decision.kind === "default") return;
       event.preventDefault();
-      if (decision.kind === "document") handlers.document(decision.path);
+      if (decision.kind === "document") handlers.document(decision.path, decision.fragment);
       else if (decision.kind === "file") handlers.file(decision.path, decision.download, decision.name);
       else if (decision.kind === "external") handlers.external(decision.url, decision.label);
       else if (decision.kind === "handler") handlers.handler(decision.url);

@@ -37,6 +37,11 @@ export const LIMITS = Object.freeze({
   contributorInstructionBytes: 2 * 1024,
   contributorGuideBytes: 16 * 1024,
   contributorMethods: 64,
+  /** A document's scope: a folder inside the session's folder, its length and depth. R5.82, D41 */
+  scopeChars: 1024,
+  scopeSegments: 64,
+  /** A document's `#fragment`, carried by the shell. R1.12f, D41 */
+  fragmentChars: 2048,
   /** `question` in session reads, marked when cut. R5.11c, D25 */
   questionChars: 1024,
   capabilityJsonNodes: 10_000,

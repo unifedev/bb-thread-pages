@@ -1,4 +1,4 @@
-import { isDocumentPath } from "../../domain/document-path.ts";
+import { documentFragment, isDocumentPath } from "../../domain/document-path.ts";
 import { LIMITS, mebibytes } from "../../domain/limits.ts";
 import { isBridgeRequest, isBridgeResponse, isFileLike, isRecord, isScrollMessage, isValidRequestId, makeFailure, sentMessage, type BridgeRequestMessage, type RecordedMessage, type ShellConfig, type ShellMessage, type SubmitFile } from "../shared/protocol.ts";
 import { encodeBase64 } from "./base64.ts";
@@ -21,8 +21,10 @@ export interface RelayDeps {
   confirmer: Confirmer;
   navigator: Navigator;
   onDirty(dirty: boolean): void;
-  /** A link to another document of the page; the path is already validated. spec R1.12a */
-  onOpenDocument?(path: string): void;
+  /** A link to another document of the page; the path is already validated, the fragment "" or `#…`. spec R1.12a, R1.12f */
+  onOpenDocument?(path: string, fragment: string): void;
+  /** The shown document's own fragment changed. spec R1.12f */
+  onFragment?(fragment: string): void;
   /** The reader answered from the page — a form, `session.reply`, or an answer inside an embed. spec R2.17a */
   onAnswered?(): void;
   /** Where the document is scrolled to. spec R2.18b */
@@ -113,7 +115,7 @@ export function createRelay(deps: RelayDeps): Relay {
         reply(port, makeFailure(message.id, problem.code, problem.message));
         return;
       }
-      request = { v: message.v, id: message.id, method: message.method, params: { ...(message.params as Record<string, unknown>), files: files.map(describeFile) }, pageRevision: message.pageRevision };
+      request = { v: message.v, id: message.id, method: message.method, params: { ...(message.params as Record<string, unknown>), files: files.map(describeFile) }, pageRevision: message.pageRevision, ...(message.scope !== undefined ? { scope: message.scope } : {}) };
     }
     try {
       const first = await postBridge({ actionToken: config.actionToken, request });
@@ -397,7 +399,11 @@ export function createRelay(deps: RelayDeps): Relay {
         return;
       }
       if (data.kind === "thread-page:open-document") {
-        if (isDocumentPath(data.path)) deps.onOpenDocument?.(data.path);
+        if (isDocumentPath(data.path)) deps.onOpenDocument?.(data.path, documentFragment(data.fragment));
+        return;
+      }
+      if (data.kind === "thread-page:fragment") {
+        if (typeof data.fragment === "string") deps.onFragment?.(documentFragment(data.fragment));
         return;
       }
       if (data.kind === "thread-page:record") {

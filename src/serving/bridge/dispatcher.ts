@@ -100,6 +100,8 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
 
       const home = isBuiltinHome(token.session);
       if (home && !contributed && SESSIONLESS_CAPABILITIES.has(invocation.spec.method)) throw new PageError("unknown_method", BUILTIN_HOME_REFUSAL);
+      // The built-in home has no session, so no folder to scope into. spec R5.85
+      if (home && contributed && request.scope !== undefined) throw new PageError("invalid_params", "The built-in home page has no session folder to scope to");
       const session = home
         ? BUILTIN_HOME_SESSION
         : await eligibleSession(serving, token.session).catch((error: unknown) => {
@@ -161,8 +163,9 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
       let outcome;
       try {
         if (contributed) {
-          // The caller is the token's session, never anything the page sent. spec R5.49
-          const caller = { sessionId: home ? null : token.session };
+          // The caller is the token's session, never anything the page sent; the scope is the
+          // document's, checked when the request was decoded. spec R5.49, R5.84
+          const caller = { sessionId: home ? null : token.session, scope: request.scope ?? null };
           const result = await serving.contributions.invoke(contributed, invocation.params as JsonValue, caller, request.id);
           if (contributed.effect === "contributed-write") {
             // Nothing else records a write no dialog saw. spec R5.55

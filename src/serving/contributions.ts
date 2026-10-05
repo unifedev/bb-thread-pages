@@ -24,7 +24,7 @@ export interface Contributions {
   /** The last set read, without waiting; starts a refresh when it is old. For synchronous callers. */
   cached(): ContributionSet;
   /** One call to a contributor, bounded in time, its failures mapped onto the fixed codes. */
-  invoke(spec: ContributedSpec, params: JsonValue, caller: { sessionId: string | null }, requestId: string): Promise<unknown>;
+  invoke(spec: ContributedSpec, params: JsonValue, caller: { sessionId: string | null; scope: string | null }, requestId: string): Promise<unknown>;
 }
 
 /** A contributed failure carries its declared reason and detail to the page. spec R4.28a, R5.41b */

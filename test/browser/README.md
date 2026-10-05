@@ -105,3 +105,15 @@ field.
     PLAYWRIGHT=<…>/playwright/index.mjs node test/browser/kernel-hostile.mjs
 
 Results of 26 September 2026: 45 of 45 across Chromium, Firefox and WebKit.
+
+## A document's scope and fragment (D41, spike)
+
+`scope.mjs` needs no bb: `serve.ts` with `ECHO=1` adds a contributor whose
+`echo.caller` answers with the caller the host passed, and serves
+`pages/scope` — `tool.html`, one generic document that takes its folder from
+its fragment, and `loader.html`, which swaps an app's markup in.
+
+    ECHO=1 SESSION=thr_scope node test/browser/serve.ts test/browser/pages/scope 8796
+    PLAYWRIGHT=<…>/playwright/index.mjs ENGINE=chromium BASE=http://localhost:8796 node test/browser/scope.mjs
+
+Results of 5 October 2026: 22 of 22 in Chromium, Firefox and WebKit.

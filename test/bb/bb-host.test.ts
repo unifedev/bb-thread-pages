@@ -246,9 +246,12 @@ describe("activity mapping", () => {
     const listed = await host.contributors!.list();
     expect(listed).toEqual([{ id: "syns", declaration: { version: "1", methods: [] } }]);
     expect(calls.map((entry) => entry.pluginId).sort()).toEqual(["other", "syns"]);
-    const answer = await host.contributors!.invoke("syns", { method: "syns.write", params: { path: "a" }, caller: { sessionId: "thr_a" }, requestId: "tp-1" });
+    const answer = await host.contributors!.invoke("syns", { method: "syns.write", params: { path: "a" }, caller: { sessionId: "thr_a", scope: null }, requestId: "tp-1" });
     expect(answer).toEqual({ ok: false, error: { code: "conflict", reason: "stale_head", detail: { current: "v2" } } });
+    // No scope: the contributor's input is exactly what it was before scopes existed. D41
     expect(calls.at(-1)).toEqual({ pluginId: "syns", method: "threadPagesInvoke", input: { method: "syns.write", params: { path: "a" }, caller: { sessionId: "thr_a" }, requestId: "tp-1" } });
+    await host.contributors!.invoke("syns", { method: "syns.write", params: { path: "a" }, caller: { sessionId: "thr_a", scope: "clients/vela/q3-board" }, requestId: "tp-2" });
+    expect(calls.at(-1)).toEqual({ pluginId: "syns", method: "threadPagesInvoke", input: { method: "syns.write", params: { path: "a" }, caller: { sessionId: "thr_a", scope: "clients/vela/q3-board" }, requestId: "tp-2" } });
   });
 
   it("words a waiting session's question from its interactions, bounded", () => {

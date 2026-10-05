@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { ENTRY_DOCUMENT } from "../domain/document-path.ts";
 import { injectKernel } from "../domain/html/document.ts";
 import { etagFor, ifNoneMatchMatches } from "../domain/revision.ts";
 import { KERNEL_RUNTIME } from "../generated/kernel-runtime.ts";
@@ -42,7 +43,7 @@ export function documentRoute(serving: ServingContext) {
       if (ifNoneMatchMatches(context.req.header("if-none-match"), etagFor(page.revision))) {
         return new Response(null, { status: 304, headers });
       }
-      const config: KernelConfig = { pageRevision: page.revision, stale: page.stale, siteRoot: serving.site.siteRoot(id) };
+      const config: KernelConfig = { pageRevision: page.revision, stale: page.stale, siteRoot: serving.site.siteRoot(id), documentPath: path ?? ENTRY_DOCUMENT };
       const html = injectKernel(page.html, { kernel: KERNEL_RUNTIME, config, baseHref: serving.site.baseHref(id, path) });
       return new Response(html, { status: 200, headers });
     } catch (error) {

@@ -129,8 +129,17 @@ export type ContributorAnswer =
 export interface ContributorCall {
   readonly method: string;
   readonly params: JsonValue;
-  /** From the action token, never from the page; null for the built-in home page. spec R5.49 */
-  readonly caller: { readonly sessionId: string | null };
+  /**
+   * `sessionId` from the action token, never from the page; null for the
+   * built-in home page. spec R5.49
+   *
+   * `scope`: the folder inside that session's folder the calling document
+   * scoped its calls to, relative, `/`-separated, already refused when it is
+   * absolute, holds `..` or an empty or `.` segment; null when the document
+   * set none. The contributor resolves it against the session's folder and
+   * answers for links that lead out of it. spec R5.81–R5.86, D41
+   */
+  readonly caller: { readonly sessionId: string | null; readonly scope: string | null };
   readonly requestId: string;
 }
 

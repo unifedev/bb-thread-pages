@@ -452,7 +452,7 @@ function hostUnavailable(error: unknown): PageError {
  * On bb a contributor is a plugin that answers two plugin RPC methods:
  *
  *   threadPagesContributions → its declaration: { version, methods, instruction?, guide? }
- *   threadPagesInvoke        ← { method, params, caller: { sessionId }, requestId }
+ *   threadPagesInvoke        ← { method, params, caller: { sessionId, scope? }, requestId }
  *                            → { ok: true, result } | { ok: false, error: { code, message?, reason?, detail? } }
  *
  * Every enabled, running plugin is asked for a declaration; one that has no
@@ -503,7 +503,8 @@ export function createBbContributors(bb: BbPluginApi): ContributorHost {
       const answer = (await bb.sdk.plugins.callRpc({
         pluginId: contributorId,
         method: INVOKE_RPC,
-        input: { method: call.method, params: call.params, caller: { sessionId: call.caller.sessionId }, requestId: call.requestId },
+        // `scope` only when the document set one, so a contributor's input is unchanged for every other call. D41
+        input: { method: call.method, params: call.params, caller: { sessionId: call.caller.sessionId, ...(call.caller.scope !== null ? { scope: call.caller.scope } : {}) }, requestId: call.requestId },
         outputSchema: passThrough,
       })) as unknown;
       return answerOf(answer);

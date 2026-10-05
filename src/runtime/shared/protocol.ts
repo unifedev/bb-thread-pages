@@ -4,6 +4,7 @@
  * receives from the server. Shared so neither side can drift. spec R2.3, R3.8
  */
 import { BRIDGE_ERROR_CODES, type BridgeErrorCode } from "../../domain/errors.ts";
+import { isCanonicalScope } from "../../domain/scope.ts";
 
 export const HANDSHAKE_VERSION = 1 as const;
 export const BRIDGE_VERSION = 1 as const;
@@ -14,6 +15,8 @@ export interface BridgeRequestMessage {
   method: string;
   params: unknown;
   pageRevision: string;
+  /** The folder the document scoped its calls to; absent when none. spec R5.81–R5.86 */
+  scope?: string;
   /**
    * The files a `sessions.start` or `sessions.send` carries, by structured
    * clone beside the JSON parameters, never inside them. spec R5.75
@@ -45,8 +48,10 @@ export type KernelMessage =
   | { kind: "thread-page:dirty" }
   | { kind: "thread-page:clean" }
   | { kind: "thread-page:submit"; submissionId: string; title: string; answers: SubmitAnswer[]; files: SubmitFile[] }
-  /** A link to another document of the page: the shell opens it in place. spec R1.12a */
-  | { kind: "thread-page:open-document"; path: string }
+  /** A link to another document of the page: the shell opens it in place, at its fragment if it names one. spec R1.12a, R1.12f */
+  | { kind: "thread-page:open-document"; path: string; fragment?: string }
+  /** The document's own `#fragment` changed: the shell's address follows. spec R1.12f */
+  | { kind: "thread-page:fragment"; fragment: string }
   /** Where the document is scrolled to, so a refresh can return there. spec R2.18b, R4.45 */
   | { kind: "thread-page:scroll"; x: number; y: number }
   /** Inside an embed: the reader accepted the offered new version. spec R4.46 */
@@ -97,6 +102,8 @@ export interface KernelConfig {
   embedded?: boolean;
   /** Whether its forms can upload; false on the built-in home, which has no session storage. spec R4.60 */
   uploads?: boolean;
+  /** The document's path within the page root, so a link to itself at another fragment stays in the document. spec R1.12f */
+  documentPath?: string;
 }
 
 /** Carried in the shell script's `data-config` attribute. The document fields change when another document of the page opens. */
@@ -185,10 +192,14 @@ export function isFileLike(value: unknown): value is File {
 
 /** The shell checks every request before it leaves the reader's browser. */
 export function isBridgeRequest(value: unknown, pageRevision: string): value is BridgeRequestMessage {
+  if (!isRecord(value)) return false;
+  const keys = ["v", "id", "method", "params", "pageRevision"];
+  if ("scope" in value) {
+    if (!isCanonicalScope(value.scope)) return false;
+    keys.push("scope");
+  }
   return (
-    isRecord(value) &&
-    (hasExactKeys(value, ["v", "id", "method", "params", "pageRevision"]) ||
-      (hasExactKeys(value, ["v", "id", "method", "params", "pageRevision", "files"]) && Array.isArray(value.files) && value.files.every(isFileLike))) &&
+    (hasExactKeys(value, keys) || (hasExactKeys(value, [...keys, "files"]) && Array.isArray(value.files) && value.files.every(isFileLike))) &&
     value.v === BRIDGE_VERSION &&
     isValidRequestId(value.id) &&
     typeof value.method === "string" &&

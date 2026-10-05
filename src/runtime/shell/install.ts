@@ -1,4 +1,4 @@
-import { ENTRY_DOCUMENT } from "../../domain/document-path.ts";
+import { documentFragment, ENTRY_DOCUMENT } from "../../domain/document-path.ts";
 import { EMPTY_PAGE_STATUS, HANDSHAKE_VERSION, isRecord, type ShellConfig } from "../shared/protocol.ts";
 import { createChromeActions } from "./actions.ts";
 import { createConfirmer } from "./confirm.ts";
@@ -18,6 +18,11 @@ import { createVoice, type RecorderElements, type Voice } from "./voice.ts";
  * back and forward return. A new revision of the open document is swapped in
  * the same way, behind the shown one, with no history entry and the address
  * unchanged. spec 02 §The shell, R1.12a–R1.12d, R2.18a
+ *
+ * A document's `#fragment` is the reader's address's: the shell loads the
+ * document at it, a link carries its own, back, forward and reload return to
+ * it, and when the document changes it the address follows. It never reaches
+ * the server. spec R1.12f
  */
 export interface ShellElements {
   frame: HTMLIFrameElement;
@@ -40,7 +45,7 @@ export interface ShellElements {
 export interface ShellHandle {
   poller: Poller;
   /** For tests: open another document of the page as a link would. */
-  openDocument(path: string, push?: boolean): Promise<boolean>;
+  openDocument(path: string, push?: boolean, fragment?: string): Promise<boolean>;
   /** For tests: show the open document's current revision in place. */
   refreshDocument(): Promise<boolean>;
   /** For tests: the frame the reader sees. */
@@ -48,6 +53,7 @@ export interface ShellHandle {
 }
 
 const HISTORY_KEY = "threadPageDocument";
+const HISTORY_FRAGMENT = "threadPageFragment";
 /** A question's confirm button ignores clicks this long after it appears. */
 const CONFIRM_ARM_MS = 400;
 
@@ -68,6 +74,8 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   let pendingRestore: { x: number; y: number } | null = null;
   /** Counts document switches, so work that awaited one can tell it was overtaken. */
   let generation = 0;
+  /** The shown document's `#fragment`, or "". spec R1.12f */
+  let fragment = config.navigable ? documentFragment(win.location.hash) : "";
 
   const view = {
     setStatus(text: string, warn: boolean) {
@@ -128,7 +136,16 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
         poller.offer();
       }
     },
-    onOpenDocument: (path) => void openDocument(path, true),
+    onOpenDocument: (path, next) => void openDocument(path, true, next),
+    onFragment: (next) => {
+      if (!config.navigable || next === fragment) return;
+      fragment = next;
+      try {
+        win.history.replaceState(historyState(), "", shellAddress(config.documentPath));
+      } catch {
+        // The address is a courtesy; the document has its fragment either way.
+      }
+    },
     onAnswered: () => poller.expectChange(),
     onScroll: (x, y) => {
       scroll = { x, y };
@@ -222,7 +239,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     voice?.cancel();
     const next = frame.cloneNode(false) as HTMLIFrameElement;
     next.removeAttribute("data-incoming");
-    next.setAttribute("src", url);
+    next.setAttribute("src", url + fragment);
     awaitingReady.add(next);
     frame.replaceWith(next);
     frame = next;
@@ -262,11 +279,16 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     current.settle(true);
   }
 
+  /** The shell's address for a document at the current fragment: the fragment is the document's, not the last one's. */
   function shellAddress(path: string): string {
     const url = new URL(win.location.href);
     if (path === ENTRY_DOCUMENT) url.searchParams.delete("path");
     else url.searchParams.set("path", path);
-    return `${url.pathname}${url.search}${url.hash}`;
+    return `${url.pathname}${url.search}${fragment}`;
+  }
+
+  function historyState(): Record<string, string> {
+    return { [HISTORY_KEY]: config.documentPath, [HISTORY_FRAGMENT]: fragment };
   }
 
   interface DocumentSession {
@@ -320,8 +342,8 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   }
 
   /** A link to another document of the page: the frame is swapped and the address follows. */
-  async function openDocument(path: string, push = true): Promise<boolean> {
-    if (!config.navigable || path === config.documentPath) return false;
+  async function openDocument(path: string, push = true, nextFragment = ""): Promise<boolean> {
+    if (!config.navigable || (path === config.documentPath && nextFragment === fragment)) return false;
     try {
       const session = await documentSession(path);
       if (typeof session === "string") {
@@ -330,6 +352,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       }
       cancelIncoming();
       applySession(session);
+      fragment = nextFragment;
       framePort = null;
       scroll = { x: 0, y: 0 };
       pendingRestore = null;
@@ -338,7 +361,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       poller.retarget();
       view.showReload(false);
       view.setStatus(config.stale ? "Offline copy — read-only" : config.empty ? EMPTY_PAGE_STATUS : (config.notice ?? ""), config.stale);
-      if (push) win.history.pushState({ [HISTORY_KEY]: config.documentPath }, "", shellAddress(config.documentPath));
+      if (push) win.history.pushState(historyState(), "", shellAddress(config.documentPath));
       return true;
     } catch {
       view.setStatus("That page could not be opened", true);
@@ -379,7 +402,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     cancelIncoming();
     const next = frame.cloneNode(false) as HTMLIFrameElement;
     next.setAttribute("data-incoming", "");
-    next.setAttribute("src", session.documentUrl);
+    next.setAttribute("src", session.documentUrl + fragment);
     awaitingReady.add(next);
     return new Promise<boolean>((resolve) => {
       const entry = {
@@ -405,14 +428,31 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
 
   if (config.navigable) {
     try {
-      win.history.replaceState({ [HISTORY_KEY]: config.documentPath }, "", win.location.href);
+      win.history.replaceState(historyState(), "", win.location.href);
     } catch {
       // A history the shell cannot write only loses back and forward.
     }
     win.addEventListener("popstate", (event) => {
       const state = event.state as unknown;
       const path = isRecord(state) && typeof state[HISTORY_KEY] === "string" ? state[HISTORY_KEY] : null;
-      if (path) void openDocument(path, false);
+      if (path) void openDocument(path, false, isRecord(state) ? documentFragment(state[HISTORY_FRAGMENT]) : "");
+    });
+    // The reader's address changed only its fragment — a link to this page at another one, or the address
+    // edited — which the browser does without loading the shell: the document is opened at it. An entry the
+    // shell wrote is popstate's to restore. spec R1.12f
+    win.addEventListener("hashchange", () => {
+      const state = win.history.state as unknown;
+      if (isRecord(state) && typeof state[HISTORY_KEY] === "string") return;
+      const next = documentFragment(win.location.hash);
+      if (next === fragment) return;
+      void openDocument(config.documentPath, false, next).then((opened) => {
+        if (!opened) return;
+        try {
+          win.history.replaceState(historyState(), "", shellAddress(config.documentPath));
+        } catch {
+          // Back and forward still work from the address alone.
+        }
+      });
     });
   }
 
@@ -429,7 +469,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     if (!wasOffered) void refreshDocument();
   });
 
-  frame.src = config.documentUrl;
+  frame.src = config.documentUrl + fragment;
   poller.start();
   return { poller, openDocument, refreshDocument, shownFrame: () => frame };
 }

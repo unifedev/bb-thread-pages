@@ -98,7 +98,7 @@ export const pagesRead = handler<PagesReadParams, unknown>({
           add({ sessionId, path, deferred: true });
           continue;
         }
-        const config: KernelConfig = { pageRevision: page.revision, stale: page.stale, siteRoot: serving.site.siteRoot(sessionId), embedded: true };
+        const config: KernelConfig = { pageRevision: page.revision, stale: page.stale, siteRoot: serving.site.siteRoot(sessionId), embedded: true, documentPath: key ?? ENTRY_DOCUMENT };
         const html = injectKernel(page.html, { kernel: KERNEL_RUNTIME, config, baseHref: serving.site.baseHref(sessionId, key) });
         const entry = { ...shared, revision: page.revision, html };
         const bytes = bytesOf(entry);

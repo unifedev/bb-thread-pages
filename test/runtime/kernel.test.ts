@@ -75,7 +75,7 @@ describe("window.threadPage", () => {
     expect(descriptor?.writable).toBe(false);
     expect(descriptor?.configurable).toBe(false);
     expect(Object.isFrozen(api)).toBe(true);
-    expect(Object.keys(api).sort()).toEqual(["embed", "invoke", "setDirty", "version", "watch"]);
+    expect(Object.keys(api).sort()).toEqual(["embed", "invoke", "scope", "setDirty", "setScope", "version", "watch"]);
     expect(api.version).toBe(1);
   });
 });
@@ -343,9 +343,12 @@ describe("anchors", () => {
   // another site opens natively in a new tab. spec R4.15, R4.15a, R4.15b, D33, D34
   it("decides every kind of link: documents, own files, other sites, handlers, built files", () => {
     expect(decideAnchor(anchor("#section"), documentUrl, base)).toEqual({ kind: "default" });
-    expect(decideAnchor(anchor("other.html"), documentUrl, base)).toEqual({ kind: "document", path: "other.html" });
-    expect(decideAnchor(anchor("../index.html"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "index.html" });
-    expect(decideAnchor(anchor("next.html#part"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "guides/next.html" });
+    expect(decideAnchor(anchor("other.html"), documentUrl, base)).toEqual({ kind: "document", path: "other.html", fragment: "" });
+    expect(decideAnchor(anchor("../index.html"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "index.html", fragment: "" });
+    // The link's fragment goes with it. R1.12f
+    expect(decideAnchor(anchor("next.html#part"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "guides/next.html", fragment: "#part" });
+    expect(decideAnchor(anchor("tool.html#clients/vela/q3-board"), documentUrl, base)).toEqual({ kind: "document", path: "tool.html", fragment: "#clients/vela/q3-board" });
+    expect(decideAnchor(anchor("tool.html#"), documentUrl, base)).toEqual({ kind: "document", path: "tool.html", fragment: "" });
     // Own files that are not documents: the shell opens or downloads them. D33
     expect(decideAnchor(anchor("data.json"), documentUrl, base)).toEqual({ kind: "file", path: "data.json", download: false, name: null });
     expect(decideAnchor(anchor("uploads/report.html"), documentUrl, base)).toEqual({ kind: "file", path: "uploads/report.html", download: false, name: null });
@@ -362,7 +365,7 @@ describe("anchors", () => {
     expect(decideAnchor(anchor("../thr_b/thread-storage/files/secret.pdf"), documentUrl, base)).toEqual({ kind: "block" });
     // Inside an embed the shell is not this page's: its own files are refused, visibly in the guide. R4.50
     expect(decideAnchor(anchor("data.json"), documentUrl, base, base, true)).toEqual({ kind: "block" });
-    expect(decideAnchor(anchor("other.html"), documentUrl, base, base, true)).toEqual({ kind: "document", path: "other.html" });
+    expect(decideAnchor(anchor("other.html"), documentUrl, base, base, true)).toEqual({ kind: "document", path: "other.html", fragment: "" });
     // Other sites: through the confirmed capability, whatever the target; the page's own popups stay sandboxed. D34 (option D)
     expect(decideAnchor(anchor("https://github.com/x/y", "Repo"), documentUrl, base)).toEqual({ kind: "external", url: "https://github.com/x/y", label: "Repo" });
     for (const target of ["_self", "_top", "_blank", "docs"]) {
@@ -432,5 +435,97 @@ describe("anchors", () => {
     link.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
     expect(posted.messages).toContainEqual({ kind: "thread-page:open-document", path: "guides/next.html" });
+  });
+});
+
+// A document scopes its calls to a folder inside the session's folder. spec R4.63–R4.65, D41
+describe("kernel scope", () => {
+  type Scoped = ThreadPage & { setScope(folder: unknown): string | null; readonly scope: string | null };
+  const requests = (posted: Posted) => posted.messages.filter((entry) => typeof (entry as { method?: unknown }).method === "string") as { id: string; method: string; scope?: string }[];
+
+  it("carries the scope on every later call, from the moment it is set, and none before", () => {
+    const { posted, api } = install("<head></head><body></body>");
+    const page = api as Scoped;
+    expect(page.scope).toBeNull();
+    void page.invoke("syns.ls", {}).catch(() => undefined);
+    expect(page.setScope("clients/vela/q3-board/")).toBe("clients/vela/q3-board");
+    expect(page.scope).toBe("clients/vela/q3-board");
+    void page.invoke("syns.ls", {}).catch(() => undefined);
+    void page.invoke("context.get").catch(() => undefined);
+    expect(page.setScope(null)).toBeNull();
+    void page.invoke("syns.ls", {}).catch(() => undefined);
+    const sent = requests(posted);
+    expect(sent.map((request) => request.scope)).toEqual([undefined, "clients/vela/q3-board", "clients/vela/q3-board", undefined]);
+    expect(Object.keys(sent[0]!).sort()).toEqual(["id", "method", "pageRevision", "params", "v"]);
+    expect(page.setScope("")).toBeNull();
+  });
+
+  it("refuses a scope the host would refuse, synchronously, and keeps the one it had", () => {
+    const { api } = install("<head></head><body></body>");
+    const page = api as Scoped;
+    page.setScope("a/b");
+    for (const bad of ["/abs", "../up", "a/../b", "a//b", "./a", "C:/x", "~/x", "a\\b", 7, {}]) {
+      expect(() => page.setScope(bad), JSON.stringify(bad)).toThrow(TypeError);
+    }
+    expect(page.scope).toBe("a/b");
+  });
+
+  it("keeps a watch on the scope it started with", async () => {
+    vi.useFakeTimers();
+    try {
+      const { handle, posted, api } = install("<head></head><body></body>");
+      const page = api as Scoped;
+      page.setScope("one");
+      const stop = page.watch("session.activity", { limit: 1 }, () => undefined, { intervalMs: LIMITS.watchMinMs });
+      await vi.advanceTimersByTimeAsync(0);
+      page.setScope("two");
+      const first = requests(posted)[0]!;
+      handle.deliver({ v: 1, id: first.id, ok: true, result: { items: [] } });
+      await vi.advanceTimersByTimeAsync(LIMITS.watchMinMs);
+      expect(requests(posted).map((request) => request.scope)).toEqual(["one", "one"]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// A document's fragment: links carry it, the document's own changes are reported. spec R1.12f, D41
+describe("kernel fragments", () => {
+  function installAt(documentPath: string, html: string) {
+    const win = fresh(html);
+    const posted: Posted = { messages: [] };
+    const handle = installKernel(win, { pageRevision: REV, stale: false, siteRoot: "https://bb.example/api/v1/threads/thr_a/thread-storage/files/", documentPath });
+    handle.connect({ postMessage: (message: unknown) => posted.messages.push(message), start() {} });
+    return { posted, win };
+  }
+  const click = (win: PageWindow, id: string) => {
+    const event = new win.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    win.document.getElementById(id)!.dispatchEvent(event);
+    return event;
+  };
+  const BODY = `<head><base href="https://bb.example/api/v1/threads/thr_a/thread-storage/files/"></head><body>
+    <a id="other" href="tool.html#clients/vela/q3-board">Board</a>
+    <a id="self" href="index.html#later">Later</a>
+    <a id="plain" href="tool.html">Tool</a></body>`;
+
+  it("asks the shell for another document with the link's fragment", () => {
+    const { posted, win } = installAt("index.html", BODY);
+    expect(click(win, "other").defaultPrevented).toBe(true);
+    expect(click(win, "plain").defaultPrevented).toBe(true);
+    expect(posted.messages).toContainEqual({ kind: "thread-page:open-document", path: "tool.html", fragment: "#clients/vela/q3-board" });
+    expect(posted.messages).toContainEqual({ kind: "thread-page:open-document", path: "tool.html" });
+  });
+
+  it("navigates its own fragment for a link to itself, and reports every change of it", async () => {
+    const { posted, win } = installAt("index.html", BODY);
+    click(win, "self");
+    expect(win.location.hash).toBe("#later");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(posted.messages.filter((entry) => (entry as { kind?: string }).kind === "thread-page:open-document")).toHaveLength(0);
+    expect(posted.messages).toContainEqual({ kind: "thread-page:fragment", fragment: "#later" });
+    win.location.hash = "#clients/other";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(posted.messages).toContainEqual({ kind: "thread-page:fragment", fragment: "#clients/other" });
   });
 });

@@ -454,6 +454,8 @@ The complete page-facing API; it is frozen and cannot be replaced.
     const stop = window.threadPage.watch(method, params, (value, error) => {…}, { intervalMs })
     window.threadPage.setDirty(true | false)
     const stopEmbed = window.threadPage.embed(target, { sessionId, path, onState })
+    window.threadPage.setScope("clients/vela/q3-board")   // or null; returns the scope sent
+    window.threadPage.scope                 // the scope set, or null
 
 - \`invoke\` resolves with the capability's result and rejects with an Error
   whose \`code\` is one of: invalid_json, invalid_request, invalid_params,
@@ -467,6 +469,8 @@ The complete page-facing API; it is frozen and cannot be replaced.
   listener's second argument. Call the returned function to stop; a page that
   never calls watch causes no polling.
 - \`embed\` shows another session's page — see *Showing another session's page*.
+- \`setScope\` scopes the document's later calls to a folder inside your
+  session's folder — see *Capabilities from other plugins*.
 - \`stale_page\` means the page changed under the call: the shell shows the new
   version, or offers it while the page is dirty. \`cancelled\` means the reader declined a confirmation — a normal
   outcome every page calling a confirmed capability must handle, not an error.
@@ -567,6 +571,23 @@ expect from the control they touched, make that plain on the page first.
 **Your session is passed for you.** The plugin learns which session's page is
 calling from the host; a session id in your parameters chooses nothing. From
 the built-in home page there is no session.
+
+**Scoped to a folder.** A document may say which folder inside your session's
+folder its calls are about: \`threadPage.setScope("clients/vela/q3-board")\`.
+Every \`invoke\` made after it, and every \`watch\` started after it, carries
+that folder, and the plugin answers for it as if the session worked there; a
+plugin that takes no folder answers as before, for the session's own folder,
+so check what its section says. \`setScope(null)\` returns to the session's
+folder. The folder is relative, \`/\`-separated, at most ${LIMITS.scopeChars} characters and
+${LIMITS.scopeSegments} folders deep; one that is absolute, starts with \`~\`, or has a \`..\`, \`.\` or
+empty part throws a TypeError, and the host refuses it again with
+invalid_params. Built-in capabilities ignore it. Set it before the first call
+— an app the document goes on to load then works in its folder unchanged —
+and take the folder from the document's address, so one document serves any
+folder (see *Several documents in one page*):
+
+    const folder = decodeURIComponent(location.hash.slice(1));
+    threadPage.setScope(folder || null);
 
 **Failures.** The rejected Error carries \`code\` as usual, and may carry
 \`reason\` — a word the method declares, such as \`no_repo\` — and \`detail\`,
@@ -820,6 +841,14 @@ in one stylesheet in your page root and link it from every document —
 so none arrives unstyled. That stylesheet belongs to this page alone; other
 pages are not yours to style.
 
+A link may carry a fragment — \`<a href="tool.html#clients/vela/q3-board">\` —
+and the document opens with it: \`location.hash\` is \`#clients/vela/q3-board\`,
+the reader's address shows it, and reload, back and forward return to it.
+This is how one document takes a parameter. A link to the same document at
+another fragment does not reload it: \`hashchange\` fires, as on any site, and
+the address follows. A query (\`tool.html?x=1\`) is not carried; use the
+fragment. Inside an embed, fragments are not carried.
+
 What does not carry over: script state. Each document starts fresh, like a
 page load. When state has to survive switching — a half-typed answer on one
 view while the reader looks at another — keep the views in one document and
@@ -893,6 +922,8 @@ const limits = () => `## Limits
 | Capability payload | ${kibibytes(LIMITS.capabilityPayloadBytes)} request and response, depth ${LIMITS.capabilityJsonDepth}, ${LIMITS.capabilityJsonNodes} nodes |
 | Contributed capability payload | as each method declares in the roster, at most ${mebibytes(LIMITS.contributedPayloadMaxBytes)}; ${kibibytes(LIMITS.capabilityPayloadBytes)} when it declares none |
 | Contributed call | ${LIMITS.contributedCallMs / 1000} s, then unavailable |
+| Scope (setScope) | ${LIMITS.scopeChars} characters, ${LIMITS.scopeSegments} folders deep |
+| Fragment carried to a document | ${LIMITS.fragmentChars} characters; a longer one is dropped |
 | Prompt | ${kibibytes(LIMITS.promptChars)} characters (sessions.start, sessions.send) |
 | session.reply result | ${kibibytes(LIMITS.resultTextBytes)} |
 | Title | ${LIMITS.titleChars} characters |

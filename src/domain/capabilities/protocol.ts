@@ -2,6 +2,7 @@ import { boundedMessage, isBridgeErrorCode, PageError, type BridgeErrorCode } fr
 import { isMethodName, isRequestId, isRevision } from "../ids.ts";
 import { isJsonObject, validateJson, type JsonValue } from "../json/strict-json.ts";
 import { LIMITS } from "../limits.ts";
+import { isCanonicalScope } from "../scope.ts";
 import type { CapabilityLookup } from "./registry.ts";
 import type { AnyCapabilitySpec } from "./contract.ts";
 import { unknownMethodMessage } from "./renamed.ts";
@@ -18,6 +19,11 @@ export interface BridgeRequest {
   readonly method: string;
   readonly params: JsonValue;
   readonly pageRevision: string;
+  /**
+   * The folder inside the session's folder the document scoped its calls to;
+   * absent when it set none. Only contributed capabilities receive it. spec R5.81–R5.86
+   */
+  readonly scope?: string;
 }
 
 export interface BridgeSuccess {
@@ -73,12 +79,15 @@ export function decodeBridgeRequest(input: unknown): BridgeRequest {
   const value = checked.value;
   if (!isJsonObject(value)) throw new PageError("invalid_request", "Bridge request must be an object");
   const keys = Object.keys(value).sort().join(",");
-  if (keys !== "id,method,pageRevision,params,v") throw new PageError("invalid_request", "Bridge request has the wrong shape");
+  if (keys !== "id,method,pageRevision,params,v" && keys !== "id,method,pageRevision,params,scope,v") throw new PageError("invalid_request", "Bridge request has the wrong shape");
   if (value.v !== BRIDGE_PROTOCOL_VERSION) throw new PageError("unsupported_version", "Unsupported bridge protocol version");
   if (!isRequestId(value.id)) throw new PageError("invalid_request", "Invalid request id");
   if (!isMethodName(value.method)) throw new PageError("invalid_request", "Invalid method name");
   if (!isRevision(value.pageRevision)) throw new PageError("invalid_request", "Invalid page revision");
-  return { v: 1, id: value.id, method: value.method, params: value.params as JsonValue, pageRevision: value.pageRevision };
+  // A scope that could name anything outside the session's folder is refused before anything else. spec R5.83
+  if ("scope" in value && !isCanonicalScope(value.scope)) throw new PageError("invalid_params", "Invalid scope: a folder inside the session's folder, relative, without .. or empty segments");
+  const base = { v: 1 as const, id: value.id, method: value.method, params: value.params as JsonValue, pageRevision: value.pageRevision };
+  return "scope" in value ? { ...base, scope: value.scope as string } : base;
 }
 
 export function safeRequestId(value: unknown): string {

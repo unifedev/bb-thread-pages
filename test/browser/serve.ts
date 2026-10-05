@@ -15,6 +15,9 @@
  * The file route answers like bb 0.43.4's: content type by extension,
  * `nosniff`, `content-security-policy: sandbox allow-scripts` on `.html` only,
  * no `Range`, no `content-disposition`. Not part of the unit suite.
+ *
+ * ECHO=1 adds a contributor, `echo.caller`, answering with the caller it was
+ * given, for the scope pass (scope.mjs).
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { createServer as createHttp, type IncomingMessage, type ServerResponse } from "node:http";
@@ -41,6 +44,16 @@ const TYPES: Record<string, string> = {
 
 const fake = createFakePluginHost({ pluginId: "thread-pages", settings: {} });
 const { host, state } = createFakeHost({ removable: process.env.REMOVABLE !== "0" });
+// ECHO=1 installs a contributor whose one method answers with the caller it was given: the session and the scope. D41
+if (process.env.ECHO === "1") {
+  const nullable = { type: ["string", "null"] };
+  state.contributors.push({
+    id: "echo",
+    declaration: { version: "1", methods: [{ name: "echo.caller", description: "Answers with the caller the host passed.", effect: "read", result: { type: "object", properties: { sessionId: nullable, scope: nullable }, additionalProperties: false } }] },
+    answer: async (call) => ({ ok: true, result: { sessionId: call.caller.sessionId, scope: call.caller.scope } }),
+  });
+}
+
 // `/__set` moves this clock on, so the host's answer about voice, kept a few seconds, is read again.
 let skew = 0;
 await createPlugin(fake.bb, { host, now: () => Date.now() + skew });

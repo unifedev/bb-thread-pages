@@ -93,6 +93,10 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     watch: (method, params, listener, options) => bridge.watch(method, params, listener, options),
     setDirty: (value) => dirty.setCustom(value !== false),
     embed: (target, options) => embeds.embed(target, options),
+    setScope: (folder) => bridge.setScope(folder),
+    get scope() {
+      return bridge.scope();
+    },
   });
 
   function prepare(root: ParentNode): void {
@@ -129,6 +133,12 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     },
     true,
   );
+  // The shell's address follows the document's fragment, so a reload or a shared link returns to it. spec R1.12f
+  if (!config.embedded) {
+    win.addEventListener("hashchange", () => {
+      post({ kind: "thread-page:fragment", fragment: win.location.hash });
+    });
+  }
   doc.addEventListener("input", markDirty, true);
   doc.addEventListener("change", markDirty, true);
 
@@ -172,8 +182,13 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   installAnchorInterception(
     doc,
     {
-      document: (path) => {
-        post({ kind: "thread-page:open-document", path });
+      document: (path, fragment) => {
+        // The same document at another fragment is a fragment navigation, as on any site. spec R1.12f
+        if (fragment && path === config.documentPath) {
+          win.location.hash = fragment;
+          return;
+        }
+        post({ kind: "thread-page:open-document", path, ...(fragment ? { fragment } : {}) });
       },
       file: (path, download, name) => {
         post({ kind: "thread-page:open-file", path, download, name });

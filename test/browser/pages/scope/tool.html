@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>One document, any folder</title>
+<script>
+  // One generic document: the folder is its fragment, set before anything calls.
+  const show = (id, value) => { document.getElementById(id).textContent = typeof value === "string" ? value : JSON.stringify(value); };
+  function scopeFromAddress() {
+    const folder = decodeURIComponent(location.hash.slice(1));
+    try { return threadPage.setScope(folder || null); } catch (error) { return `refused: ${error.message}`; }
+  }
+  async function report() {
+    show("hash", location.hash);
+    show("search", location.search.includes("folder=") ? "has folder" : "no folder");
+    show("scope", threadPage.scope);
+    try { show("echo", await threadPage.invoke("echo.caller", {})); } catch (error) { show("echo", `error ${error.code}`); }
+  }
+  scopeFromAddress();
+  addEventListener("hashchange", () => { scopeFromAddress(); report(); });
+  addEventListener("DOMContentLoaded", () => {
+    let refused;
+    try { threadPage.setScope("../outside"); refused = "accepted"; } catch (error) { refused = error instanceof TypeError ? "TypeError" : String(error); }
+    show("refused", refused);
+    report();
+  });
+</script></head>
+<body>
+<dl>
+  <dt>hash</dt><dd id="hash"></dd>
+  <dt>query</dt><dd id="search"></dd>
+  <dt>scope</dt><dd id="scope"></dd>
+  <dt>echo</dt><dd id="echo"></dd>
+  <dt>../outside</dt><dd id="refused"></dd>
+</dl>
+<p><a id="to-deck" href="tool.html#decks/q3-pitch">Deck (same document, other folder)</a></p>
+<p><a id="to-index" href="index.html">Back to index</a></p>
+</body></html>

@@ -2,15 +2,24 @@ import { LIMITS } from "../../domain/limits.ts";
 import { BRIDGE_VERSION, isBridgeResponse, type BridgeRequestMessage, type BridgeResponseMessage } from "../shared/protocol.ts";
 import type { BridgeErrorCode } from "../../domain/errors.ts";
 import { RESERVED_NAMESPACES } from "../../domain/capabilities/contributed.ts";
+import { checkScope } from "../../domain/scope.ts";
 
 /**
  * `invoke` and `watch` as a page sees them. Calls made before the port is
  * ready are queued; every response is checked before it is trusted; a
  * failure rejects with an Error carrying a `code`. spec R4.28–R4.32
+ *
+ * The document's scope rides on every request from the moment it is set: an
+ * `invoke` carries the scope current when it is called, a `watch` the one
+ * current when it starts, so a later change never moves a call already made.
+ * spec R4.63–R4.65
  */
 export interface BridgeClient {
   invoke(method: string, params?: unknown): Promise<unknown>;
   watch(method: string, params: unknown, listener: (value: unknown, error: unknown) => void, options?: { intervalMs?: number }): () => void;
+  /** Sets the document's scope; returns it as sent, or null for none. Throws a TypeError for one the host would refuse. */
+  setScope(folder: unknown): string | null;
+  scope(): string | null;
   /** Called by the kernel once the shell hands over the port. */
   attach(post: (message: BridgeRequestMessage) => void): void;
   /** Called by the kernel for every port message; returns true when consumed. */
@@ -67,6 +76,7 @@ export function createBridgeClient(pageRevision: string, doc: Document): BridgeC
   let post: ((message: BridgeRequestMessage) => void) | null = null;
   let sequence = 0;
   let roster: Promise<Map<string, string>> | null = null;
+  let scope: string | null = null;
 
   /** Effects by method, read once from `context.get` when a page first watches a contributed method. */
   function effects(): Promise<Map<string, string>> {
@@ -101,6 +111,10 @@ export function createBridgeClient(pageRevision: string, doc: Document): BridgeC
   }
 
   function invoke(method: string, params?: unknown): Promise<unknown> {
+    return call(method, params, scope);
+  }
+
+  function call(method: string, params: unknown, scopeAt: string | null): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (typeof method !== "string") {
         reject(new ThreadPageError("invalid_request", "A method name is required"));
@@ -121,7 +135,7 @@ export function createBridgeClient(pageRevision: string, doc: Document): BridgeC
         sent = rest;
         if (extracted.length > 0) files = extracted;
       }
-      const request: BridgeRequestMessage = { v: BRIDGE_VERSION, id, method, params: sent === undefined ? null : sent, pageRevision, ...(files ? { files } : {}) };
+      const request: BridgeRequestMessage = { v: BRIDGE_VERSION, id, method, params: sent === undefined ? null : sent, pageRevision, ...(scopeAt !== null ? { scope: scopeAt } : {}), ...(files ? { files } : {}) };
       pending.set(id, { request, resolve, reject });
       if (post) send(id);
       else queued.push(id);
@@ -137,6 +151,7 @@ export function createBridgeClient(pageRevision: string, doc: Document): BridgeC
     let stopped = false;
     let running = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const scopeAt = scope;
 
     function schedule(delay: number): void {
       if (stopped) return;
@@ -158,7 +173,7 @@ export function createBridgeClient(pageRevision: string, doc: Document): BridgeC
             return;
           }
         }
-        const value = await invoke(method, params);
+        const value = await call(method, params, scopeAt);
         if (!stopped) listener(value, null);
       } catch (error) {
         if (!stopped) listener(undefined, error);
@@ -190,6 +205,13 @@ export function createBridgeClient(pageRevision: string, doc: Document): BridgeC
   return {
     invoke,
     watch,
+    setScope(folder) {
+      const checked = checkScope(folder);
+      if (!checked.ok) throw new TypeError(`Thread Page scope: ${checked.message}`);
+      scope = checked.scope;
+      return scope;
+    },
+    scope: () => scope,
     attach(poster) {
       post = poster;
       while (queued.length > 0) {

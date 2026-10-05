@@ -1,3 +1,5 @@
+import { LIMITS } from "./limits.ts";
+
 /**
  * The documents of a page: its entry document, and any other HTML file in its
  * root that a link can open inside the page. Pure, so the server, the kernel
@@ -32,6 +34,16 @@ export function directoryOf(path: string | null | undefined): string {
   if (!path) return "";
   const slash = path.lastIndexOf("/");
   return slash < 0 ? "" : path.slice(0, slash + 1);
+}
+
+/**
+ * A document's `#fragment` as the shell carries it: from the reader's address
+ * to the document, from a link to the document it opens, and back to the
+ * address when the document changes it. "" for none. It never reaches the
+ * server. spec R1.12f, DECISIONS D41
+ */
+export function documentFragment(value: unknown): string {
+  return typeof value === "string" && value.length > 1 && value.length <= LIMITS.fragmentChars && value.startsWith("#") ? value : "";
 }
 
 /** null for the entry document, so "no path" and "index.html" are one document. */

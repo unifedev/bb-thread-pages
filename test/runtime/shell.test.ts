@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import { LIMITS } from "../../src/domain/limits.ts";
 import { createConfirmer } from "../../src/runtime/shell/confirm.ts";
 import { createPoller } from "../../src/runtime/shell/poll.ts";
 import { createRelay } from "../../src/runtime/shell/relay.ts";
@@ -92,7 +93,12 @@ describe("shell relay", () => {
     }
     relay.handle(port, { kind: "thread-page:open-document", path: "guides/next.html" });
     await flush();
-    expect(onOpenDocument.mock.calls).toEqual([["guides/next.html"]]);
+    relay.handle(port, { kind: "thread-page:open-document", path: "tool.html", fragment: "#clients/vela/q3-board" });
+    // A fragment that is not one is dropped, never refused with the link. R1.12f
+    relay.handle(port, { kind: "thread-page:open-document", path: "tool.html", fragment: "no-hash" });
+    relay.handle(port, { kind: "thread-page:open-document", path: "tool.html", fragment: `#${"x".repeat(LIMITS.fragmentChars)}` });
+    await flush();
+    expect(onOpenDocument.mock.calls).toEqual([["guides/next.html", ""], ["tool.html", "#clients/vela/q3-board"], ["tool.html", ""], ["tool.html", ""]]);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(sent).toHaveLength(0);
   });
@@ -372,8 +378,62 @@ describe("shell documents", () => {
     expect(frames[0]).not.toBe(elements.frame);
     expect(frames[0]!.getAttribute("src")).toBe("/document?session=thr_a&path=guides%2Fnext.html");
     expect(window.location.search).toContain("path=guides%2Fnext.html");
-    expect(window.history.state).toEqual({ threadPageDocument: "guides/next.html" });
+    expect(window.history.state).toEqual({ threadPageDocument: "guides/next.html", threadPageFragment: "" });
     expect(await shell.openDocument("guides/next.html")).toBe(false);
+  });
+
+  // The address's fragment is the document's. spec R1.12f, D41
+  it("loads the document at the address's fragment, carries a link's, and follows the document's own", async () => {
+    const { installShell } = await import("../../src/runtime/shell/install.ts");
+    window.history.replaceState(null, "", "/page?session=thr_a#clients/vela/q3-board");
+    const elements = chrome();
+    const local: ShellConfig = { ...config };
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/document-session") {
+        const path = (JSON.parse(String(init!.body)) as { path: string }).path;
+        return jsonResponse({ ok: true, actionToken: "tok2", pageRevision: "2".repeat(64), expiresAt: Date.now() + 3_600_000, documentUrl: `/document?session=thr_a&path=${encodeURIComponent(path)}`, path, stale: false, empty: false });
+      }
+      return new Response(null, { status: 304, headers: { etag: `"${REV}"` } });
+    });
+    const shell = installShell(window, local, elements, fetchImpl as never);
+    expect(shell.shownFrame().getAttribute("src")).toBe("/document?session=thr_a#clients/vela/q3-board");
+    expect(window.history.state).toEqual({ threadPageDocument: "index.html", threadPageFragment: "#clients/vela/q3-board" });
+
+    // A link carries its own fragment; the last document's does not stick to the next.
+    expect(await shell.openDocument("tool.html", true, "#decks/q3-pitch")).toBe(true);
+    expect(shell.shownFrame().getAttribute("src")).toBe("/document?session=thr_a&path=tool.html#decks/q3-pitch");
+    expect(`${window.location.search}${window.location.hash}`).toBe("?session=thr_a&path=tool.html#decks/q3-pitch");
+    expect(await shell.openDocument("other.html", true)).toBe(true);
+    expect(window.location.hash).toBe("");
+    // The same document at another fragment is another place: it opens.
+    expect(await shell.openDocument("other.html", true, "#x")).toBe(true);
+    expect(await shell.openDocument("other.html", true, "#x")).toBe(false);
+
+    // The document changes its own fragment: the address follows, with no history entry.
+    const ports: MessagePort[] = [];
+    const frame = shell.shownFrame();
+    vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation(((_message: unknown, _origin: unknown, transfer?: Transferable[]) => {
+      if (transfer?.[0]) ports.push(transfer[0] as MessagePort);
+    }) as never);
+    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "null", source: frame.contentWindow }));
+    const length = window.history.length;
+    ports[0]!.postMessage({ kind: "thread-page:fragment", fragment: "#y" });
+    await vi.waitFor(() => expect(window.location.hash).toBe("#y"));
+    expect(window.history.length).toBe(length);
+    expect(window.history.state).toEqual({ threadPageDocument: "other.html", threadPageFragment: "#y" });
+
+    // A refresh keeps the document where it is.
+    const refreshed = shell.refreshDocument();
+    await vi.waitFor(() => expect(document.querySelector("iframe[data-incoming]")).not.toBeNull());
+    expect(document.querySelector("iframe[data-incoming]")!.getAttribute("src")).toBe("/document?session=thr_a&path=other.html#y");
+    void refreshed;
+
+    // The reader's address changes only its fragment: the document opens at it, and the entry is recorded.
+    window.history.pushState(null, "", "/page?session=thr_a&path=other.html#clients/other");
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    await vi.waitFor(() => expect(document.querySelector("iframe:not([data-incoming])")!.getAttribute("src")).toBe("/document?session=thr_a&path=other.html#clients/other"));
+    await vi.waitFor(() => expect(window.history.state).toEqual({ threadPageDocument: "other.html", threadPageFragment: "#clients/other" }));
+    window.history.replaceState(null, "", "/page?session=thr_a");
   });
 
   it("does nothing on the built-in home, and says so when a document cannot open", async () => {

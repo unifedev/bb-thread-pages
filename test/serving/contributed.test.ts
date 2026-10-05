@@ -63,11 +63,11 @@ afterEach(() => fixture.dispose());
 type Failure = { code: string; message: string; reason?: string; detail?: unknown };
 type Transport = { response?: { ok: boolean; result?: unknown; error?: Failure }; confirm?: unknown };
 
-async function call(method: string, params: unknown = null, options: { session?: string; revision?: string } = {}) {
+async function call(method: string, params: unknown = null, options: { session?: string; revision?: string; scope?: unknown } = {}) {
   const session = options.session ?? "thr_a";
   const revision = options.revision ?? revisionOf(PAGE);
   const { token } = mintActionToken({ session, revision, now: fixture.clock.now }, fixture.serving.signingKey);
-  const request = { v: 1, id: `tp-${++counter}`, method, params, pageRevision: revision };
+  const request = { v: 1, id: `tp-${++counter}`, method, params, pageRevision: revision, ...("scope" in options ? { scope: options.scope } : {}) };
   const response = await fixture.post(`${ROUTE_BASE}/bridge`, { actionToken: token, request });
   return { status: response.status, body: (await response.json()) as Transport };
 }
@@ -164,9 +164,29 @@ describe("calls", () => {
 
   it("passes the caller's session from the token, never from parameters, and none for the built-in home (A76)", async () => {
     await call("syns.write", { path: "a.md", text: "x", base: "v1" });
-    expect(fixture.state.contributorCalls[0]!.call.caller).toEqual({ sessionId: "thr_a" });
+    expect(fixture.state.contributorCalls[0]!.call.caller).toEqual({ sessionId: "thr_a", scope: null });
     await call("syns.head", {}, { session: BUILTIN_HOME_ID, revision: BUILTIN_HOME_PAGE.revision });
-    expect(fixture.state.contributorCalls[1]!.call.caller).toEqual({ sessionId: null });
+    expect(fixture.state.contributorCalls[1]!.call.caller).toEqual({ sessionId: null, scope: null });
+  });
+
+  // A document scopes its calls to a folder inside the session's folder. R5.81–R5.86, D41
+  it("passes the document's scope beside the session, and refuses one that could leave the session's folder", async () => {
+    const { status } = await call("syns.write", { path: "board.json", text: "x", base: "v1" }, { scope: "clients/vela/q3-board" });
+    expect(status).toBe(200);
+    expect(fixture.state.contributorCalls.at(-1)!.call.caller).toEqual({ sessionId: "thr_a", scope: "clients/vela/q3-board" });
+    const before = fixture.state.contributorCalls.length;
+    for (const scope of ["/etc", "../x", "a/../../b", "a//b", "./a", "a/./b", "C:/x", "c:x", "~/x", "a\\b", "a\u0000b", "", "a/", 42, null, "x".repeat(LIMITS.scopeChars + 1), Array(LIMITS.scopeSegments + 1).fill("a").join("/")]) {
+      const refused = await call("syns.head", {}, { scope });
+      expect(refused.body.response?.error?.code, JSON.stringify(scope)).toBe("invalid_params");
+    }
+    // Nothing refused reached the contributor.
+    expect(fixture.state.contributorCalls.length).toBe(before);
+    // Built-in capabilities take no folder: they answer as without one.
+    expect((await call("context.get", null, { scope: "clients/vela" })).status).toBe(200);
+    // The built-in home has no session, so no folder.
+    const home = await call("syns.head", {}, { session: BUILTIN_HOME_ID, revision: BUILTIN_HOME_PAGE.revision, scope: "a" });
+    expect(home.body.response?.error?.code).toBe("invalid_params");
+    expect(fixture.state.contributorCalls.length).toBe(before);
   });
 
   it("writes with no dialog, and logs the write for the operator (A77, R5.55)", async () => {
