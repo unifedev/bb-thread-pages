@@ -256,6 +256,33 @@ describe("instructions and the guide", () => {
     expect((await fixture.cli(["status"])).stdout).not.toContain("## From syns");
   });
 
+  // The host cuts the joined instruction; status says what each fragment keeps, and the operator is warned once. R6.31, D42
+  it("shows the instruction's real budget and warns once when a fragment would be cut (A146, A147)", async () => {
+    const capped = await loadPlugin({}, { instructionChars: 4096 });
+    capped.state.contributors.push({ id: "syns", declaration: DECLARATION, answer: async () => ({ ok: true, result: {} }) });
+    capped.clock.now += LIMITS.contributionsTtlMs + 1;
+    await capped.serving.contributions.current();
+    const standing = capped.serving.settings.current().agentInstructionText.length;
+    let out = (await capped.cli(["status"])).stdout;
+    const total = standing + "\n\n## From syns\n\n".length + DECLARATION.instruction.length;
+    expect(out).toContain(`length: ${total.toLocaleString("en-US")} of 4,096 characters, the host's cap; the standing instruction takes ${standing.toLocaleString("en-US")}, leaving ${(4096 - standing).toLocaleString("en-US")} for every contributor's fragment together, headings and separators included`);
+    expect(out).toContain(`fragment syns 0.1.0: ${DECLARATION.instruction.length} characters, arrives whole`);
+    expect(capped.state.logs.some((line) => line.includes("instructions:"))).toBe(false);
+
+    // A second contributor whose fragment cannot fit whole.
+    const long = `${"Keep this. ".repeat(140)}The warning at the end.`;
+    capped.state.contributors.push({ id: "wiki", declaration: { version: "2.0.0", instruction: long, methods: [] }, answer: async () => ({ ok: true, result: {} }) });
+    capped.clock.now += LIMITS.contributionsTtlMs + 1;
+    await capped.serving.contributions.current();
+    out = (await capped.cli(["status"])).stdout;
+    expect(out).toContain("— CUT;");
+    expect(out).toMatch(/WARNING fragment wiki 2\.0\.0: 1,563 characters, cut after [\d,]+; sessions read up to "…/);
+    // The operator's log says it once, however many sessions start.
+    await capped.cli(["status"]);
+    const warnings = capped.state.logs.filter((line) => line.includes("instructions: the instruction fragment of wiki 2.0.0 is cut after"));
+    expect(warnings).toHaveLength(1);
+  });
+
   it("lists the registered methods and the contributor's guide text in the guide (A84)", async () => {
     const guide = (await fixture.cli(["guide"])).stdout;
     expect(guide).toContain("## Capabilities from other plugins");

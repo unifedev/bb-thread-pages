@@ -1,5 +1,74 @@
 # Changelog
 
+## 1.8.0 — 2026-10-05 — a document scopes its calls to a folder; fragments reach documents
+
+Implements spec 1.6 (`bartsoj/bb-thread-pages`, DECISIONS D41–D42), for the
+owner's ruling *one interface, one agent*: a session's agent works from its
+project's root, and each app in a subfolder opens as another URL of the same
+session's page. Existing pages and contributors keep working;
+`window.threadPage.version` and the bridge protocol stay `1`.
+
+### A document's scope (D41)
+
+- `threadPage.setScope(folder)` scopes the document's later calls to a folder
+  inside its session's folder; `setScope(null)` or `""` clears it, and
+  `threadPage.scope` reads it. An `invoke` carries the scope current when it is
+  called, a `watch` the one current when it started.
+- A scope is relative and `/`-separated: no leading `/`, drive or `~`, no
+  empty, `.` or `..` folder, no `\`, no control characters, at most 1,024
+  characters and 64 folders; one trailing `/` is dropped. The kernel throws a
+  `TypeError` for anything else, and the host refuses it again with
+  `invalid_params` before any contributor is called.
+- A contributor receives it beside the session: `threadPagesInvoke` gets
+  `caller: { sessionId, scope }`, with `scope` only when the document set one,
+  so every other call is unchanged. The contributor resolves it against the
+  session's folder and answers for symbolic links. Built-in capabilities
+  ignore it; a scoped contributed call from the built-in home page is
+  `invalid_params`. The reference contributor (`examples/echo-contributor`)
+  echoes it and keeps its notes per session and folder.
+
+### Fragments reach documents (D41)
+
+- Until now neither a fragment nor a query reached a document: links dropped
+  both, the frame was loaded without the address's fragment, and the shell's
+  own fragment stuck to the next document opened.
+- Now the shell loads the document at its address's fragment; a link carries
+  its own (`<a href="tool.html#clients/vela/q3-board">`); reload, back and
+  forward return to it; a link to the same document at another fragment is a
+  fragment navigation (`hashchange`, no reload) and the address follows, as it
+  follows any change the document makes; changing only the address's fragment
+  opens the document at it. The fragment never reaches the server; one over
+  2,048 characters is dropped. A query is still not carried. Inside an embed,
+  fragments are not carried.
+- The guide documents both, with the two-line pattern for one document that
+  serves any folder.
+
+### The instruction's real budget (D42)
+
+- bb cuts a plugin's agent instructions at 4,096 characters, the standing
+  instruction and every contributor's fragment together. `bb thread-page
+  status` now shows the joined length against that cap, what the standing
+  instruction leaves for fragments, and per contributor whether its fragment
+  arrives whole, or how much arrives and its last words. The operator's log
+  warns once per fragment and version that would be cut. The host contract
+  gains an optional `instructionChars`.
+
+### Verified
+
+- 415 unit tests (A139–A147 as unit, route and runtime tests).
+- `test/browser/scope.mjs`: 22 of 22 checks in Chromium, Firefox and WebKit
+  against the plugin's own served output, with a contributor echoing its
+  caller — including a loader that swaps an app's markup in, whose scripts see
+  the scope while links keep working. (`document.open` erases the kernel's
+  listeners; the guide's pattern does not use it.)
+- On the owner's bb, a joint proof with the Syns plugin passed all seven rows:
+  `tool.html#<folder>` opens a placed app scoped to its folder, a template
+  placed from the page opens the same way, and escapes are refused at every
+  layer.
+- Not verified: phones; bb Connect, whose sign-in drops the fragment for a
+  signed-out reader (handed over to bb, `docs/bb-contributions/` in the design
+  tree).
+
 ## 1.7.0 — 2026-09-26 — voice, text areas that take voice and files, files with sessions
 
 Implements spec 1.5 (`bartsoj/bb-thread-pages`, DECISIONS D38–D40). Existing

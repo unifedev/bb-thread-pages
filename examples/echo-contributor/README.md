@@ -3,10 +3,10 @@
 A reference plugin that gives Thread Pages two capabilities, to show the
 contract a contributor implements (spec 05 §Contributed capabilities):
 
-- `tp-echo.echo` — a read: returns the text given and the session the host says
-  is calling.
-- `tp-echo.note` — a `contributed-write`: stores one note per session, guarded by
-  a version. A stale `base` fails with `conflict`, reason `stale_base` and the
+- `tp-echo.echo` — a read: returns the text given, and the session and scope the
+  host says is calling.
+- `tp-echo.note` — a `contributed-write`: stores one note per session and scope
+  (`threadPage.setScope`), guarded by a version. A stale `base` fails with `conflict`, reason `stale_base` and the
   current version as `detail` — the shape a repository contributor uses.
 
 It answers the two plugin RPC methods Thread Pages calls,

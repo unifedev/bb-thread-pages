@@ -129,9 +129,9 @@ describe("the shell and a page's own files", () => {
   it("opens the file in place when the tab is refused even inside the Open click, and does nothing when declined", async () => {
     const refused = fakeWindow([], { visible: true, focused: true });
     createOwnFiles(refused.win, config, vi.fn() as never, { confirm: vi.fn(async (_s: string, onGesture?: () => void) => { onGesture?.(); return true; }) }, 0).open("report.pdf", false, null);
-    await settle();
+    // Waits for the outcome rather than a fixed delay: the chain of timers runs late under a loaded test run.
+    await vi.waitFor(() => expect(refused.assign).toHaveBeenCalledWith(`${FILES}report.pdf`));
     expect(refused.open).toHaveBeenCalledTimes(2);
-    expect(refused.assign).toHaveBeenCalledWith(`${FILES}report.pdf`);
     const declined = fakeWindow([], { visible: true, focused: true });
     createOwnFiles(declined.win, config, vi.fn() as never, { confirm: vi.fn(async () => false) }, 0).open("report.pdf", false, null);
     await settle();

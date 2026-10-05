@@ -13,7 +13,7 @@ import { createPageStore } from "./pages/page-store.ts";
 import { createCoreStorageSite, type SiteStrategy } from "./pages/site.ts";
 import { createHeldAttachments, releaseHeld } from "./serving/attach-route.ts";
 import { createSelectionStore } from "./serving/bridge/selection-store.ts";
-import { createContributions, instructionFragments } from "./serving/contributions.ts";
+import { budgetWarnings, createContributions, instructionBudget, joinInstruction } from "./serving/contributions.ts";
 import { createGrantStore } from "./serving/grants.ts";
 import type { ServingContext } from "./serving/context.ts";
 import { registerRoutes } from "./serving/routes.ts";
@@ -70,11 +70,24 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
   // agent reads one instruction. Fragments ride only with the instruction;
   // bb builds instructions synchronously, so they come from the last set read.
   // spec R6.29, D27
+  /** Each cut fragment is told to the operator once, not at every session start. spec R6.31 */
+  const warned = new Set<string>();
+  const budgetNow = () => {
+    const current = settings.current();
+    if (!current.agentInstructions || !current.agentInstructionText.trim()) return null;
+    return instructionBudget(current.agentInstructionText, contributions.cached(), host.instructionChars ?? null);
+  };
   const effectiveInstruction = (): string | null => {
     const current = settings.current();
     if (!current.agentInstructions || !current.agentInstructionText.trim()) return null;
-    const fragments = instructionFragments(contributions.cached());
-    return fragments ? `${current.agentInstructionText}\n\n${fragments}` : current.agentInstructionText;
+    const set = contributions.cached();
+    const budget = instructionBudget(current.agentInstructionText, set, host.instructionChars ?? null);
+    for (const warning of budgetWarnings(budget)) {
+      if (warned.has(warning)) continue;
+      warned.add(warning);
+      host.log.warn(`instructions: ${warning}`);
+    }
+    return joinInstruction(current.agentInstructionText, set);
   };
   // Read the contributors once at start, so the first session gets their fragments.
   void contributions.current();
@@ -92,6 +105,7 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
     serving,
     guide: async () => buildGuide(capabilityRegistry, site, (await contributions.current()).contributors),
     effectiveInstruction,
+    instructionBudget: budgetNow,
   });
   return serving;
 }

@@ -157,6 +157,72 @@ export function rosterOf(registry: CapabilityRegistry, set: ContributionSet): Ca
 export function instructionFragments(set: ContributionSet): string {
   return set.contributors
     .filter((contributor) => contributor.instruction)
-    .map((contributor) => `## From ${contributor.id}\n\n${contributor.instruction}`)
+    .map(fragmentOf)
     .join("\n\n");
+}
+
+function fragmentOf(contributor: Contributor): string {
+  return `## From ${contributor.id}\n\n${contributor.instruction}`;
+}
+
+/** The standing instruction with every fragment after it: exactly what a session is given. */
+export function joinInstruction(standing: string, set: ContributionSet): string {
+  const fragments = instructionFragments(set);
+  return fragments ? `${standing}\n\n${fragments}` : standing;
+}
+
+export interface InstructionBudget {
+  /** The host's cap, or null when it cuts nothing. */
+  readonly cap: number | null;
+  readonly standingChars: number;
+  readonly totalChars: number;
+  /** What all fragments share, headings and separators included: the cap less the standing instruction. */
+  readonly fragmentRoom: number | null;
+  readonly contributors: readonly {
+    readonly id: string;
+    readonly version: string;
+    /** The fragment as declared, without its heading. */
+    readonly chars: number;
+    /** How much of it reaches a session. */
+    readonly arrives: number;
+    /** The last words a session reads, when it is cut. */
+    readonly cutAfter: string | null;
+  }[];
+}
+
+/**
+ * What of the instruction reaches a session, measured as the host counts it
+ * (UTF-16 code units). The host cuts the joined text at its cap; nothing else
+ * would say which contributor lost what. spec R6.31, D42
+ */
+export function instructionBudget(standing: string, set: ContributionSet, cap: number | null): InstructionBudget {
+  const contributors: InstructionBudget["contributors"][number][] = [];
+  let offset = standing.length;
+  for (const contributor of set.contributors) {
+    if (!contributor.instruction) continue;
+    const heading = `\n\n## From ${contributor.id}\n\n`;
+    const start = offset + heading.length;
+    const chars = contributor.instruction.length;
+    const arrives = cap === null ? chars : Math.max(0, Math.min(chars, cap - start));
+    const cutAfter = arrives < chars ? lastWords(contributor.instruction.slice(0, arrives)) : null;
+    contributors.push({ id: contributor.id, version: contributor.version, chars, arrives, cutAfter });
+    offset = start + chars;
+  }
+  return { cap, standingChars: standing.length, totalChars: offset, fragmentRoom: cap === null ? null : Math.max(0, cap - standing.length), contributors };
+}
+
+function lastWords(text: string): string {
+  const tail = text.replace(/\s+/g, " ").trimEnd();
+  return tail.length > 48 ? `…${tail.slice(-48)}` : tail;
+}
+
+/** One line per cut fragment, for the operator's log and `status`. spec R6.31 */
+export function budgetWarnings(budget: InstructionBudget): string[] {
+  return budget.contributors
+    .filter((entry) => entry.arrives < entry.chars)
+    .map((entry) =>
+      entry.arrives === 0
+        ? `the instruction fragment of ${entry.id} ${entry.version} (${entry.chars} characters) does not reach sessions at all: the host cuts instructions at ${budget.cap} characters`
+        : `the instruction fragment of ${entry.id} ${entry.version} is cut after ${entry.arrives} of ${entry.chars} characters (the host cuts instructions at ${budget.cap}); sessions read up to "${entry.cutAfter}"`,
+    );
 }

@@ -7,6 +7,7 @@ import type { SessionRecord } from "../host/types.ts";
 import { ENTRY_FILE, LEGACY_ENTRY_FILE, UPLOAD_DIR, entryPath, joinPath, legacyEntryPath } from "../pages/layout.ts";
 import { homeUrl, pageUrl, type ServingContext } from "../serving/context.ts";
 import { hasSeed, renderSeed } from "./seed/seed.ts";
+import type { InstructionBudget } from "../serving/contributions.ts";
 
 /**
  * `bb thread-page init | home [--clear] | guide | status | grants`. spec 06 §The command, RW-11
@@ -17,6 +18,8 @@ export interface CliDeps {
   guide(): Promise<string>;
   /** The exact instruction a new eligible session receives now, or null when none would. */
   effectiveInstruction(): string | null;
+  /** How much of that instruction reaches a session, per contributor; null when none would be given. spec R6.31 */
+  instructionBudget?(): InstructionBudget | null;
 }
 
 export function registerCli(bb: BbPluginApi, deps: CliDeps): void {
@@ -61,6 +64,21 @@ export function registerCli(bb: BbPluginApi, deps: CliDeps): void {
 }
 
 /** Which contributors and methods are registered, for the operator. spec R7.13a */
+/** The instruction's real budget: what the host cuts at, and what each contributor's fragment keeps. spec R6.31, D42 */
+function budgetLines(budget: InstructionBudget): string[] {
+  const n = (value: number) => value.toLocaleString("en-US");
+  const head =
+    budget.cap === null
+      ? `length: ${n(budget.totalChars)} characters; the host cuts nothing`
+      : `length: ${n(budget.totalChars)} of ${n(budget.cap)} characters, the host's cap${budget.totalChars > budget.cap ? " — CUT" : ""}; the standing instruction takes ${n(budget.standingChars)}, leaving ${n(budget.fragmentRoom ?? 0)} for every contributor's fragment together, headings and separators included`;
+  const rows = budget.contributors.map((entry) =>
+    entry.arrives === entry.chars
+      ? `fragment ${entry.id} ${entry.version}: ${n(entry.chars)} characters, arrives whole`
+      : `WARNING fragment ${entry.id} ${entry.version}: ${n(entry.chars)} characters, ${entry.arrives === 0 ? "none of it arrives" : `cut after ${n(entry.arrives)}; sessions read up to "${entry.cutAfter}"`}`,
+  );
+  return [head, ...rows, ""];
+}
+
 function contributedLine(set: { contributors: readonly { id: string; version: string; methods: readonly { method: string; effect: string }[] }[] }): string {
   if (set.contributors.length === 0) return "(none registered)";
   return set.contributors
@@ -224,7 +242,10 @@ async function revokeGrants(deps: CliDeps, from?: string, to?: string): Promise<
 async function status(deps: CliDeps, context: PluginCliContext): Promise<PluginCliResult> {
   const { serving } = deps;
   const settings = serving.settings.current();
+  // Fresh contributions first, so the instruction and its budget are those a session starting now gets.
+  const contributed = await serving.contributions.current();
   const instruction = deps.effectiveInstruction();
+  const budget = deps.instructionBudget?.() ?? null;
   const lines = [
     "# Thread Pages status",
     "",
@@ -235,10 +256,11 @@ async function status(deps: CliDeps, context: PluginCliContext): Promise<PluginC
     `embedAnswerGrants: ${settings.embedAnswerGrants ? "on — the reader is asked once before a page answers another session from an embed" : "off — never asked"}`,
     `site strategy: ${serving.site.name}`,
     `limits: entry ${LIMITS.entryDocumentBytes / (1024 * 1024)} MiB, upload ${LIMITS.uploadFileBytes / (1024 * 1024)} MiB × ${LIMITS.uploadsPerForm}, rate ${LIMITS.ratePerMinute}/min`,
-    `contributed capabilities: ${contributedLine(await serving.contributions.current())}`,
+    `contributed capabilities: ${contributedLine(contributed)}`,
     "",
     "## Instruction a new eligible session receives now",
     "",
+    ...(budget ? budgetLines(budget) : []),
     instruction ?? "(none — agentInstructions is off)",
   ];
   const current = await currentSession(deps, context);

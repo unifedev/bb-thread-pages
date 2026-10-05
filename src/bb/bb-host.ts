@@ -277,6 +277,7 @@ export function createBbHost(bb: BbPluginApi): SessionHost {
     },
     origin: { public: publicOrigin },
     log: bb.log,
+    instructionChars: BB_INSTRUCTION_CHARS,
     contributors: createBbContributors(bb),
     voice: createBbVoice(bb),
     attachments: createBbAttachments(bb),
@@ -460,6 +461,13 @@ function hostUnavailable(error: unknown): PageError {
  * own uniqueness of plugin ids keeps one contributor per namespace.
  * spec R5.42, R5.43, R8.30–R8.32, DECISIONS D20
  */
+/**
+ * bb cuts a plugin's agent instructions at this many characters
+ * (`PLUGIN_AGENT_DYNAMIC_INSTRUCTIONS_MAX_CHARS`, plugin-sdk host policy), the
+ * standing instruction and every contributor's fragment together. spec R8.38
+ */
+export const BB_INSTRUCTION_CHARS = 4096;
+
 export const CONTRIBUTIONS_RPC = "threadPagesContributions";
 export const INVOKE_RPC = "threadPagesInvoke";
 const DECLARATION_TIMEOUT_MS = 5_000;

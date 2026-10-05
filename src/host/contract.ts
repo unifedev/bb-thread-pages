@@ -77,6 +77,11 @@ export interface SessionHost {
   };
   readonly log: HostLogger;
   /**
+   * The most characters of agent instructions the host delivers to a session;
+   * beyond it the host cuts them. Absent when the host does not cut. spec R6.31, R8.38
+   */
+  readonly instructionChars?: number;
+  /**
    * Other installed extensions that contribute capabilities. Optional: a host
    * without an extension system conforms without it. spec R8.30–R8.32
    */

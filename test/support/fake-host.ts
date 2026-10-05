@@ -45,6 +45,8 @@ export interface FakeHostOptions {
   attachments?: boolean;
   /** The host can remove an attachment it stored. Default true. */
   removable?: boolean;
+  /** The host cuts agent instructions at this many characters (R8.38). Default none. */
+  instructionChars?: number;
 }
 
 export const HOST_ID = "host_test";
@@ -219,6 +221,7 @@ export function createFakeHost(options: FakeHostOptions = {}): { host: SessionHo
       },
     },
     origin: { public: async () => state.publicOrigin },
+    ...(options.instructionChars !== undefined ? { instructionChars: options.instructionChars } : {}),
     contributors: {
       async list() {
         return state.contributors.map((entry) => ({ id: entry.id, declaration: entry.declaration }));
