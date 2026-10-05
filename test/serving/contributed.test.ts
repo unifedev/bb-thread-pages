@@ -169,6 +169,28 @@ describe("calls", () => {
     expect(fixture.state.contributorCalls[1]!.call.caller).toEqual({ sessionId: null, scope: null });
   });
 
+  // A scoped document's storage lives apart: one tool serving many folders. R5.84a, D41
+  it("keeps storage apart per scope, and an unscoped page's storage where it always was (A142a)", async () => {
+    const set = (scope: string | undefined, value: string) => call("storage.set", { key: "draft:main", value }, scope === undefined ? {} : { scope });
+    const get = async (scope: string | undefined) => (await call("storage.get", { key: "draft:main" }, scope === undefined ? {} : { scope })).body.response?.result;
+    await set(undefined, "root text");
+    await set("clients/vela/q3-board", "board text");
+    await set("decks/q3-pitch", "deck text");
+    expect(await get(undefined)).toEqual({ found: true, value: "root text" });
+    expect(await get("clients/vela/q3-board")).toEqual({ found: true, value: "board text" });
+    expect(await get("decks/q3-pitch")).toEqual({ found: true, value: "deck text" });
+    // A folder that never saved finds nothing, not another folder's draft; nor does a folder inside another.
+    expect(await get("clients/other")).toEqual({ found: false });
+    expect(await get("clients/vela/q3-board/inner")).toEqual({ found: false });
+    // Unscoped storage is where 1.7 kept it, so existing pages keep what they saved.
+    expect(fixture.state.kv.get("state:thr_a:draft:main")).toBe("root text");
+    expect([...fixture.state.kv.keys()].filter((key) => key.startsWith("state")).sort()).toEqual([
+      'state:thr_a:draft:main',
+      'state@["thr_a","clients/vela/q3-board"]:draft:main',
+      'state@["thr_a","decks/q3-pitch"]:draft:main',
+    ].sort());
+  });
+
   // A document scopes its calls to a folder inside the session's folder. R5.81–R5.86, D41
   it("passes the document's scope beside the session, and refuses one that could leave the session's folder", async () => {
     const { status } = await call("syns.write", { path: "board.json", text: "x", base: "v1" }, { scope: "clients/vela/q3-board" });

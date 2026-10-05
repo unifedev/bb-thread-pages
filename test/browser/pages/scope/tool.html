@@ -32,5 +32,14 @@
 </dl>
 <p><a id="to-deck" href="tool.html#decks/q3-pitch">Deck (same document, other folder)</a></p>
 <p><a id="to-bare" href="#clients/bare">Bare fragment link</a></p>
+<!-- The page's own handling of #… links, which the kernel must leave alone. -->
+<p><a id="menu" href="#" onclick="document.getElementById('menu-state').textContent = 'menu opened'; return false">Menu</a> <span id="menu-state"></span></p>
+<p><a id="tab" href="#tab2">Tab 2</a> <span id="tab-state"></span></p>
+<script>
+  document.getElementById("tab").addEventListener("click", (event) => {
+    event.preventDefault();
+    document.getElementById("tab-state").textContent = "tab 2 shown";
+  });
+</script>
 <p><a id="to-index" href="index.html">Back to index</a></p>
 </body></html>

@@ -109,7 +109,7 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
           });
       const page = home ? BUILTIN_HOME_PAGE : await serving.pages.load(token.session, token.path);
       if (page.revision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
-      const context: HandlerContext = { serving, session, page, requestId: request.id, requestOrigins };
+      const context: HandlerContext = { serving, session, page, requestId: request.id, requestOrigins, scope: request.scope ?? null };
 
       await entry?.refuse?.(invocation.params, context);
 

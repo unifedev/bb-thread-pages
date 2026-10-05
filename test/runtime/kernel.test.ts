@@ -509,6 +509,8 @@ describe("kernel fragments", () => {
     <a id="other" href="tool.html#clients/vela/q3-board">Board</a>
     <a id="self" href="index.html#later">Later</a>
     <a id="bare" href="#clients/x">Bare</a>
+    <a id="menu" href="#" onclick="return false">Menu</a>
+    <a id="tab" href="#tab2">Tab</a>
     <a id="plain" href="tool.html">Tool</a></body>`;
 
   it("asks the shell for another document with the link's fragment", () => {
@@ -534,6 +536,18 @@ describe("kernel fragments", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(win.location.href).toBe("https://bb.example/api/v1/plugins/thread-pages/http/document?session=thr_a#clients/x");
     expect(posted.messages).toContainEqual({ kind: "thread-page:fragment", fragment: "#clients/x", step: true });
+    // A page that handles its own #… link keeps it: preventDefault on the link, or in a delegated listener
+    // on the document. (Inline \`return false\` is checked in a real browser: jsdom runs no inline handlers here.)
+    win.document.getElementById("tab")!.addEventListener("click", (event) => event.preventDefault());
+    win.document.addEventListener("click", (event) => {
+      if ((event.target as Element).id === "menu") event.preventDefault();
+    });
+    const before = posted.messages.length;
+    expect(click(win, "menu").defaultPrevented).toBe(true);
+    expect(click(win, "tab").defaultPrevented).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(win.location.hash).toBe("#clients/x");
+    expect(posted.messages.length).toBe(before);
     // A change the page makes itself is reported for the address only.
     win.location.hash = "#clients/other";
     await new Promise((resolve) => setTimeout(resolve, 0));

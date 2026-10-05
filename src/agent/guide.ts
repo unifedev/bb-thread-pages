@@ -581,7 +581,10 @@ so check what its section says. \`setScope(null)\` returns to the session's
 folder. The folder is relative, \`/\`-separated, at most ${LIMITS.scopeChars} characters and
 ${LIMITS.scopeSegments} folders deep; one that is absolute, has \`~\` as its first folder, or has a
 \`..\`, \`.\` or empty part throws a TypeError, and the host refuses it again
-with invalid_params. Built-in capabilities ignore it. Set it before the first call
+with invalid_params. Built-in capabilities ignore it, except \`storage\`: a
+scoped document's \`storage.get\`/\`storage.set\` keys are its folder's own, apart
+from the unscoped page's and every other folder's, so one tool keeps each
+folder's drafts and settings separate. Set it before the first call
 — an app the document goes on to load then works in its folder unchanged —
 and take the folder from the document's address, so one document serves any
 folder (see *Several documents in one page*):

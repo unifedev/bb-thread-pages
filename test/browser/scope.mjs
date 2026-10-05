@@ -152,7 +152,24 @@ ok("a bare #… link moves within the document", values.hash === "#clients/bare"
 await page.waitForTimeout(300);
 ok("…and the address follows", address().hash === "#clients/bare", page.url());
 
+// 7d. A page that handles its own #… links keeps them (re-review, defect 1): an inline `return false`
+// and a listener's preventDefault leave the fragment, the scope, the address and the history alone.
+await page.goto(`${SHELL}&path=tool.html#clients/vela/q3-board`);
+await settle("#clients/vela/q3-board");
+const historyBefore = await page.evaluate(() => history.length);
+await doc().click("#menu");
+await doc().click("#tab");
+await page.waitForTimeout(800);
+const handled = await doc().evaluate(() => ({ hash: location.hash, scope: threadPage.scope, menu: document.getElementById("menu-state").textContent, tab: document.getElementById("tab-state").textContent }));
+ok("a page's own href=\"#\" with return false runs and is left alone", handled.menu === "menu opened" && handled.hash === "#clients/vela/q3-board", JSON.stringify(handled));
+ok("a page's own #tab2 with preventDefault in a listener runs and is left alone", handled.tab === "tab 2 shown" && handled.scope === "clients/vela/q3-board", JSON.stringify(handled));
+ok("…the address and the history are unchanged", address().hash === "#clients/vela/q3-board" && (await page.evaluate(() => history.length)) === historyBefore, `${page.url()} ${historyBefore}`);
+await page.reload();
+values = await settle("#clients/vela/q3-board");
+ok("…and a reload still opens the document scoped", values.hash === "#clients/vela/q3-board" && echoed(values).scope === "clients/vela/q3-board", values.hash);
+
 // 7c. From script, clicking such a link is a Back step that lasts, as the guide says.
+const beforeClick = (await read()).hash;
 await doc().evaluate(() => document.getElementById("to-deck").click());
 values = await settle("#decks/q3-pitch");
 await page.waitForTimeout(300);
@@ -161,8 +178,8 @@ await page.waitForTimeout(1200);
 await page.goBack();
 values = await settle("#decks/q3-pitch");
 await page.goBack();
-values = await settle("#clients/bare");
-ok("link.click() from script makes a Back step that outlives the document", values.hash === "#clients/bare" && address().hash === "#clients/bare", `${values.hash} ${page.url()}`);
+values = await settle(beforeClick);
+ok("link.click() from script makes a Back step that outlives the document", values.hash === beforeClick && address().hash === beforeClick, `${values.hash} ${page.url()}`);
 
 // 7. A generic loader that swaps in an app's markup keeps the scope for the app's own scripts and keeps
 // the kernel: it keeps its head (the host's <base> and runtime) and replaces the body. `document.open`

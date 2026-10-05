@@ -182,22 +182,29 @@ export const providersList = handler<null, unknown>({
   },
 });
 
-export function storageKey(session: string, key: string): string {
-  return `state:${session}:${key}`;
+/**
+ * Where a page's `storage` key is kept. A scoped document's keys live apart
+ * from the unscoped page's and from every other scope's, so one tool serving
+ * many folders keeps each folder's drafts its own; an unscoped document's key
+ * is what it always was. The scoped prefix is JSON, so no session, scope and
+ * key can be read two ways. spec R5.84a, D41
+ */
+export function storageKey(session: string, key: string, scope: string | null = null): string {
+  return scope === null ? `state:${session}:${key}` : `state@${JSON.stringify([session, scope])}:${key}`;
 }
 
 export const storageGet = handler<{ key: string }, unknown>({
   method: "storage.get",
-  async execute(params, { serving, session }) {
-    const stored = await serving.host.kv.get(storageKey(session.id, params.key));
+  async execute(params, { serving, session, scope }) {
+    const stored = await serving.host.kv.get(storageKey(session.id, params.key, scope ?? null));
     return { result: stored === undefined ? { found: false } : { found: true, value: stored } };
   },
 });
 
 export const storageSet = handler<{ key: string; value: JsonValue }, unknown>({
   method: "storage.set",
-  async execute(params, { serving, session }) {
-    await serving.host.kv.set(storageKey(session.id, params.key), params.value);
+  async execute(params, { serving, session, scope }) {
+    await serving.host.kv.set(storageKey(session.id, params.key, scope ?? null), params.value);
     return { result: { stored: true } };
   },
 });

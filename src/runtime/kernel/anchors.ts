@@ -98,25 +98,37 @@ export interface AnchorHandlers {
 }
 
 export function installAnchorInterception(doc: Document, handlers: AnchorHandlers, siteRoot: string | null = null, embedded = false): void {
+  const decide = (event: MouseEvent): AnchorDecision | null => {
+    if (event.defaultPrevented || event.button !== 0) return null;
+    const target = event.target as Element | null;
+    const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
+    if (!anchor) return null;
+    const base = doc.querySelector("base")?.getAttribute("href") ?? null;
+    const siteBase = base ? new URL(base, doc.baseURI).href : null;
+    const root = siteRoot ? new URL(siteRoot, doc.baseURI).href : siteBase;
+    return decideAnchor(anchor, doc.baseURI, siteBase, root, embedded);
+  };
   doc.addEventListener(
     "click",
     (event) => {
-      if (event.defaultPrevented || event.button !== 0) return;
-      const target = event.target as Element | null;
-      const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
-      if (!anchor) return;
-      const base = doc.querySelector("base")?.getAttribute("href") ?? null;
-      const siteBase = base ? new URL(base, doc.baseURI).href : null;
-      const root = siteRoot ? new URL(siteRoot, doc.baseURI).href : siteBase;
-      const decision = decideAnchor(anchor, doc.baseURI, siteBase, root, embedded);
-      if (decision.kind === "default") return;
+      const decision = decide(event);
+      // A place in this document is the page's own first: menus and tabs written as `href="#"` with
+      // `return false`, or `preventDefault` in a listener, keep working. It is moved to below. spec R1.12f
+      if (!decision || decision.kind === "default" || decision.kind === "fragment") return;
       event.preventDefault();
       if (decision.kind === "document") handlers.document(decision.path, decision.fragment);
-      else if (decision.kind === "fragment") handlers.fragment(decision.fragment);
       else if (decision.kind === "file") handlers.file(decision.path, decision.download, decision.name);
       else if (decision.kind === "external") handlers.external(decision.url, decision.label);
       else if (decision.kind === "handler") handlers.handler(decision.url);
     },
     true,
   );
+  // After the page's own handlers (this bubbles to the window last), and only for a click none of them
+  // cancelled: a `#…` link moves within the document instead of following the <base> to the page's folder.
+  doc.defaultView?.addEventListener("click", (event) => {
+    const decision = decide(event);
+    if (decision?.kind !== "fragment") return;
+    event.preventDefault();
+    handlers.fragment(decision.fragment);
+  });
 }

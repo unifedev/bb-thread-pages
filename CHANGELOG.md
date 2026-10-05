@@ -23,9 +23,16 @@ session's page. Existing pages and contributors keep working;
   `caller: { sessionId, scope }`, with `scope` only when the document set one,
   so every other call is unchanged. The contributor resolves it against the
   session's folder and answers for symbolic links. Built-in capabilities
-  ignore it; a scoped contributed call from the built-in home page is
-  `invalid_params`. The reference contributor (`examples/echo-contributor`)
-  echoes it and keeps its notes per session and folder.
+  ignore it, except `storage`; a scoped contributed call from the built-in
+  home page is `invalid_params`. The reference contributor
+  (`examples/echo-contributor`) echoes it and keeps its notes per session and
+  folder.
+- `storage.get` and `storage.set` are namespaced by the calling document's
+  scope: a scoped document's keys live apart from the unscoped page's and from
+  every other scope's, so one `tool.html#…` per folder no longer shares
+  `prefs` or `draft:*` with the others (a draft saved in one folder's tool was
+  read, and overwritten, by another's). An unscoped page's keys are stored
+  exactly as in 1.7, so existing pages keep what they saved.
 
 ### Fragments reach documents (D41)
 
@@ -35,7 +42,7 @@ session's page. Existing pages and contributors keep working;
 - Now the shell loads the document at its address's fragment; a link carries
   its own (`<a href="tool.html#clients/vela/q3-board">`); reload, back and
   forward return to it; a link to the same document at another fragment, or a
-  bare `<a href="#…">`, is a fragment navigation (`hashchange`, no reload) and
+  bare `<a href="#…">` the page does not handle itself, is a fragment navigation (`hashchange`, no reload) and
   the address follows, as it follows any change the document makes through
   `location`; changing only the address's fragment opens the document at it.
 - A link's move within the document is made by the kernel with
@@ -44,6 +51,9 @@ session's page. Existing pages and contributors keep working;
   shell swaps the frame, so back and forward retrace fragment moves across
   other documents. A bare `#…` link no longer navigates the frame to the
   page's storage folder (it did in 1.7 too, through the injected `<base>`).
+  The kernel acts on it only after the page's own handlers, and only when none
+  cancelled the click, so menus and tabs written as `href="#"` with
+  `return false`, or with `preventDefault` in a listener, behave as before.
   Inside an embed a `#…` link only scrolls. The fragment never reaches the server; one over
   2,048 characters is dropped. A query is still not carried. Inside an embed,
   fragments are not carried.
@@ -64,15 +74,22 @@ session's page. Existing pages and contributors keep working;
 
 ### Verified
 
-- 415 unit tests (A139–A147 as unit, route and runtime tests);
+- 416 unit tests (A139–A147 as unit, route and runtime tests);
   `kernel-hostile.mjs` 51 of 51 in the three engines.
-- Reviewed before release (two passes); the first review's findings on back
-  and forward (1), the History API (2) and bare `#…` links (3) are fixed here;
-  its findings 4 and 5 are left for later (DECISIONS D41).
-- `test/browser/scope.mjs`: 30 of 30 checks in Chromium, Firefox and WebKit
+- Reviewed before release. The first review's findings on back and forward
+  (1), the History API (2) and bare `#…` links (3) are fixed here, and the
+  second review's on links a page handles itself; findings 4 and 5 are left
+  for later (DECISIONS D41).
+- Known divergences (spec 1.6, X43, X44): Back between two fragments of the
+  same document reloads it, so unsaved input is lost without the usual offer;
+  a fragment set from script with `location.hash`, then another document, then
+  Back, lands wrongly (WebKit: on the older fragment; Chromium and Firefox: the
+  second Back does nothing or leaves the page).
+- `test/browser/scope.mjs`: 34 of 34 checks in Chromium, Firefox and WebKit
   against the plugin's own served output, with a contributor echoing its
   caller — including back and forward across a document switch after a
-  fragment move, a bare `#…` link, and a loader that swaps an app's markup in, whose scripts see
+  fragment move, a bare `#…` link, `#…` links the page handles itself, and a
+  loader that swaps an app's markup in, whose scripts see
   the scope while links keep working. (`document.open` erases the kernel's
   listeners; the guide's pattern does not use it.)
 - On the owner's bb, a joint proof with the Syns plugin passed all seven rows:

@@ -16,6 +16,8 @@ export interface HandlerContext {
   readonly requestId: string;
   /** The origins the reader reached this host at, as the request shows them (its URL and `Origin`). */
   readonly requestOrigins?: readonly string[];
+  /** The calling document's scope, already checked; null when it set none. Only `storage` uses it. spec R5.84a */
+  readonly scope?: string | null;
 }
 
 export interface HandlerOutcome<R> {
