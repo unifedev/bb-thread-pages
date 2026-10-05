@@ -579,15 +579,24 @@ that folder, and the plugin answers for it as if the session worked there; a
 plugin that takes no folder answers as before, for the session's own folder,
 so check what its section says. \`setScope(null)\` returns to the session's
 folder. The folder is relative, \`/\`-separated, at most ${LIMITS.scopeChars} characters and
-${LIMITS.scopeSegments} folders deep; one that is absolute, starts with \`~\`, or has a \`..\`, \`.\` or
-empty part throws a TypeError, and the host refuses it again with
-invalid_params. Built-in capabilities ignore it. Set it before the first call
+${LIMITS.scopeSegments} folders deep; one that is absolute, has \`~\` as its first folder, or has a
+\`..\`, \`.\` or empty part throws a TypeError, and the host refuses it again
+with invalid_params. Built-in capabilities ignore it. Set it before the first call
 — an app the document goes on to load then works in its folder unchanged —
 and take the folder from the document's address, so one document serves any
 folder (see *Several documents in one page*):
 
-    const folder = decodeURIComponent(location.hash.slice(1));
-    threadPage.setScope(folder || null);
+    try {
+      threadPage.setScope(decodeURIComponent(location.hash.slice(1)) || null);
+    } catch (error) {
+      // A fragment that is not a folder: say so on the page instead of loading anything.
+    }
+
+To load an app's own markup into that document, keep its head (the host's
+runtime and \`<base>\` live there), append the app's head, replace the body
+and re-create its scripts; never \`document.open\` or \`document.write\`, which
+remove the runtime's listeners, so links would leave the page and forms would
+not be captured.
 
 **Failures.** The rejected Error carries \`code\` as usual, and may carry
 \`reason\` — a word the method declares, such as \`no_repo\` — and \`detail\`,
@@ -845,9 +854,16 @@ A link may carry a fragment — \`<a href="tool.html#clients/vela/q3-board">\` �
 and the document opens with it: \`location.hash\` is \`#clients/vela/q3-board\`,
 the reader's address shows it, and reload, back and forward return to it.
 This is how one document takes a parameter. A link to the same document at
-another fragment does not reload it: \`hashchange\` fires, as on any site, and
-the address follows. A query (\`tool.html?x=1\`) is not carried; use the
-fragment. Inside an embed, fragments are not carried.
+another fragment, or a bare \`<a href="#clients/x">\`, does not reload it:
+\`hashchange\` fires, as on any site, the address follows, and Back returns to
+where it was, also after the reader has opened another document. To change the
+fragment from script, set \`location.hash\` (the address follows; its Back step
+lasts only while this document stays open) or click such a link with
+\`link.click()\` (a Back step that lasts). Never use \`history.pushState\` or
+\`replaceState\`: the page's \`<base>\` resolves their URL against your page's
+folder and they fire no \`hashchange\`. A query (\`tool.html?x=1\`) is not
+carried; use the fragment. Inside an embed, fragments are not carried: a
+\`#…\` link only scrolls.
 
 What does not carry over: script state. Each document starts fresh, like a
 page load. When state has to survive switching — a half-typed answer on one

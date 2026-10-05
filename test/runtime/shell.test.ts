@@ -421,6 +421,13 @@ describe("shell documents", () => {
     await vi.waitFor(() => expect(window.location.hash).toBe("#y"));
     expect(window.history.length).toBe(length);
     expect(window.history.state).toEqual({ threadPageDocument: "other.html", threadPageFragment: "#y" });
+    // A link's move inside the document is a step of the shell's own history, which outlives the frame.
+    ports[0]!.postMessage({ kind: "thread-page:fragment", fragment: "#z", step: true });
+    await vi.waitFor(() => expect(window.location.hash).toBe("#z"));
+    expect(window.history.length).toBe(length + 1);
+    expect(window.history.state).toEqual({ threadPageDocument: "other.html", threadPageFragment: "#z" });
+    ports[0]!.postMessage({ kind: "thread-page:fragment", fragment: "#y" });
+    await vi.waitFor(() => expect(window.location.hash).toBe("#y"));
 
     // A refresh keeps the document where it is.
     const refreshed = shell.refreshDocument();

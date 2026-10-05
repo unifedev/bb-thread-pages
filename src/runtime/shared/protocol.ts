@@ -50,8 +50,11 @@ export type KernelMessage =
   | { kind: "thread-page:submit"; submissionId: string; title: string; answers: SubmitAnswer[]; files: SubmitFile[] }
   /** A link to another document of the page: the shell opens it in place, at its fragment if it names one. spec R1.12a, R1.12f */
   | { kind: "thread-page:open-document"; path: string; fragment?: string }
-  /** The document's own `#fragment` changed: the shell's address follows. spec R1.12f */
-  | { kind: "thread-page:fragment"; fragment: string }
+  /**
+   * The document's own `#fragment` changed: the shell's address follows. `step`: the kernel moved
+   * there for a link, leaving no history entry in the frame, so the shell adds one. spec R1.12f
+   */
+  | { kind: "thread-page:fragment"; fragment: string; step?: true }
   /** Where the document is scrolled to, so a refresh can return there. spec R2.18b, R4.45 */
   | { kind: "thread-page:scroll"; x: number; y: number }
   /** Inside an embed: the reader accepted the offered new version. spec R4.46 */

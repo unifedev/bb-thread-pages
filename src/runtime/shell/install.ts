@@ -137,11 +137,14 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       }
     },
     onOpenDocument: (path, next) => void openDocument(path, true, next),
-    onFragment: (next) => {
+    onFragment: (next, step) => {
       if (!config.navigable || next === fragment) return;
       fragment = next;
       try {
-        win.history.replaceState(historyState(), "", shellAddress(config.documentPath));
+        // A link's move is a step of the shell's own history, which outlives the frame; a change the
+        // document made itself (its own history entry, if any) only moves the address. spec R1.12f
+        if (step) win.history.pushState(historyState(), "", shellAddress(config.documentPath));
+        else win.history.replaceState(historyState(), "", shellAddress(config.documentPath));
       } catch {
         // The address is a courtesy; the document has its fragment either way.
       }

@@ -20,6 +20,8 @@ import { downloadName, isOwnFilePath } from "../../domain/own-files.ts";
 export type AnchorDecision =
   | { kind: "default" }
   | { kind: "document"; path: string; fragment: string }
+  /** A link to a place in this document: `href="#…"`. */
+  | { kind: "fragment"; fragment: string }
   | { kind: "file"; path: string; download: boolean; name: string | null }
   | { kind: "external"; url: string; label: string }
   | { kind: "handler"; url: string }
@@ -39,7 +41,9 @@ const IN_PLACE_TARGETS: ReadonlySet<string> = new Set(["", "_self", "_parent", "
 export function decideAnchor(anchor: HTMLAnchorElement, documentUrl: string, siteBase: string | null, siteRoot: string | null = siteBase, embedded = false): AnchorDecision {
   const raw = anchor.getAttribute("href");
   if (raw === null) return { kind: "default" };
-  if (raw.startsWith("#")) return { kind: "default" };
+  // Resolved against the page's <base>, `#…` would leave the document for the page's folder:
+  // it is this document's own fragment. spec R1.12f
+  if (raw.startsWith("#")) return { kind: "fragment", fragment: raw.trim() };
   let target: URL;
   try {
     target = new URL(raw, siteBase ?? documentUrl);
@@ -85,6 +89,8 @@ function pathWithin(target: URL, siteRoot: string): string | null {
 export interface AnchorHandlers {
   /** `fragment`: the link's `#fragment`, or "". */
   document(path: string, fragment: string): void;
+  /** A place in this document: `#…`. */
+  fragment(fragment: string): void;
   file(path: string, download: boolean, name: string | null): void;
   external(url: string, label: string): void;
   /** A `mailto:`, `tel:` or `sms:` link with no target of its own: a popup of the reader's handler. */
@@ -106,6 +112,7 @@ export function installAnchorInterception(doc: Document, handlers: AnchorHandler
       if (decision.kind === "default") return;
       event.preventDefault();
       if (decision.kind === "document") handlers.document(decision.path, decision.fragment);
+      else if (decision.kind === "fragment") handlers.fragment(decision.fragment);
       else if (decision.kind === "file") handlers.file(decision.path, decision.download, decision.name);
       else if (decision.kind === "external") handlers.external(decision.url, decision.label);
       else if (decision.kind === "handler") handlers.handler(decision.url);

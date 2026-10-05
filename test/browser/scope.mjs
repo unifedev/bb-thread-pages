@@ -120,6 +120,50 @@ await doc().click("#to-query");
 values = await settle("");
 ok("a query in a link is not carried (documented)", values.search === "no folder", values.search);
 
+// 7a. Back and forward across a frame swap (review 1.8.0, finding 1): the document moves to another
+// fragment, then another document opens, then Back and Forward retrace every step.
+await page.goto(`${SHELL}&path=tool.html#clients/vela/q3-board`);
+await settle("#clients/vela/q3-board");
+await doc().click("#to-deck");
+await settle("#decks/q3-pitch");
+await page.waitForTimeout(300);
+await doc().click("#to-index");
+await page.waitForTimeout(1200);
+ok("after a fragment change, another document opens", !address().searchParams.has("path"), page.url());
+await page.goBack();
+values = await settle("#decks/q3-pitch");
+ok("Back across the swap returns to the moved fragment", values.hash === "#decks/q3-pitch" && echoed(values).scope === "decks/q3-pitch" && address().hash === "#decks/q3-pitch", `${values.hash} ${page.url()}`);
+await page.goBack();
+values = await settle("#clients/vela/q3-board");
+ok("Back again returns to the fragment before it", values.hash === "#clients/vela/q3-board" && echoed(values).scope === "clients/vela/q3-board" && address().hash === "#clients/vela/q3-board", `${values.hash} ${page.url()}`);
+await page.goForward();
+values = await settle("#decks/q3-pitch");
+ok("Forward returns to the moved fragment", values.hash === "#decks/q3-pitch" && address().hash === "#decks/q3-pitch", `${values.hash} ${page.url()}`);
+await page.goForward();
+await page.waitForTimeout(1200);
+ok("Forward again returns to the other document", !address().searchParams.has("path") && address().hash === "", page.url());
+
+// 7b. A bare #… link stays in the document (finding 3): the <base> would send it to the page's folder.
+await page.goto(`${SHELL}&path=tool.html#clients/vela/q3-board`);
+await settle("#clients/vela/q3-board");
+await doc().click("#to-bare");
+values = await settle("#clients/bare");
+ok("a bare #… link moves within the document", values.hash === "#clients/bare" && echoed(values).scope === "clients/bare" && doc()?.url().includes("/document?"), `${values.hash} ${doc()?.url()}`);
+await page.waitForTimeout(300);
+ok("…and the address follows", address().hash === "#clients/bare", page.url());
+
+// 7c. From script, clicking such a link is a Back step that lasts, as the guide says.
+await doc().evaluate(() => document.getElementById("to-deck").click());
+values = await settle("#decks/q3-pitch");
+await page.waitForTimeout(300);
+await doc().click("#to-index");
+await page.waitForTimeout(1200);
+await page.goBack();
+values = await settle("#decks/q3-pitch");
+await page.goBack();
+values = await settle("#clients/bare");
+ok("link.click() from script makes a Back step that outlives the document", values.hash === "#clients/bare" && address().hash === "#clients/bare", `${values.hash} ${page.url()}`);
+
 // 7. A generic loader that swaps in an app's markup keeps the scope for the app's own scripts and keeps
 // the kernel: it keeps its head (the host's <base> and runtime) and replaces the body. `document.open`
 // would erase the kernel's listeners, so links would leave the page; loader.html#…/write shows that.

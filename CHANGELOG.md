@@ -34,14 +34,23 @@ session's page. Existing pages and contributors keep working;
   own fragment stuck to the next document opened.
 - Now the shell loads the document at its address's fragment; a link carries
   its own (`<a href="tool.html#clients/vela/q3-board">`); reload, back and
-  forward return to it; a link to the same document at another fragment is a
-  fragment navigation (`hashchange`, no reload) and the address follows, as it
-  follows any change the document makes; changing only the address's fragment
-  opens the document at it. The fragment never reaches the server; one over
+  forward return to it; a link to the same document at another fragment, or a
+  bare `<a href="#…">`, is a fragment navigation (`hashchange`, no reload) and
+  the address follows, as it follows any change the document makes through
+  `location`; changing only the address's fragment opens the document at it.
+- A link's move within the document is made by the kernel with
+  `location.replace`, against the document's own URL, and the shell adds the
+  history step: the frame keeps no history of its own, which would die when the
+  shell swaps the frame, so back and forward retrace fragment moves across
+  other documents. A bare `#…` link no longer navigates the frame to the
+  page's storage folder (it did in 1.7 too, through the injected `<base>`).
+  Inside an embed a `#…` link only scrolls. The fragment never reaches the server; one over
   2,048 characters is dropped. A query is still not carried. Inside an embed,
   fragments are not carried.
-- The guide documents both, with the two-line pattern for one document that
-  serves any folder.
+- The guide documents both: the pattern for one document that serves any
+  folder (with a `try`), loading an app's markup without `document.open`, and
+  changing the fragment from script through `location`, never the History
+  API.
 
 ### The instruction's real budget (D42)
 
@@ -55,10 +64,15 @@ session's page. Existing pages and contributors keep working;
 
 ### Verified
 
-- 415 unit tests (A139–A147 as unit, route and runtime tests).
-- `test/browser/scope.mjs`: 22 of 22 checks in Chromium, Firefox and WebKit
+- 415 unit tests (A139–A147 as unit, route and runtime tests);
+  `kernel-hostile.mjs` 51 of 51 in the three engines.
+- Reviewed before release (two passes); the first review's findings on back
+  and forward (1), the History API (2) and bare `#…` links (3) are fixed here;
+  its findings 4 and 5 are left for later (DECISIONS D41).
+- `test/browser/scope.mjs`: 30 of 30 checks in Chromium, Firefox and WebKit
   against the plugin's own served output, with a contributor echoing its
-  caller — including a loader that swaps an app's markup in, whose scripts see
+  caller — including back and forward across a document switch after a
+  fragment move, a bare `#…` link, and a loader that swaps an app's markup in, whose scripts see
   the scope while links keep working. (`document.open` erases the kernel's
   listeners; the guide's pattern does not use it.)
 - On the owner's bb, a joint proof with the Syns plugin passed all seven rows:

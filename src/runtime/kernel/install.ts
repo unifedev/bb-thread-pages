@@ -133,10 +133,45 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     },
     true,
   );
-  // The shell's address follows the document's fragment, so a reload or a shared link returns to it. spec R1.12f
+  /**
+   * A link to a place in this document moves there with `location.replace`,
+   * resolved against the document's own URL rather than the page's <base>: the
+   * frame keeps no history of its own, which would not survive the shell
+   * swapping the frame, and the shell adds the Back step instead. Inside an
+   * embed the fragment is not carried: the link only scrolls. spec R1.12f
+   */
+  const URLOf = win.URL;
+  let moving: string | null = null;
+  function moveToFragment(fragment: string): void {
+    if (config.embedded) {
+      const id = fragment.slice(1);
+      let name = id;
+      try {
+        name = decodeURIComponent(id);
+      } catch {
+        // An id as written.
+      }
+      (doc.getElementById(name) ?? doc.getElementById(id))?.scrollIntoView();
+      return;
+    }
+    const here = win.location.href.split("#")[0] ?? "";
+    let target: string;
+    try {
+      target = new URLOf(here + fragment).hash;
+    } catch {
+      return;
+    }
+    // The same fragment again only scrolls: no hashchange follows, so nothing is awaited.
+    moving = target === win.location.hash ? null : target;
+    win.location.replace(here + fragment);
+  }
+  // The shell's address follows the document's fragment, so a reload or a shared link returns to it. A move
+  // this kernel made adds a step to the shell's history; any other change only updates the address. spec R1.12f
   if (!config.embedded) {
     win.addEventListener("hashchange", () => {
-      post({ kind: "thread-page:fragment", fragment: win.location.hash });
+      const step = moving !== null && moving === win.location.hash;
+      moving = null;
+      post({ kind: "thread-page:fragment", fragment: win.location.hash, ...(step ? { step: true as const } : {}) });
     });
   }
   doc.addEventListener("input", markDirty, true);
@@ -185,11 +220,12 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       document: (path, fragment) => {
         // The same document at another fragment is a fragment navigation, as on any site. spec R1.12f
         if (fragment && path === config.documentPath) {
-          win.location.hash = fragment;
+          moveToFragment(fragment);
           return;
         }
         post({ kind: "thread-page:open-document", path, ...(fragment ? { fragment } : {}) });
       },
+      fragment: (fragment) => moveToFragment(fragment),
       file: (path, download, name) => {
         post({ kind: "thread-page:open-file", path, download, name });
       },

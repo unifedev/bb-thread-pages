@@ -23,8 +23,8 @@ export interface RelayDeps {
   onDirty(dirty: boolean): void;
   /** A link to another document of the page; the path is already validated, the fragment "" or `#…`. spec R1.12a, R1.12f */
   onOpenDocument?(path: string, fragment: string): void;
-  /** The shown document's own fragment changed. spec R1.12f */
-  onFragment?(fragment: string): void;
+  /** The shown document's own fragment changed; `step` when the shell should add a history entry for it. spec R1.12f */
+  onFragment?(fragment: string, step: boolean): void;
   /** The reader answered from the page — a form, `session.reply`, or an answer inside an embed. spec R2.17a */
   onAnswered?(): void;
   /** Where the document is scrolled to. spec R2.18b */
@@ -403,7 +403,7 @@ export function createRelay(deps: RelayDeps): Relay {
         return;
       }
       if (data.kind === "thread-page:fragment") {
-        if (typeof data.fragment === "string") deps.onFragment?.(documentFragment(data.fragment));
+        if (typeof data.fragment === "string") deps.onFragment?.(documentFragment(data.fragment), data.step === true);
         return;
       }
       if (data.kind === "thread-page:record") {

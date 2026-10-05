@@ -342,7 +342,8 @@ describe("anchors", () => {
   // A link to another document of the page opens in place; any other own file goes to the shell;
   // another site opens natively in a new tab. spec R4.15, R4.15a, R4.15b, D33, D34
   it("decides every kind of link: documents, own files, other sites, handlers, built files", () => {
-    expect(decideAnchor(anchor("#section"), documentUrl, base)).toEqual({ kind: "default" });
+    // A bare #… is this document's own place, never the page folder the <base> would resolve it to. R1.12f
+    expect(decideAnchor(anchor("#section"), documentUrl, base)).toEqual({ kind: "fragment", fragment: "#section" });
     expect(decideAnchor(anchor("other.html"), documentUrl, base)).toEqual({ kind: "document", path: "other.html", fragment: "" });
     expect(decideAnchor(anchor("../index.html"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "index.html", fragment: "" });
     // The link's fragment goes with it. R1.12f
@@ -507,6 +508,7 @@ describe("kernel fragments", () => {
   const BODY = `<head><base href="https://bb.example/api/v1/threads/thr_a/thread-storage/files/"></head><body>
     <a id="other" href="tool.html#clients/vela/q3-board">Board</a>
     <a id="self" href="index.html#later">Later</a>
+    <a id="bare" href="#clients/x">Bare</a>
     <a id="plain" href="tool.html">Tool</a></body>`;
 
   it("asks the shell for another document with the link's fragment", () => {
@@ -517,13 +519,22 @@ describe("kernel fragments", () => {
     expect(posted.messages).toContainEqual({ kind: "thread-page:open-document", path: "tool.html" });
   });
 
-  it("navigates its own fragment for a link to itself, and reports every change of it", async () => {
+  it("moves to its own fragment for a link to itself, without a history entry, and asks the shell for the step", async () => {
     const { posted, win } = installAt("index.html", BODY);
+    const length = win.history.length;
     click(win, "self");
-    expect(win.location.hash).toBe("#later");
     await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(win.location.hash).toBe("#later");
+    expect(win.location.pathname).toBe("/api/v1/plugins/thread-pages/http/document");
+    expect(win.history.length).toBe(length);
     expect(posted.messages.filter((entry) => (entry as { kind?: string }).kind === "thread-page:open-document")).toHaveLength(0);
-    expect(posted.messages).toContainEqual({ kind: "thread-page:fragment", fragment: "#later" });
+    expect(posted.messages).toContainEqual({ kind: "thread-page:fragment", fragment: "#later", step: true });
+    // A bare #… stays in the document, though the <base> names the page's folder.
+    expect(click(win, "bare").defaultPrevented).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(win.location.href).toBe("https://bb.example/api/v1/plugins/thread-pages/http/document?session=thr_a#clients/x");
+    expect(posted.messages).toContainEqual({ kind: "thread-page:fragment", fragment: "#clients/x", step: true });
+    // A change the page makes itself is reported for the address only.
     win.location.hash = "#clients/other";
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(posted.messages).toContainEqual({ kind: "thread-page:fragment", fragment: "#clients/other" });

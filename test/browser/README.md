@@ -116,4 +116,6 @@ its fragment, and `loader.html`, which swaps an app's markup in.
     ECHO=1 SESSION=thr_scope node test/browser/serve.ts test/browser/pages/scope 8796
     PLAYWRIGHT=<…>/playwright/index.mjs ENGINE=chromium BASE=http://localhost:8796 node test/browser/scope.mjs
 
-Results of 5 October 2026: 22 of 22 in Chromium, Firefox and WebKit.
+Results of 5 October 2026: 30 of 30 in Chromium, Firefox and WebKit, after
+the review's fixes (back and forward across a document switch, bare `#…`
+links). The reviewed build `5bea57e` fails three of them.
