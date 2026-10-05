@@ -94,11 +94,14 @@ describe("shell relay", () => {
     relay.handle(port, { kind: "thread-page:open-document", path: "guides/next.html" });
     await flush();
     relay.handle(port, { kind: "thread-page:open-document", path: "tool.html", fragment: "#clients/vela/q3-board" });
+    relay.handle(port, { kind: "thread-page:open-document", path: "tool.html", query: "?scope=a", fragment: "#r" });
+    // A query using the host's names is refused, not opened without it.
+    relay.handle(port, { kind: "thread-page:open-document", path: "tool.html", query: "?path=x.html" });
     // A fragment that is not one is dropped, never refused with the link. R1.12f
     relay.handle(port, { kind: "thread-page:open-document", path: "tool.html", fragment: "no-hash" });
     relay.handle(port, { kind: "thread-page:open-document", path: "tool.html", fragment: `#${"x".repeat(LIMITS.fragmentChars)}` });
     await flush();
-    expect(onOpenDocument.mock.calls).toEqual([["guides/next.html", ""], ["tool.html", "#clients/vela/q3-board"], ["tool.html", ""], ["tool.html", ""]]);
+    expect(onOpenDocument.mock.calls).toEqual([["guides/next.html", "", ""], ["tool.html", "#clients/vela/q3-board", ""], ["tool.html", "#r", "?scope=a"], ["tool.html", "", ""], ["tool.html", "", ""]]);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(sent).toHaveLength(0);
   });
@@ -377,8 +380,8 @@ describe("shell documents", () => {
     expect(frames).toHaveLength(1);
     expect(frames[0]).not.toBe(elements.frame);
     expect(frames[0]!.getAttribute("src")).toBe("/document?session=thr_a&path=guides%2Fnext.html");
-    expect(window.location.search).toContain("path=guides%2Fnext.html");
-    expect(window.history.state).toEqual({ threadPageDocument: "guides/next.html", threadPageFragment: "" });
+    expect(window.location.search).toContain("path=guides/next.html");
+    expect(window.history.state).toEqual({ threadPageDocument: "guides/next.html", threadPageFragment: "", threadPageQuery: "" });
     expect(await shell.openDocument("guides/next.html")).toBe(false);
   });
 
@@ -397,7 +400,7 @@ describe("shell documents", () => {
     });
     const shell = installShell(window, local, elements, fetchImpl as never);
     expect(shell.shownFrame().getAttribute("src")).toBe("/document?session=thr_a#clients/vela/q3-board");
-    expect(window.history.state).toEqual({ threadPageDocument: "index.html", threadPageFragment: "#clients/vela/q3-board" });
+    expect(window.history.state).toEqual({ threadPageDocument: "index.html", threadPageFragment: "#clients/vela/q3-board", threadPageQuery: "" });
 
     // A link carries its own fragment; the last document's does not stick to the next.
     expect(await shell.openDocument("tool.html", true, "#decks/q3-pitch")).toBe(true);
@@ -420,12 +423,12 @@ describe("shell documents", () => {
     ports[0]!.postMessage({ kind: "thread-page:fragment", fragment: "#y" });
     await vi.waitFor(() => expect(window.location.hash).toBe("#y"));
     expect(window.history.length).toBe(length);
-    expect(window.history.state).toEqual({ threadPageDocument: "other.html", threadPageFragment: "#y" });
+    expect(window.history.state).toEqual({ threadPageDocument: "other.html", threadPageFragment: "#y", threadPageQuery: "" });
     // A link's move inside the document is a step of the shell's own history, which outlives the frame.
     ports[0]!.postMessage({ kind: "thread-page:fragment", fragment: "#z", step: true });
     await vi.waitFor(() => expect(window.location.hash).toBe("#z"));
     expect(window.history.length).toBe(length + 1);
-    expect(window.history.state).toEqual({ threadPageDocument: "other.html", threadPageFragment: "#z" });
+    expect(window.history.state).toEqual({ threadPageDocument: "other.html", threadPageFragment: "#z", threadPageQuery: "" });
     ports[0]!.postMessage({ kind: "thread-page:fragment", fragment: "#y" });
     await vi.waitFor(() => expect(window.location.hash).toBe("#y"));
 
@@ -439,8 +442,55 @@ describe("shell documents", () => {
     window.history.pushState(null, "", "/page?session=thr_a&path=other.html#clients/other");
     window.dispatchEvent(new HashChangeEvent("hashchange"));
     await vi.waitFor(() => expect(document.querySelector("iframe:not([data-incoming])")!.getAttribute("src")).toBe("/document?session=thr_a&path=other.html#clients/other"));
-    await vi.waitFor(() => expect(window.history.state).toEqual({ threadPageDocument: "other.html", threadPageFragment: "#clients/other" }));
+    await vi.waitFor(() => expect(window.history.state).toEqual({ threadPageDocument: "other.html", threadPageFragment: "#clients/other", threadPageQuery: "" }));
     window.history.replaceState(null, "", "/page?session=thr_a");
+  });
+
+  // A document's query rides in the address's path, the frame's URL and the history. spec R1.12g, D43
+  it("opens a document with its query, shows it in the address, and returns to it on back", async () => {
+    const { installShell } = await import("../../src/runtime/shell/install.ts");
+    window.history.replaceState(null, "", "/page?session=thr_a");
+    const elements = chrome();
+    const local: ShellConfig = { ...config };
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/document-session") {
+        const body = JSON.parse(String(init!.body)) as { path: string; query?: string };
+        const query = body.query ?? "";
+        return jsonResponse({ ok: true, actionToken: "tok2", pageRevision: "2".repeat(64), expiresAt: Date.now() + 3_600_000, documentUrl: `/document?session=thr_a&path=${body.path}${query ? `&${query.slice(1)}` : ""}`, path: body.path, query, stale: false, empty: false });
+      }
+      return new Response(null, { status: 304, headers: { etag: `"${REV}"` } });
+    });
+    const shell = installShell(window, local, elements, fetchImpl as never);
+    expect(await shell.openDocument("tool.html", true, "#card-1", "?scope=clients/vela/q3-board&view=grid")).toBe(true);
+    expect(shell.shownFrame().getAttribute("src")).toBe("/document?session=thr_a&path=tool.html&scope=clients/vela/q3-board&view=grid#card-1");
+    expect(`${window.location.search}${window.location.hash}`).toBe("?session=thr_a&path=tool.html?scope=clients/vela/q3-board%26view=grid#card-1");
+    expect(new URL(window.location.href).searchParams.get("path")).toBe("tool.html?scope=clients/vela/q3-board&view=grid");
+    expect(window.history.state).toEqual({ threadPageDocument: "tool.html", threadPageFragment: "#card-1", threadPageQuery: "?scope=clients/vela/q3-board&view=grid" });
+    // The same document with another query is another load; the same query again is not.
+    expect(await shell.openDocument("tool.html", true, "#card-1", "?scope=decks/q3-pitch")).toBe(true);
+    expect(await shell.openDocument("tool.html", true, "#card-1", "?scope=decks/q3-pitch")).toBe(false);
+    window.history.back();
+    await vi.waitFor(() => expect(shell.shownFrame().getAttribute("src")).toBe("/document?session=thr_a&path=tool.html&scope=clients/vela/q3-board&view=grid#card-1"));
+    window.history.replaceState(null, "", "/page?session=thr_a");
+  });
+
+  // location.reload() inside the frame: the new runtime asks again and is connected. spec R2.18d, D44
+  it("connects the shown frame again each time its document reloads and reports ready", async () => {
+    const { installShell } = await import("../../src/runtime/shell/install.ts");
+    const elements = chrome();
+    installShell(window, { ...config }, elements, vi.fn(async () => new Response(null, { status: 304, headers: { etag: `"${REV}"` } })) as never);
+    const connects: unknown[] = [];
+    vi.spyOn(elements.frame.contentWindow!, "postMessage").mockImplementation(((message: unknown) => connects.push(message)) as never);
+    const ready = () => window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1, revision: REV }, origin: "null", source: elements.frame.contentWindow }));
+    ready();
+    ready();
+    ready();
+    expect(connects.filter((message) => (message as { kind?: string }).kind === "thread-page:connect")).toHaveLength(3);
+    // Nobody else's ready is answered: another window, another origin, another message.
+    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "https://evil.example", source: elements.frame.contentWindow }));
+    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "null", source: window }));
+    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:hello", version: 1 }, origin: "null", source: elements.frame.contentWindow }));
+    expect(connects.filter((message) => (message as { kind?: string }).kind === "thread-page:connect")).toHaveLength(3);
   });
 
   it("does nothing on the built-in home, and says so when a document cannot open", async () => {

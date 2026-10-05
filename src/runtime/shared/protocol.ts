@@ -49,7 +49,7 @@ export type KernelMessage =
   | { kind: "thread-page:clean" }
   | { kind: "thread-page:submit"; submissionId: string; title: string; answers: SubmitAnswer[]; files: SubmitFile[] }
   /** A link to another document of the page: the shell opens it in place, at its fragment if it names one. spec R1.12a, R1.12f */
-  | { kind: "thread-page:open-document"; path: string; fragment?: string }
+  | { kind: "thread-page:open-document"; path: string; fragment?: string; query?: string }
   /**
    * The document's own `#fragment` changed: the shell's address follows. `step`: the kernel moved
    * there for a link, leaving no history entry in the frame, so the shell adds one. spec R1.12f
@@ -117,6 +117,8 @@ export interface ShellConfig {
   documentUrl: string;
   /** The open document within the page root; the entry document is `index.html`. */
   documentPath: string;
+  /** The open document's own query, "" or `?…`. spec R1.12g */
+  documentQuery?: string;
   submitUrl: string;
   uploadUrl: string;
   bridgeUrl: string;

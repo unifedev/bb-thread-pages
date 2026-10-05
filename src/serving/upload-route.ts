@@ -27,7 +27,7 @@ export function uploadRoute(serving: ServingContext) {
       const token = requireActionToken(serving, envelope.actionToken);
       if (isBuiltinHome(token.session)) throw new PageError("forbidden", "The built-in home page has no session to attach files to.");
       if (typeof envelope.content !== "string" || !BASE64.test(envelope.content)) throw new PageError("invalid_request", "Attachment content must be base64");
-      release = acquireRate(serving, token.session);
+      release = acquireRate(serving, token);
       await eligibleSession(serving, token.session);
       const page = await serving.pages.load(token.session, token.path);
       if (page.stale) throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy);

@@ -42,6 +42,8 @@ export const LIMITS = Object.freeze({
   scopeSegments: 64,
   /** A document's `#fragment`, carried by the shell. R1.12f, D41 */
   fragmentChars: 2048,
+  /** A document's `?query`, carried to it. R1.12g, D43 */
+  documentQueryChars: 2048,
   /** `question` in session reads, marked when cut. R5.11c, D25 */
   questionChars: 1024,
   capabilityJsonNodes: 10_000,
@@ -101,6 +103,9 @@ export const LIMITS = Object.freeze({
    */
   ratePerMinute: 120,
   rateConcurrent: 8,
+  /** Every request also counts against its session's overall cap: many documents, one session. R2.38a, D45 */
+  sessionRatePerMinute: 600,
+  sessionRateConcurrent: 32,
   /** Shell revision poll while the tab is visible. R2.17 */
   shellPollMs: 10_000,
   /**

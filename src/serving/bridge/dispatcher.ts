@@ -89,9 +89,10 @@ export function createDispatcher(serving: ServingContext, handlers: readonly Cap
       const envelope = parseEnvelope(body);
       requestId = (envelope.request as { id?: unknown } | null)?.id;
       const token = requireActionToken(serving, envelope.actionToken);
-      release = acquireRate(serving, token.session);
       const request = decodeBridgeRequest(envelope.request);
       requestId = request.id;
+      // The calling document's budget, its scope included, and its session's. spec R2.38a, D45
+      release = acquireRate(serving, token, request.scope ?? null);
       const lookup = serving.registry.get(request.method) ? serving.registry : combinedLookup(serving.registry, await serving.contributions.current());
       const invocation = resolveInvocation(request, lookup, token.revision);
       const contributed = invocation.spec.contributor ? (invocation.spec as ContributedSpec) : null;

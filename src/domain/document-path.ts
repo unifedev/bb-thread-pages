@@ -46,6 +46,34 @@ export function documentFragment(value: unknown): string {
   return typeof value === "string" && value.length > 1 && value.length <= LIMITS.fragmentChars && value.startsWith("#") ? value : "";
 }
 
+/** Query names the host's own document URL uses; a document's query may not. spec R1.12g */
+export const RESERVED_QUERY_NAMES: readonly string[] = ["session", "path"];
+
+export type QueryCheck = { readonly ok: true; readonly query: string } | { readonly ok: false; readonly message: string };
+
+/**
+ * A document's `?query`, as a link or an address gives it: "" for none, or
+ * `?` and at most 2,048 characters with no `#`, whitespace or control
+ * characters, using none of the host's names. Carried to the document, which
+ * reads it as `location.search`. spec R1.12g, DECISIONS D43
+ */
+export function checkDocumentQuery(value: unknown): QueryCheck {
+  if (value === undefined || value === null || value === "" || value === "?") return { ok: true, query: "" };
+  if (typeof value !== "string" || !value.startsWith("?")) return { ok: false, message: "A document's query starts with ?" };
+  if (value.length > LIMITS.documentQueryChars) return { ok: false, message: `A document's query is at most ${LIMITS.documentQueryChars} characters` };
+  if (/[#\s\u0000-\u001f\u007f-\u009f]/.test(value)) return { ok: false, message: "A document's query has no #, spaces or control characters" };
+  const names = new URLSearchParams(value);
+  const reserved = RESERVED_QUERY_NAMES.find((name) => names.has(name));
+  if (reserved) return { ok: false, message: `"${reserved}" is the host's own parameter; name yours differently` };
+  return { ok: true, query: value };
+}
+
+/** A document's URL relative to the page root, as an address's `path` carries it: its path, then its query. */
+export function splitDocumentUrl(raw: string): { path: string; query: string } {
+  const mark = raw.indexOf("?");
+  return mark < 0 ? { path: raw, query: "" } : { path: raw.slice(0, mark), query: raw.slice(mark) };
+}
+
 /** null for the entry document, so "no path" and "index.html" are one document. */
 export function documentKey(path: string | null | undefined): string | null {
   return !path || path === ENTRY_DOCUMENT ? null : path;

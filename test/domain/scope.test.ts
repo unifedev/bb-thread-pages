@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LIMITS } from "../../src/domain/limits.ts";
 import { checkScope, isCanonicalScope } from "../../src/domain/scope.ts";
-import { documentFragment } from "../../src/domain/document-path.ts";
+import { checkDocumentQuery, documentFragment, splitDocumentUrl } from "../../src/domain/document-path.ts";
 
 // spec R5.81–R5.86, R1.12f, D41
 describe("a document's scope", () => {
@@ -33,5 +33,23 @@ describe("a document's fragment", () => {
   it("is # and at least one character, within the limit; anything else is none", () => {
     expect(documentFragment("#clients/vela/q3-board")).toBe("#clients/vela/q3-board");
     for (const value of ["", "#", "x", null, 3, `#${"x".repeat(LIMITS.fragmentChars)}`]) expect(documentFragment(value)).toBe("");
+  });
+});
+
+// R1.12g, D43
+describe("a document's query", () => {
+  it("is ? and what a query may hold, none of the host's names, within the limit", () => {
+    expect(checkDocumentQuery("?scope=clients/vela/q3-board&view=grid")).toEqual({ ok: true, query: "?scope=clients/vela/q3-board&view=grid" });
+    for (const none of [undefined, null, "", "?"]) expect(checkDocumentQuery(none)).toEqual({ ok: true, query: "" });
+    for (const bad of ["scope=x", "?a#b", "?a b", "?a\nb", "?session=x", "?x=1&path=y", 3, `?${"x".repeat(LIMITS.documentQueryChars)}`]) {
+      expect(checkDocumentQuery(bad).ok, JSON.stringify(bad)).toBe(false);
+    }
+    // A name that only contains a host name is the document's own.
+    expect(checkDocumentQuery("?sessionId=1&subpath=2").ok).toBe(true);
+  });
+
+  it("is split from a document URL at its first ?", () => {
+    expect(splitDocumentUrl("tool.html?scope=a?b")).toEqual({ path: "tool.html", query: "?scope=a?b" });
+    expect(splitDocumentUrl("tool.html")).toEqual({ path: "tool.html", query: "" });
   });
 });

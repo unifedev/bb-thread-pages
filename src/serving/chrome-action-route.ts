@@ -24,7 +24,7 @@ export function chromeActionRoute(serving: ServingContext) {
       // Revoking a grant this page holds; the built-in home may hold some too. spec R5.65
       if (action === "revoke-grant") {
         if (!isSessionId(record.sessionId)) throw new PageError("invalid_params", "A session id is required");
-        const release = acquireRate(serving, token.session);
+        const release = acquireRate(serving, token);
         try {
           const removed = await serving.grants.revoke(token.session, record.sessionId);
           serving.host.log.info(`grant revoked: ${token.session} → ${record.sessionId} (${removed})`);
@@ -38,7 +38,7 @@ export function chromeActionRoute(serving: ServingContext) {
       const session = await serving.host.sessions.get(token.session);
       if (!session || session.deleted) throw new PageError("not_found", "That session is not available");
 
-      const release = acquireRate(serving, token.session);
+      const release = acquireRate(serving, token);
       try {
         if (action === "pin") await serving.host.sessions.pin(session.id, true);
         else if (action === "unpin") await serving.host.sessions.pin(session.id, false);

@@ -5,7 +5,7 @@ import { createBbHost } from "./bb/bb-host.ts";
 import { bbSessionUrl } from "./bb/host-urls.ts";
 import { defineSettings } from "./config/settings.ts";
 import { capabilityRegistry } from "./domain/capabilities/index.ts";
-import { createRateLimiter } from "./domain/rate-limit.ts";
+import { createPageBudget } from "./domain/rate-limit.ts";
 import { createOutcomeMemory } from "./domain/submissions/idempotency.ts";
 import type { SessionHost } from "./host/contract.ts";
 import { createAssembler } from "./pages/assemble.ts";
@@ -54,7 +54,7 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
     site,
     routeBase,
     registry: capabilityRegistry,
-    rate: createRateLimiter(),
+    rate: createPageBudget(),
     submissions: createOutcomeMemory(),
     replies: createOutcomeMemory(),
     selections: createSelectionStore(),

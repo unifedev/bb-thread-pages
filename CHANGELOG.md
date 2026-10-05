@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.9.0 — unreleased — a document's query; a reload inside the page; a budget per document
+
+Implements spec 1.7 (`bartsoj/bb-thread-pages`, DECISIONS D43–D45), from the
+templates' test 10 on 1.8.0 with the Syns plugin 0.5.0. Existing pages keep
+working; `window.threadPage.version` and the bridge protocol stay `1`.
+
+### A document's query is carried (D43)
+
+- A link `<a href="tool.html?scope=clients/vela/q3-board#card-1">` opens
+  `tool.html` with its query and its fragment. The document reads the query as
+  on any site: `new URLSearchParams(location.search).get("scope")`.
+  `location.search` also holds the host's own `session` and `path`, which a
+  document query may not use: such a link does not open, and the status says
+  why.
+- The address carries it inside `path`:
+  `…/page?session=<id>&path=tool.html?scope=clients/vela/q3-board#card-1`. A
+  second parameter's `&` is written `%26` there, as the shell writes it.
+- Kept on open, links, reload, back and forward, and `location.reload()`. A
+  link to the same document with another query loads it again; a `#…` link
+  keeps the query. At most 2,048 characters, no `#`, spaces or control
+  characters.
+- So the generic `tool.html` names its folder in the query and leaves the
+  fragment to the app's own routes (Linear, Notion, Spec Kit, OpenSpec,
+  Kanban's open card), which until now overwrote the folder. The guide's
+  pattern reads the folder from the query.
+
+### A reload inside the page reconnects (D44)
+
+- `location.reload()` in a page left it on "Loading…": the shell took a
+  handshake only once per frame. It now connects the document it shows every
+  time it reports ready, dropping the previous channel. A page faking the
+  message only cuts itself off; the runtime still adopts only the first
+  channel it is given.
+
+### The request budget is per document and scope, under a session cap (D45)
+
+- Each request counts against its document's budget — the session, the
+  document's path and, for capability calls, the calling document's scope —
+  at 120 a minute and 8 in flight, as before, and against its session's, at
+  600 a minute and 32 in flight. Seven tools in one session, which were
+  refused with "Too many requests from this page", now load and save.
+
+### Verified (before review)
+
+- 425 unit tests (A148–A153 as unit, route and runtime tests).
+- `test/browser/params.mjs`: 14 of 14 in Chromium, Firefox and WebKit — the
+  query on open, links, the app's own routes, reload, back and forward;
+  `location.reload()` twice; seven tools of one session loading at once.
+  1.8.0 fails 13 of them.
+- `scope.mjs` 34 of 34 (its 1.8 check that a link's query is not carried now
+  checks that it is) and `kernel-hostile.mjs` 51 of 51, in the three engines.
+
 ## 1.8.0 — 2026-10-06 — a document scopes its calls to a folder; fragments reach documents
 
 Implements spec 1.6 (`bartsoj/bb-thread-pages`, DECISIONS D41–D42), for the

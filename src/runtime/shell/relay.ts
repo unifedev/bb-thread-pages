@@ -1,4 +1,4 @@
-import { documentFragment, isDocumentPath } from "../../domain/document-path.ts";
+import { checkDocumentQuery, documentFragment, isDocumentPath } from "../../domain/document-path.ts";
 import { LIMITS, mebibytes } from "../../domain/limits.ts";
 import { isBridgeRequest, isBridgeResponse, isFileLike, isRecord, isScrollMessage, isValidRequestId, makeFailure, sentMessage, type BridgeRequestMessage, type RecordedMessage, type ShellConfig, type ShellMessage, type SubmitFile } from "../shared/protocol.ts";
 import { encodeBase64 } from "./base64.ts";
@@ -22,7 +22,7 @@ export interface RelayDeps {
   navigator: Navigator;
   onDirty(dirty: boolean): void;
   /** A link to another document of the page; the path is already validated, the fragment "" or `#…`. spec R1.12a, R1.12f */
-  onOpenDocument?(path: string, fragment: string): void;
+  onOpenDocument?(path: string, fragment: string, query: string): void;
   /** The shown document's own fragment changed; `step` when the shell should add a history entry for it. spec R1.12f */
   onFragment?(fragment: string, step: boolean): void;
   /** The reader answered from the page — a form, `session.reply`, or an answer inside an embed. spec R2.17a */
@@ -399,7 +399,14 @@ export function createRelay(deps: RelayDeps): Relay {
         return;
       }
       if (data.kind === "thread-page:open-document") {
-        if (isDocumentPath(data.path)) deps.onOpenDocument?.(data.path, documentFragment(data.fragment));
+        if (!isDocumentPath(data.path)) return;
+        // The link's query rides with it; one the host cannot carry is said, not dropped. spec R1.12g
+        const query = checkDocumentQuery(data.query);
+        if (!query.ok) {
+          deps.onStatus?.(`That link cannot be opened: ${query.message}.`, true);
+          return;
+        }
+        deps.onOpenDocument?.(data.path, documentFragment(data.fragment), query.query);
         return;
       }
       if (data.kind === "thread-page:fragment") {

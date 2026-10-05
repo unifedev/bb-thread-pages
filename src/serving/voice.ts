@@ -78,7 +78,7 @@ export function transcribeRoute(serving: ServingContext) {
       const language = envelope.language;
       if (language !== undefined && (typeof language !== "string" || language.length > 35 || !LANGUAGE.test(language))) throw new PageError("invalid_params", "Invalid language tag");
 
-      release = acquireRate(serving, token.session);
+      release = acquireRate(serving, token);
       if (!home) {
         await eligibleSession(serving, token.session);
         // An offline copy answers nothing, as every effect of the page. The revision is not

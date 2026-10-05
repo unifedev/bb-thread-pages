@@ -586,14 +586,18 @@ scoped document's \`storage.get\`/\`storage.set\` keys are its folder's own, apa
 from the unscoped page's and every other folder's, so one tool keeps each
 folder's drafts and settings separate. Set it before the first call
 — an app the document goes on to load then works in its folder unchanged —
-and take the folder from the document's address, so one document serves any
-folder (see *Several documents in one page*):
+and take the folder from the document's query, so one document serves any
+folder and the fragment stays the app's own (see *Several documents in one
+page*). Link to it as \`tool.html?scope=clients/vela/q3-board\`, and in it:
 
     try {
-      threadPage.setScope(decodeURIComponent(location.hash.slice(1)) || null);
+      threadPage.setScope(new URLSearchParams(location.search).get("scope") || null);
     } catch (error) {
-      // A fragment that is not a folder: say so on the page instead of loading anything.
+      // A query that names no folder: say so on the page instead of loading anything.
     }
+
+(A folder named in the fragment, \`tool.html#clients/vela/q3-board\`, works too,
+but an app that routes with its fragment overwrites it.)
 
 To load an app's own markup into that document, keep its head (the host's
 runtime and \`<base>\` live there), append the app's head, replace the body
@@ -615,7 +619,9 @@ the method's own offset and limit, or cursor. A response is never cut short;
 it fails with response_too_large.
 
 **The budget is shared.** Every call, built-in or contributed, counts against
-${LIMITS.ratePerMinute} a minute and ${LIMITS.rateConcurrent} at once. One watch at the default ${LIMITS.watchDefaultMs / 1000} s costs ${perMinute(LIMITS.watchDefaultMs / 1000)} calls a
+its document's budget — ${LIMITS.ratePerMinute} a minute and ${LIMITS.rateConcurrent} at once for each document and
+scope, so each folder's tool has its own — and against the session's, ${LIMITS.sessionRatePerMinute} a
+minute and ${LIMITS.sessionRateConcurrent} at once for all its documents together. One watch at the default ${LIMITS.watchDefaultMs / 1000} s costs ${perMinute(LIMITS.watchDefaultMs / 1000)} calls a
 minute; at the ${LIMITS.watchMinMs / 1000} s floor, ${perMinute(LIMITS.watchMinMs / 1000)}. Reading 300 items one call each costs 300 —
 more than two minutes of budget. Load many items with the plugin's batched read
 when it has one, and poll one small thing, such as a version.
@@ -867,9 +873,20 @@ fragment from script, set \`location.hash\` (the address follows; its Back step
 lasts only while this document stays open) or click such a link with
 \`link.click()\` (a Back step that lasts). Never use \`history.pushState\` or
 \`replaceState\`: the page's \`<base>\` resolves their URL against your page's
-folder and they fire no \`hashchange\`. A query (\`tool.html?x=1\`) is not
-carried; use the fragment. Inside an embed, fragments are not carried: a
-\`#…\` link only scrolls.
+folder and they fire no \`hashchange\`. Inside an embed, fragments are not
+carried: a \`#…\` link only scrolls.
+
+A link may carry a query too — \`<a href="tool.html?scope=clients/vela/q3-board#card-1">\`
+— and the document reads it as on any site:
+\`new URLSearchParams(location.search).get("scope")\`. \`location.search\` also
+holds the host's own \`session\` and \`path\`; those two names are the host's,
+and a link whose query uses either does not open. The address shows the
+query inside \`path\` (\`…&path=tool.html?scope=clients/vela/q3-board#card-1\`),
+and opening it, reload, back and forward keep it, as does
+\`location.reload()\`. The same document with another query is another load;
+a \`#…\` link keeps the query. At most ${LIMITS.documentQueryChars} characters, and no \`#\`, spaces or
+control characters. Use the query for what selects the document's data, and
+leave the fragment to the app's own routes.
 
 What does not carry over: script state. Each document starts fresh, like a
 page load. When state has to survive switching — a half-typed answer on one
@@ -890,7 +907,8 @@ to it — start one for the purpose if you are mid-task — so nothing else ever
 rewrites it: its buttons open other pages and start fresh sessions, and
 nothing messages its own session. The reader can ask that session to change
 it at any time. Refresh a page like this on a slow watch, not a tight timer:
-it shares a rate budget of ${LIMITS.ratePerMinute} requests a minute with its own forms.`;
+it shares a rate budget of ${LIMITS.ratePerMinute} requests a minute with its own forms, and its
+session's ${LIMITS.sessionRatePerMinute} with every other document of that session.`;
 
 const accessibility = () => `## Before you save
 
@@ -956,7 +974,8 @@ const limits = () => `## Limits
 | Confirmation | ${LIMITS.confirmationMs / 60_000} minutes to answer the dialog |
 | Folder selection | ${LIMITS.selectionTokenMs / 60_000} minutes, single use |
 | Submission idempotency | ${LIMITS.idempotencyRecords} records, ${LIMITS.idempotencyMs / 60_000} minutes |
-| Rate limit | ${LIMITS.ratePerMinute} accepted requests a minute and ${LIMITS.rateConcurrent} in flight, per page; refused with rate_limited |
+| Rate limit | ${LIMITS.ratePerMinute} accepted requests a minute and ${LIMITS.rateConcurrent} in flight per document and scope, and ${LIMITS.sessionRatePerMinute} a minute and ${LIMITS.sessionRateConcurrent} in flight per session; refused with rate_limited |
+| Document query | ${LIMITS.documentQueryChars} characters; \`session\` and \`path\` are the host's |
 | Shell revision poll | every ${LIMITS.shellPollWorkingMs / 1000} s while the session works and for ${LIMITS.shellPollAfterAnswerMs / 1000} s after the reader answers; every ${LIMITS.shellPollMs / 1000} s otherwise; paused while hidden |
 | Parts | ${LIMITS.includeParts} per document, ${mebibytes(LIMITS.includePartBytes)} each, ${LIMITS.includeDepth} levels deep; the assembled document within the entry limit |
 | Embeds | ${LIMITS.embedsPerPage} per page; checked every ${LIMITS.embedPollWorkingMs / 1000} s while an embedded session works or was just answered, every ${LIMITS.embedPollMs / 1000} s otherwise; one call per tick for every ${LIMITS.pagesReadEntries} |

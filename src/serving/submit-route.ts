@@ -22,7 +22,7 @@ export function submitRoute(serving: ServingContext) {
       const token = requireActionToken(serving, submission.actionToken);
       if (isBuiltinHome(token.session)) throw new PageError("forbidden", "The built-in home page has no session to answer.");
       if (submission.pageRevision !== token.revision) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
-      release = acquireRate(serving, token.session);
+      release = acquireRate(serving, token);
       const now = serving.now();
       const fingerprint = sha256Hex(JSON.stringify({ revision: submission.pageRevision, title: submission.title, answers: submission.answers, files: submission.files }));
       const remembered = serving.submissions.remember(

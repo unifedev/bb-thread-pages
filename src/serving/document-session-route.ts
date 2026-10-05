@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { documentKey, ENTRY_DOCUMENT, isDocumentPath } from "../domain/document-path.ts";
+import { checkDocumentQuery, documentKey, ENTRY_DOCUMENT, isDocumentPath } from "../domain/document-path.ts";
 import { PageError } from "../domain/errors.ts";
 import { mintActionToken } from "../domain/tokens/action-token.ts";
 import { acquireRate, readJsonBody, requireActionToken } from "./action-request.ts";
@@ -27,7 +27,10 @@ export function documentSessionRoute(serving: ServingContext) {
       if (isBuiltinHome(token.session)) throw new PageError("forbidden", "The built-in home page has no other documents.");
       if (record.path !== ENTRY_DOCUMENT && !isDocumentPath(record.path)) throw new PageError("invalid_params", "That is not a document of this page.");
       const path = documentKey(record.path as string);
-      release = acquireRate(serving, token.session);
+      // The document's own query rides with it. spec R1.12g
+      const query = checkDocumentQuery(record.query);
+      if (!query.ok) throw new PageError("invalid_params", `That link's query cannot be carried: ${query.message}.`);
+      release = acquireRate(serving, token);
       await eligibleSession(serving, token.session);
       const page = path ? await serving.pages.load(token.session, path) : await loadUnlessUnwritten(serving, token.session);
       const revision = page?.revision ?? EMPTY_REVISION;
@@ -37,8 +40,9 @@ export function documentSessionRoute(serving: ServingContext) {
         actionToken: minted.token,
         pageRevision: revision,
         expiresAt: minted.payload.exp,
-        documentUrl: serving.site.documentUrl(token.session, path),
+        documentUrl: serving.site.documentUrl(token.session, path, query.query),
         path: path ?? ENTRY_DOCUMENT,
+        query: query.query,
         stale: page?.stale ?? false,
         empty: page === null,
         deferredFiles: deferredPaths(page),

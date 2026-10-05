@@ -189,6 +189,35 @@ describe("several documents in one page", () => {
   });
 });
 
+// A document's URL is its path and its query; the address carries both in `path`. R1.12g, D43
+describe("a document's query", () => {
+  it("is carried from the address into the document's URL, after the host's own parameters", async () => {
+    fixture.state.files.set(fileKey("thr_a", "tool.html"), Buffer.from(PAGE));
+    const shell = await (await fixture.get(`${ROUTE_BASE}/page?session=thr_a&path=tool.html?scope=clients/vela/q3-board%26view=grid`)).text();
+    expect(shell).toContain("documentPath&quot;:&quot;tool.html&quot;");
+    expect(shell).toContain("documentQuery&quot;:&quot;?scope=clients/vela/q3-board&amp;view=grid&quot;");
+    expect(shell).toContain(`documentUrl&quot;:&quot;${ROUTE_BASE}/document?session=thr_a&amp;path=tool.html&amp;scope=clients/vela/q3-board&amp;view=grid&quot;`);
+    // The document is served at that URL, its own parameters ignored by the host.
+    const doc = await fixture.get(`${ROUTE_BASE}/document?session=thr_a&path=tool.html&scope=clients/vela/q3-board&view=grid`);
+    expect(doc.status).toBe(200);
+    // The entry document takes a query too.
+    const entry = await (await fixture.get(`${ROUTE_BASE}/page?session=thr_a&path=index.html?tab=2`)).text();
+    expect(entry).toContain(`documentUrl&quot;:&quot;${ROUTE_BASE}/document?session=thr_a&amp;tab=2&quot;`);
+  });
+
+  it("is refused when it uses the host's names, or holds what a query cannot", async () => {
+    fixture.state.files.set(fileKey("thr_a", "tool.html"), Buffer.from(PAGE));
+    for (const bad of ["tool.html?session=thr_b", "tool.html?x=1%26path=y.html", "tool.html?a=b%20c", `tool.html?${"x".repeat(2048)}`]) {
+      expect((await fixture.get(`${ROUTE_BASE}/page?session=thr_a&path=${bad}`)).status, bad).toBe(400);
+    }
+    const exchanged = await fixture.post(`${ROUTE_BASE}/document-session`, { actionToken: token(), path: "tool.html", query: "?scope=decks/q3-pitch" });
+    expect(await exchanged.json()).toMatchObject({ ok: true, path: "tool.html", query: "?scope=decks/q3-pitch", documentUrl: `${ROUTE_BASE}/document?session=thr_a&path=tool.html&scope=decks/q3-pitch` });
+    for (const query of ["?path=x.html", "?session=thr_b", "scope=x", "?a#b", 7]) {
+      expect((await fixture.post(`${ROUTE_BASE}/document-session`, { actionToken: token(), path: "tool.html", query })).status, String(query)).toBe(400);
+    }
+  });
+});
+
 describe("submissions", () => {
   const body = (overrides: Record<string, unknown> = {}) => ({
     actionToken: token(),

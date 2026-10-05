@@ -228,6 +228,29 @@ describe("calls", () => {
     expect(limited).toBeGreaterThan(0);
   });
 
+  // One session shows many tools; each document and scope has its own budget, under a session cap. R2.38a, D45
+  it("budgets per document and scope, under the session's overall cap (A148)", async () => {
+    const spend = async (scope: string, times: number) => {
+      let limited = 0;
+      for (let index = 0; index < times; index += 1) {
+        if ((await call("syns.head", {}, { scope })).body.response?.error?.code === "rate_limited") limited += 1;
+      }
+      return limited;
+    };
+    expect(await spend("tools/a", LIMITS.ratePerMinute)).toBe(0);
+    // That folder's tool has spent its minute; another folder's is untouched.
+    expect(await spend("tools/a", 1)).toBe(1);
+    expect(await spend("tools/b", LIMITS.ratePerMinute)).toBe(0);
+    expect(await spend("tools/c", LIMITS.ratePerMinute)).toBe(0);
+    expect(await spend("tools/d", LIMITS.ratePerMinute)).toBe(0);
+    // 480 accepted so far; the session's cap of 600 stops the fifth tool part-way.
+    const limited = await spend("tools/e", LIMITS.ratePerMinute);
+    expect(limited).toBe(LIMITS.ratePerMinute - (LIMITS.sessionRatePerMinute - 4 * LIMITS.ratePerMinute));
+    // A refused request counts against neither budget: the next minute starts clean.
+    fixture.clock.now += 60_000;
+    expect(await spend("tools/a", 1)).toBe(0);
+  });
+
   it("answers unavailable when the contributor cannot be reached (A78, R5.52)", async () => {
     answer = async () => {
       throw new Error("connection refused");

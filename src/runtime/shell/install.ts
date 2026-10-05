@@ -1,4 +1,4 @@
-import { documentFragment, ENTRY_DOCUMENT } from "../../domain/document-path.ts";
+import { checkDocumentQuery, documentFragment, ENTRY_DOCUMENT } from "../../domain/document-path.ts";
 import { EMPTY_PAGE_STATUS, HANDSHAKE_VERSION, isRecord, type ShellConfig } from "../shared/protocol.ts";
 import { createChromeActions } from "./actions.ts";
 import { createConfirmer } from "./confirm.ts";
@@ -45,7 +45,7 @@ export interface ShellElements {
 export interface ShellHandle {
   poller: Poller;
   /** For tests: open another document of the page as a link would. */
-  openDocument(path: string, push?: boolean, fragment?: string): Promise<boolean>;
+  openDocument(path: string, push?: boolean, fragment?: string, query?: string): Promise<boolean>;
   /** For tests: show the open document's current revision in place. */
   refreshDocument(): Promise<boolean>;
   /** For tests: the frame the reader sees. */
@@ -54,6 +54,7 @@ export interface ShellHandle {
 
 const HISTORY_KEY = "threadPageDocument";
 const HISTORY_FRAGMENT = "threadPageFragment";
+const HISTORY_QUERY = "threadPageQuery";
 /** A question's confirm button ignores clicks this long after it appears. */
 const CONFIRM_ARM_MS = 400;
 
@@ -136,7 +137,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
         poller.offer();
       }
     },
-    onOpenDocument: (path, next) => void openDocument(path, true, next),
+    onOpenDocument: (path, next, nextQuery) => void openDocument(path, true, next, nextQuery),
     onFragment: (next, step) => {
       if (!config.navigable || next === fragment) return;
       fragment = next;
@@ -201,12 +202,21 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   }
 
   win.addEventListener("message", (event) => {
-    // Only a frame of ours, on its opaque origin, only once per document, only the handshake.
+    // Only a frame of ours, on its opaque origin, only the handshake.
     if (event.origin !== "null") return;
     const from = event.source === frame.contentWindow ? frame : incoming && event.source === incoming.frame.contentWindow ? incoming.frame : null;
-    if (!from || !awaitingReady.has(from)) return;
+    if (!from) return;
     const data = event.data as unknown;
     if (!isRecord(data) || data.kind !== "thread-page:ready" || data.version !== HANDSHAKE_VERSION) return;
+    if (!awaitingReady.has(from)) {
+      // The shown document loaded again inside its frame — location.reload(), or its own URL — and its new
+      // runtime asks to be connected as any load does. A page faking this only cuts itself off: the runtime
+      // adopts the first channel it is given and stops every later one before page script sees it. spec R2.18d, D44
+      if (from !== frame) return;
+      connectFrame(frame, null);
+      checkRevision(data.revision);
+      return;
+    }
     awaitingReady.delete(from);
     if (from === frame) {
       const restore = pendingRestore;
@@ -282,16 +292,23 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     current.settle(true);
   }
 
-  /** The shell's address for a document at the current fragment: the fragment is the document's, not the last one's. */
+  /**
+   * The shell's address for a document with its query and fragment: `path` is
+   * the document's URL relative to the page root, written readably
+   * (`path=tool.html?scope=clients/vela/q3-board`), only `&`, `#`, `%`, `+` and
+   * spaces escaped. The fragment is the document's, not the last one's. spec R1.12d, R1.12g
+   */
   function shellAddress(path: string): string {
     const url = new URL(win.location.href);
-    if (path === ENTRY_DOCUMENT) url.searchParams.delete("path");
-    else url.searchParams.set("path", path);
-    return `${url.pathname}${url.search}${fragment}`;
+    url.searchParams.delete("path");
+    const query = config.documentQuery ?? "";
+    const value = path === ENTRY_DOCUMENT && !query ? "" : readable(`${path}${query}`);
+    const search = url.search ? `${url.search}${value ? `&path=${value}` : ""}` : value ? `?path=${value}` : "";
+    return `${url.pathname}${search}${fragment}`;
   }
 
   function historyState(): Record<string, string> {
-    return { [HISTORY_KEY]: config.documentPath, [HISTORY_FRAGMENT]: fragment };
+    return { [HISTORY_KEY]: config.documentPath, [HISTORY_FRAGMENT]: fragment, [HISTORY_QUERY]: config.documentQuery ?? "" };
   }
 
   interface DocumentSession {
@@ -300,19 +317,20 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     expiresAt: number;
     documentUrl: string;
     path: string;
+    query: string;
     stale: boolean;
     empty: boolean;
     deferredFiles: string[];
   }
 
   /** Exchanges the token for one bound to a document of the page at its current revision. */
-  async function documentSession(path: string): Promise<DocumentSession | string> {
+  async function documentSession(path: string, query = config.documentQuery ?? ""): Promise<DocumentSession | string> {
     const response = await request(config.documentSessionUrl, {
       method: "POST",
       credentials: "same-origin",
       cache: "no-store",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ actionToken: config.actionToken, path }),
+      body: JSON.stringify({ actionToken: config.actionToken, path, ...(query ? { query } : {}) }),
     });
     const body = (await response.json().catch(() => null)) as unknown;
     if (
@@ -329,7 +347,8 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       return (isRecord(body) && typeof body.message === "string" && body.message) || "That page could not be opened";
     }
     const deferredFiles = Array.isArray(body.deferredFiles) ? body.deferredFiles.filter((path): path is string => typeof path === "string") : [];
-    return { actionToken: body.actionToken, pageRevision: body.pageRevision, expiresAt: body.expiresAt, documentUrl: body.documentUrl, path: body.path, stale: body.stale === true, empty: body.empty === true, deferredFiles };
+    const answered = typeof body.query === "string" ? body.query : "";
+    return { actionToken: body.actionToken, pageRevision: body.pageRevision, expiresAt: body.expiresAt, documentUrl: body.documentUrl, path: body.path, query: answered, stale: body.stale === true, empty: body.empty === true, deferredFiles };
   }
 
   function applySession(session: DocumentSession): void {
@@ -338,6 +357,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     config.expiresAt = session.expiresAt;
     config.documentUrl = session.documentUrl;
     config.documentPath = session.path;
+    config.documentQuery = session.query;
     config.stale = session.stale;
     config.empty = session.empty;
     config.deferredFiles = session.deferredFiles;
@@ -345,10 +365,10 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   }
 
   /** A link to another document of the page: the frame is swapped and the address follows. */
-  async function openDocument(path: string, push = true, nextFragment = ""): Promise<boolean> {
-    if (!config.navigable || (path === config.documentPath && nextFragment === fragment)) return false;
+  async function openDocument(path: string, push = true, nextFragment = "", nextQuery = ""): Promise<boolean> {
+    if (!config.navigable || (path === config.documentPath && nextFragment === fragment && nextQuery === (config.documentQuery ?? ""))) return false;
     try {
-      const session = await documentSession(path);
+      const session = await documentSession(path, nextQuery);
       if (typeof session === "string") {
         view.setStatus(session, true);
         return false;
@@ -438,7 +458,10 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     win.addEventListener("popstate", (event) => {
       const state = event.state as unknown;
       const path = isRecord(state) && typeof state[HISTORY_KEY] === "string" ? state[HISTORY_KEY] : null;
-      if (path) void openDocument(path, false, isRecord(state) ? documentFragment(state[HISTORY_FRAGMENT]) : "");
+      if (path && isRecord(state)) {
+        const query = checkDocumentQuery(state[HISTORY_QUERY]);
+        void openDocument(path, false, documentFragment(state[HISTORY_FRAGMENT]), query.ok ? query.query : "");
+      }
     });
     // The reader's address changed only its fragment — a link to this page at another one, or the address
     // edited — which the browser does without loading the shell: the document is opened at it. An entry the
@@ -448,7 +471,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       if (isRecord(state) && typeof state[HISTORY_KEY] === "string") return;
       const next = documentFragment(win.location.hash);
       if (next === fragment) return;
-      void openDocument(config.documentPath, false, next).then((opened) => {
+      void openDocument(config.documentPath, false, next, config.documentQuery ?? "").then((opened) => {
         if (!opened) return;
         try {
           win.history.replaceState(historyState(), "", shellAddress(config.documentPath));
@@ -475,4 +498,9 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   frame.src = config.documentUrl + fragment;
   poller.start();
   return { poller, openDocument, refreshDocument, shownFrame: () => frame };
+}
+
+/** A document URL as an address shows it: escaped only where its own query would break the address's. */
+function readable(value: string): string {
+  return encodeURIComponent(value).replace(/%(2F|3F|3D|3A|2C|40|7E|21|27|28|29|2A|3B|24)/gi, (match) => decodeURIComponent(match));
 }

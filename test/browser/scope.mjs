@@ -118,7 +118,7 @@ await page.goto(SHELL);
 await page.waitForTimeout(500);
 await doc().click("#to-query");
 values = await settle("");
-ok("a query in a link is not carried (documented)", values.search === "no folder", values.search);
+ok("a query in a link is carried (1.9.0, D43)", values.search === "has folder", values.search);
 
 // 7a. Back and forward across a frame swap (review 1.8.0, finding 1): the document moves to another
 // fragment, then another document opens, then Back and Forward retrace every step.

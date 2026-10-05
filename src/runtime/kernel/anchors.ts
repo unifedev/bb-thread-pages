@@ -19,7 +19,7 @@ import { downloadName, isOwnFilePath } from "../../domain/own-files.ts";
  */
 export type AnchorDecision =
   | { kind: "default" }
-  | { kind: "document"; path: string; fragment: string }
+  | { kind: "document"; path: string; fragment: string; query: string }
   /** A link to a place in this document: `href="#…"`. */
   | { kind: "fragment"; fragment: string }
   | { kind: "file"; path: string; download: boolean; name: string | null }
@@ -62,7 +62,7 @@ export function decideAnchor(anchor: HTMLAnchorElement, documentUrl: string, sit
   if (siteRoot && target.href.startsWith(siteRoot)) {
     const path = pathWithin(target, siteRoot);
     if (path === null || !isOwnFilePath(path)) return { kind: "block" };
-    if (isDocumentPath(path) && !download) return { kind: "document", path, fragment: documentFragment(target.hash) };
+    if (isDocumentPath(path) && !download) return { kind: "document", path, fragment: documentFragment(target.hash), query: target.search };
     if (embedded) return { kind: "block" };
     return { kind: "file", path, download, name: download ? downloadName(anchor.getAttribute("download")) : null };
   }
@@ -87,8 +87,8 @@ function pathWithin(target: URL, siteRoot: string): string | null {
 }
 
 export interface AnchorHandlers {
-  /** `fragment`: the link's `#fragment`, or "". */
-  document(path: string, fragment: string): void;
+  /** `fragment`: the link's `#fragment`, or ""; `query`: its `?query`, or "". */
+  document(path: string, fragment: string, query: string): void;
   /** A place in this document: `#…`. */
   fragment(fragment: string): void;
   file(path: string, download: boolean, name: string | null): void;
@@ -116,7 +116,7 @@ export function installAnchorInterception(doc: Document, handlers: AnchorHandler
       // `return false`, or `preventDefault` in a listener, keep working. It is moved to below. spec R1.12f
       if (!decision || decision.kind === "default" || decision.kind === "fragment") return;
       event.preventDefault();
-      if (decision.kind === "document") handlers.document(decision.path, decision.fragment);
+      if (decision.kind === "document") handlers.document(decision.path, decision.fragment, decision.query);
       else if (decision.kind === "file") handlers.file(decision.path, decision.download, decision.name);
       else if (decision.kind === "external") handlers.external(decision.url, decision.label);
       else if (decision.kind === "handler") handlers.handler(decision.url);

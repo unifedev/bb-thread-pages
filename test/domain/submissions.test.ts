@@ -3,7 +3,7 @@ import { LIMITS } from "../../src/domain/limits.ts";
 import { createOutcomeMemory } from "../../src/domain/submissions/idempotency.ts";
 import { formatReplyMessage, formatSubmissionMessage } from "../../src/domain/submissions/message.ts";
 import { parseSubmission } from "../../src/domain/submissions/parse.ts";
-import { createRateLimiter } from "../../src/domain/rate-limit.ts";
+import { createPageBudget, createRateLimiter } from "../../src/domain/rate-limit.ts";
 import { isSafeRelativePath, isSafeUploadName, sanitizeUploadSuffix, uploadFileName } from "../../src/pages/layout.ts";
 import { ineligibleReason } from "../../src/domain/eligibility.ts";
 import { etagFor, ifNoneMatchMatches, revisionOf } from "../../src/domain/revision.ts";
@@ -119,6 +119,27 @@ describe("rate limiter", () => {
     expect(limiter.acquire("p", 61_000)).toBeNull();
     b!();
     expect(limiter.acquire("p", 61_000)).toBeTruthy();
+  });
+});
+
+describe("page budget", () => {
+  // R2.38a, D45
+  it("holds both the document's and the session's slot, and takes neither when one is spent", () => {
+    const budget = createPageBudget({ perMinute: 10, concurrent: 2 }, { perMinute: 100, concurrent: 3 });
+    const a1 = budget.acquire({ session: "s", document: "tool.html", scope: "a" }, 0);
+    const a2 = budget.acquire({ session: "s", document: "tool.html", scope: "a" }, 0);
+    // That document's concurrency is spent; another scope of the same document is not.
+    expect(budget.acquire({ session: "s", document: "tool.html", scope: "a" }, 0)).toBeNull();
+    const b1 = budget.acquire({ session: "s", document: "tool.html", scope: "b" }, 0);
+    expect(a1 && a2 && b1).toBeTruthy();
+    // The session's concurrency (3) is spent: an untouched document is refused, and charged nothing.
+    expect(budget.acquire({ session: "s", document: "index.html" }, 0)).toBeNull();
+    expect(budget.snapshot({ session: "s", document: "index.html" }).document).toBeNull();
+    expect(budget.snapshot({ session: "s", document: "tool.html", scope: "a" })).toEqual({ document: { accepted: 2, inFlight: 2 }, session: { accepted: 3, inFlight: 3 } });
+    a1!();
+    expect(budget.acquire({ session: "s", document: "index.html" }, 0)).toBeTruthy();
+    // Another session is apart.
+    expect(budget.acquire({ session: "t", document: "tool.html", scope: "a" }, 0)).toBeTruthy();
   });
 });
 

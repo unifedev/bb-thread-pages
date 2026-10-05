@@ -344,12 +344,14 @@ describe("anchors", () => {
   it("decides every kind of link: documents, own files, other sites, handlers, built files", () => {
     // A bare #… is this document's own place, never the page folder the <base> would resolve it to. R1.12f
     expect(decideAnchor(anchor("#section"), documentUrl, base)).toEqual({ kind: "fragment", fragment: "#section" });
-    expect(decideAnchor(anchor("other.html"), documentUrl, base)).toEqual({ kind: "document", path: "other.html", fragment: "" });
-    expect(decideAnchor(anchor("../index.html"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "index.html", fragment: "" });
+    expect(decideAnchor(anchor("other.html"), documentUrl, base)).toEqual({ kind: "document", path: "other.html", fragment: "", query: "" });
+    expect(decideAnchor(anchor("../index.html"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "index.html", fragment: "", query: "" });
     // The link's fragment goes with it. R1.12f
-    expect(decideAnchor(anchor("next.html#part"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "guides/next.html", fragment: "#part" });
-    expect(decideAnchor(anchor("tool.html#clients/vela/q3-board"), documentUrl, base)).toEqual({ kind: "document", path: "tool.html", fragment: "#clients/vela/q3-board" });
-    expect(decideAnchor(anchor("tool.html#"), documentUrl, base)).toEqual({ kind: "document", path: "tool.html", fragment: "" });
+    expect(decideAnchor(anchor("next.html#part"), documentUrl, `${base}guides/`, base)).toEqual({ kind: "document", path: "guides/next.html", fragment: "#part", query: "" });
+    expect(decideAnchor(anchor("tool.html#clients/vela/q3-board"), documentUrl, base)).toEqual({ kind: "document", path: "tool.html", fragment: "#clients/vela/q3-board", query: "" });
+    // And its query: the document's own parameters. R1.12g
+    expect(decideAnchor(anchor("tool.html?scope=clients/vela/q3-board#card-1"), documentUrl, base)).toEqual({ kind: "document", path: "tool.html", fragment: "#card-1", query: "?scope=clients/vela/q3-board" });
+    expect(decideAnchor(anchor("tool.html#"), documentUrl, base)).toEqual({ kind: "document", path: "tool.html", fragment: "", query: "" });
     // Own files that are not documents: the shell opens or downloads them. D33
     expect(decideAnchor(anchor("data.json"), documentUrl, base)).toEqual({ kind: "file", path: "data.json", download: false, name: null });
     expect(decideAnchor(anchor("uploads/report.html"), documentUrl, base)).toEqual({ kind: "file", path: "uploads/report.html", download: false, name: null });
@@ -366,7 +368,7 @@ describe("anchors", () => {
     expect(decideAnchor(anchor("../thr_b/thread-storage/files/secret.pdf"), documentUrl, base)).toEqual({ kind: "block" });
     // Inside an embed the shell is not this page's: its own files are refused, visibly in the guide. R4.50
     expect(decideAnchor(anchor("data.json"), documentUrl, base, base, true)).toEqual({ kind: "block" });
-    expect(decideAnchor(anchor("other.html"), documentUrl, base, base, true)).toEqual({ kind: "document", path: "other.html", fragment: "" });
+    expect(decideAnchor(anchor("other.html"), documentUrl, base, base, true)).toEqual({ kind: "document", path: "other.html", fragment: "", query: "" });
     // Other sites: through the confirmed capability, whatever the target; the page's own popups stay sandboxed. D34 (option D)
     expect(decideAnchor(anchor("https://github.com/x/y", "Repo"), documentUrl, base)).toEqual({ kind: "external", url: "https://github.com/x/y", label: "Repo" });
     for (const target of ["_self", "_top", "_blank", "docs"]) {
@@ -552,5 +554,39 @@ describe("kernel fragments", () => {
     win.location.hash = "#clients/other";
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(posted.messages).toContainEqual({ kind: "thread-page:fragment", fragment: "#clients/other" });
+  });
+});
+
+// A document's query: links carry it; the same path with the same query is this document. R1.12g, D43
+describe("kernel queries", () => {
+  function installAt(url: string, html: string) {
+    const dom = new JSDOM(`<!doctype html><html>${html}</html>`, { url, pretendToBeVisual: true });
+    const win = dom.window as unknown as PageWindow;
+    window = win;
+    document = win.document;
+    const posted: Posted = { messages: [] };
+    const handle = installKernel(win, { pageRevision: REV, stale: false, siteRoot: "https://bb.example/api/v1/threads/thr_a/thread-storage/files/", documentPath: "tool.html" });
+    handle.connect({ postMessage: (message: unknown) => posted.messages.push(message), start() {} });
+    return { posted, win };
+  }
+  const BODY = `<head><base href="https://bb.example/api/v1/threads/thr_a/thread-storage/files/"></head><body>
+    <a id="same" href="tool.html?scope=a&view=grid#card-2">Same</a>
+    <a id="other" href="tool.html?scope=b#card-2">Other</a>
+    <a id="none" href="tool.html#card-3">None</a></body>`;
+  const click = (win: PageWindow, id: string) => win.document.getElementById(id)!.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+
+  it("moves within itself for its own path and query, and opens another document for another query", async () => {
+    const { posted, win } = installAt("https://bb.example/api/v1/plugins/thread-pages/http/document?session=thr_a&path=tool.html&scope=a&view=grid", BODY);
+    click(win, "same");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(win.location.hash).toBe("#card-2");
+    expect(win.location.search).toBe("?session=thr_a&path=tool.html&scope=a&view=grid");
+    click(win, "other");
+    click(win, "none");
+    const opened = posted.messages.filter((entry) => (entry as { kind?: string }).kind === "thread-page:open-document");
+    expect(opened).toEqual([
+      { kind: "thread-page:open-document", path: "tool.html", fragment: "#card-2", query: "?scope=b" },
+      { kind: "thread-page:open-document", path: "tool.html", fragment: "#card-3" },
+    ]);
   });
 });

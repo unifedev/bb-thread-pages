@@ -1,5 +1,5 @@
 import type { CapabilityRegistry } from "../domain/capabilities/registry.ts";
-import type { RateLimiter } from "../domain/rate-limit.ts";
+import type { PageBudget } from "../domain/rate-limit.ts";
 import type { OutcomeMemory } from "../domain/submissions/idempotency.ts";
 import type { LiveSettings } from "../config/settings.ts";
 import type { SessionHost } from "../host/contract.ts";
@@ -23,7 +23,7 @@ export interface ServingContext {
   readonly registry: CapabilityRegistry;
   /** Capabilities other extensions contribute. spec 05 §Contributed capabilities */
   readonly contributions: Contributions;
-  readonly rate: RateLimiter;
+  readonly rate: PageBudget;
   readonly submissions: OutcomeMemory<{ status: number; body: Record<string, unknown> }>;
   readonly replies: OutcomeMemory<{ delivery: "started" | "queued" | "steered" }>;
   readonly selections: SelectionStore;

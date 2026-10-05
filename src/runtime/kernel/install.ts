@@ -1,3 +1,4 @@
+import { RESERVED_QUERY_NAMES } from "../../domain/document-path.ts";
 import { HANDSHAKE_VERSION, isRecord, type KernelConfig, type KernelMessage, type ShellMessage } from "../shared/protocol.ts";
 import { installAnchorInterception } from "./anchors.ts";
 import { installApi } from "./api.ts";
@@ -141,6 +142,16 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
    * embed the fragment is not carried: the link only scrolls. spec R1.12f
    */
   const URLOf = win.URL;
+  const ParamsOf = win.URLSearchParams;
+  /** The document's own query: its URL's, less the host's parameters. spec R1.12g */
+  function ownQuery(): string {
+    const params = new ParamsOf(win.location.search);
+    for (const name of RESERVED_QUERY_NAMES) params.delete(name);
+    return params.toString();
+  }
+  function sameQuery(query: string, own: string): boolean {
+    return new ParamsOf(query).toString() === own;
+  }
   let moving: string | null = null;
   function moveToFragment(fragment: string): void {
     if (config.embedded) {
@@ -217,13 +228,14 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   installAnchorInterception(
     doc,
     {
-      document: (path, fragment) => {
-        // The same document at another fragment is a fragment navigation, as on any site. spec R1.12f
-        if (fragment && path === config.documentPath) {
+      document: (path, fragment, query) => {
+        // The same document — path and query — at another fragment is a fragment navigation, as on any
+        // site; another query is another load. spec R1.12f, R1.12g
+        if (fragment && path === config.documentPath && sameQuery(query, ownQuery())) {
           moveToFragment(fragment);
           return;
         }
-        post({ kind: "thread-page:open-document", path, ...(fragment ? { fragment } : {}) });
+        post({ kind: "thread-page:open-document", path, ...(fragment ? { fragment } : {}), ...(query && query !== "?" ? { query } : {}) });
       },
       fragment: (fragment) => moveToFragment(fragment),
       file: (path, download, name) => {

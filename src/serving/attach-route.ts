@@ -254,7 +254,7 @@ export function attachRoute(serving: ServingContext) {
         throw new PageError("invalid_request", "Invalid attachment envelope");
       }
       const token = requireActionToken(serving, envelope.actionToken);
-      release = acquireRate(serving, token.session);
+      release = acquireRate(serving, token);
       const request = decodeBridgeRequest(envelope.request);
       if (!FILE_METHODS.has(request.method)) throw new PageError("invalid_request", "Only sessions.start and sessions.send carry files");
       const key = heldKey(token.session, request.id);

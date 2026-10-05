@@ -6,7 +6,7 @@ import { mintActionToken } from "../domain/tokens/action-token.ts";
 import type { ServingContext } from "./context.ts";
 import { describeGrants } from "./grants.ts";
 import { homeUrl } from "./context.ts";
-import { documentPathFrom } from "./document-access.ts";
+import { documentAddressFrom } from "./document-access.ts";
 import { EMPTY_REVISION, loadUnlessUnwritten } from "./empty-page.ts";
 import { failureResponse, shellHeaders } from "./responses.ts";
 import { renderShell } from "./shell-html.ts";
@@ -23,7 +23,7 @@ export function shellRoute(serving: ServingContext) {
   return async (context: Context): Promise<Response> => {
     try {
       const id = sessionIdFrom(context);
-      const path = documentPathFrom(context);
+      const { path, query } = documentAddressFrom(context);
       const session = await eligibleSession(serving, id);
       const page = path ? await serving.pages.load(id, path) : await loadUnlessUnwritten(serving, id);
       const revision = page?.revision ?? EMPTY_REVISION;
@@ -42,8 +42,9 @@ export function shellRoute(serving: ServingContext) {
           actionToken: token,
           pageRevision: revision,
           expiresAt: payload.exp,
-          documentUrl: serving.site.documentUrl(id, path),
+          documentUrl: serving.site.documentUrl(id, path, query),
           documentPath: path ?? ENTRY_DOCUMENT,
+          documentQuery: query,
           submitUrl: `${serving.routeBase}/submit`,
           uploadUrl: `${serving.routeBase}/upload`,
           bridgeUrl: `${serving.routeBase}/bridge`,

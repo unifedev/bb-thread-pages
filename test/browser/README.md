@@ -119,3 +119,16 @@ its fragment, and `loader.html`, which swaps an app's markup in.
 Results of 5 October 2026: 34 of 34 in Chromium, Firefox and WebKit, after
 the review's fixes (back and forward across a document switch, bare `#…`
 links, `#…` links the page handles itself). The reviewed build `5bea57e` fails three of them.
+
+## A document's query, a reload inside the page, the budget (1.9.0, D43–D45)
+
+`params.mjs` uses the same stand-in (`ECHO=1`, `pages/scope`): `app.html`
+takes its folder from its query and routes with its fragment, reloads itself
+from inside, and with `&burst=60` makes sixty calls at load. Section 8 waits
+a minute for a fresh budget, then opens seven of them at once.
+
+    ECHO=1 SESSION=thr_scope node test/browser/serve.ts test/browser/pages/scope 8796
+    PLAYWRIGHT=<…>/playwright/index.mjs ENGINE=chromium BASE=http://localhost:8796 node test/browser/params.mjs
+
+Results of 6 October 2026: 14 of 14 in Chromium, Firefox and WebKit; 1.8.0
+fails 13 of them, since it refuses the address form outright.

@@ -174,7 +174,7 @@ describe("POST /transcribe (R3.34, R5.70, R5.72, R8.35)", () => {
     const offline = await post("/transcribe", { actionToken: tokenFor(), content: b64("x"), mimeType: "audio/webm" });
     expect(offline.body.ok).toBe(false);
     fixture.state.offline = false;
-    for (let index = 0; index < LIMITS.ratePerMinute; index += 1) fixture.serving.rate.acquire("thr_a", fixture.clock.now)?.();
+    for (let index = 0; index < LIMITS.ratePerMinute; index += 1) fixture.serving.rate.acquire({ session: "thr_a", document: "index.html" }, fixture.clock.now)?.();
     expect((await post("/transcribe", { actionToken: tokenFor(), content: b64("x"), mimeType: "audio/webm" })).body.code).toBe("rate_limited");
   });
 });

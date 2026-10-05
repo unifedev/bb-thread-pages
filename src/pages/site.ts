@@ -20,7 +20,8 @@ import { directoryOf } from "../domain/document-path.ts";
 export interface SiteStrategy {
   readonly name: "core-storage" | "plugin-prefix";
   /** Origin-relative URL the shell loads into the iframe. */
-  documentUrl(session: string, path?: string | null): string;
+  /** `query`: the document's own, "" or `?…`, already checked; it follows the host's parameters. spec R1.12g */
+  documentUrl(session: string, path?: string | null, query?: string): string;
   /** Same-origin `<base href>` to inject, or null when the document URL is path-shaped. */
   baseHref(session: string, path?: string | null): string | null;
   /** The URL every file of the page sits under, so the kernel can tell the page's own documents from other links. */
@@ -34,7 +35,7 @@ function encodePath(path: string): string {
 export function createCoreStorageSite(routeBase: string, storageFilesBase: (session: string) => string): SiteStrategy {
   return {
     name: "core-storage",
-    documentUrl: (session, path) => `${routeBase}/document?session=${encodeURIComponent(session)}${path ? `&path=${encodeURIComponent(path)}` : ""}`,
+    documentUrl: (session, path, query = "") => `${routeBase}/document?session=${encodeURIComponent(session)}${path ? `&path=${encodeURIComponent(path)}` : ""}${query ? `&${query.slice(1)}` : ""}`,
     baseHref: (session, path) => `${storageFilesBase(session)}${encodePath(directoryOf(path))}`,
     siteRoot: (session) => storageFilesBase(session),
   };
@@ -43,7 +44,7 @@ export function createCoreStorageSite(routeBase: string, storageFilesBase: (sess
 export function createPluginPrefixSite(routeBase: string): SiteStrategy {
   return {
     name: "plugin-prefix",
-    documentUrl: (session, path) => `${routeBase}/page/${encodeURIComponent(session)}/${path ? encodePath(path) : ""}`,
+    documentUrl: (session, path, query = "") => `${routeBase}/page/${encodeURIComponent(session)}/${path ? encodePath(path) : ""}${query}`,
     baseHref: () => null,
     siteRoot: (session) => `${routeBase}/page/${encodeURIComponent(session)}/`,
   };

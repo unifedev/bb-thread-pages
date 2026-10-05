@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>An app that routes with its fragment</title>
+<script>
+  // The folder comes from the document's query; the fragment is the app's own route. D43
+  const params = new URLSearchParams(location.search);
+  try { threadPage.setScope(params.get("scope") || null); } catch (error) { /* not a folder */ }
+  const show = (id, value) => { document.getElementById(id).textContent = typeof value === "string" ? value : JSON.stringify(value); };
+  async function report() {
+    show("route", location.hash);
+    show("scope", threadPage.scope);
+    try { show("echo", await threadPage.invoke("echo.caller", {})); } catch (error) { show("echo", `error ${error.code}`); }
+  }
+  // ?burst=N: N calls at once on load, as a tool loading its data does; how many the budget refused. D45
+  async function burst(count) {
+    let refused = 0;
+    let failed = 0;
+    await Promise.all(Array.from({ length: count }, (_, index) =>
+      new Promise((resolve) => setTimeout(resolve, index * 5)).then(() => threadPage.invoke("echo.caller", {})).catch((error) => {
+        if (error.code === "rate_limited") refused += 1;
+        else failed += 1;
+      })));
+    show("burst", { refused, failed });
+  }
+  addEventListener("hashchange", report);
+  addEventListener("DOMContentLoaded", () => {
+    show("loads", performance.getEntriesByType("navigation")[0]?.type ?? "navigate");
+    report();
+    const count = Number(params.get("burst") || 0);
+    if (count > 0) burst(count);
+  });
+</script></head>
+<body>
+<dl>
+  <dt>route</dt><dd id="route"></dd>
+  <dt>scope</dt><dd id="scope"></dd>
+  <dt>echo</dt><dd id="echo"></dd>
+  <dt>burst</dt><dd id="burst"></dd>
+  <dt>load type</dt><dd id="loads"></dd>
+</dl>
+<p><a id="card-2" href="#card-2">Card 2</a> <a id="deck" href="app.html?scope=decks/q3-pitch#card-1">Deck app</a> <a id="index" href="index.html">Index</a></p>
+<button id="reload" type="button" onclick="location.reload()">Reload from inside</button>
+</body></html>
