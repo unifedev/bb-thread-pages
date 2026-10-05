@@ -859,7 +859,10 @@ the reader's address shows it, and reload, back and forward return to it.
 This is how one document takes a parameter. A link to the same document at
 another fragment, or a bare \`<a href="#clients/x">\`, does not reload it:
 \`hashchange\` fires, as on any site, the address follows, and Back returns to
-where it was, also after the reader has opened another document. To change the
+where it was, also after the reader has opened another document. To handle a
+\`#…\` link yourself (a menu, a tab), cancel it with \`preventDefault\` (or
+\`return false\`) in a handler on the link or on \`document\`, not on \`window\`,
+where the runtime's own listener runs first. To change the
 fragment from script, set \`location.hash\` (the address follows; its Back step
 lasts only while this document stays open) or click such a link with
 \`link.click()\` (a Back step that lasts). Never use \`history.pushState\` or

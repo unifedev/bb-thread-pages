@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.8.0 — 2026-10-05 — a document scopes its calls to a folder; fragments reach documents
+## 1.8.0 — 2026-10-06 — a document scopes its calls to a folder; fragments reach documents
 
 Implements spec 1.6 (`bartsoj/bb-thread-pages`, DECISIONS D41–D42), for the
 owner's ruling *one interface, one agent*: a session's agent works from its
@@ -76,7 +76,7 @@ session's page. Existing pages and contributors keep working;
 
 - 416 unit tests (A139–A147 as unit, route and runtime tests);
   `kernel-hostile.mjs` 51 of 51 in the three engines.
-- Reviewed before release. The first review's findings on back and forward
+- Reviewed before release, three passes; the last found it safe to release. The first review's findings on back and forward
   (1), the History API (2) and bare `#…` links (3) are fixed here, and the
   second review's on links a page handles itself; findings 4 and 5 are left
   for later (DECISIONS D41).
