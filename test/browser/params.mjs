@@ -135,6 +135,23 @@ ok("a raw & in a typed address keeps every parameter", typed.get("scope") === "c
 await page.waitForTimeout(300);
 ok("…and the address is written back inside path", address().searchParams.get("path") === "app.html?scope=clients/vela/q3-board&view=grid" && !address().searchParams.has("view"), page.url());
 
+// 12. The swap-in race (the 1.9.0 short look, finding 1; 1.8.0 is affected): a new revision of the open document
+// is loaded behind the shown one and, right after its runtime says ready, location.replace()s its frame to a
+// file with no runtime. That file must get no channel and answer nothing; the shell gives up after a few reloads.
+const RACE_FIRST = `<!doctype html><html><head><meta charset="utf-8"><title>race: first revision</title><script>addEventListener("DOMContentLoaded", async () => { try { document.getElementById("echo").textContent = JSON.stringify(await threadPage.invoke("echo.caller", {})); } catch (error) { document.getElementById("echo").textContent = "error " + error.code; } });</script></head><body><p id="echo"></p></body></html>`;
+await fetch(`${BASE}/__file?path=race.html`, { method: "POST", body: RACE_FIRST });
+await page.goto(`${SHELL}&path=race.html`);
+for (let i = 0; i < 50 && !(await docOf(page)?.evaluate(() => document.getElementById("echo")?.textContent).catch(() => "")); i += 1) await page.waitForTimeout(100);
+const raceBefore = await sends();
+const RACE = `<!doctype html><html><head><meta charset="utf-8"><title>race: second revision</title><script>location.replace("foreign/evil.html");</script></head><body>second</body></html>`;
+await fetch(`${BASE}/__file?path=race.html`, { method: "POST", body: RACE });
+await page.waitForTimeout(20_000);
+const titles = await Promise.all(page.frames().map((frame) => frame.evaluate(() => document.title).catch(() => "")));
+ok("a revision that replaces itself with a foreign file right after ready hands it no channel", !titles.includes("foreign: got the channel"), JSON.stringify(titles));
+ok("…and the session receives nothing", (await sends()) === raceBefore, `${raceBefore} → ${await sends()}`);
+const status = await page.locator("[data-shell-status]").textContent();
+ok("…and the shell stops reloading it after a few tries, and says so", (status ?? "").includes("keeps leaving its own document"), status ?? "");
+
 // 8. Seven tools load at once in one session, 60 calls each (D45): 420, under the session's 600 a minute.
 await new Promise((resolve) => setTimeout(resolve, 61_000)); // a fresh minute for the session's budget
 const tabs = await Promise.all(Array.from({ length: 7 }, () => context.newPage()));

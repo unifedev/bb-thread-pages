@@ -603,3 +603,15 @@ describe("kernel queries", () => {
     void opened;
   });
 });
+
+// After each load of its frame the shell asks the runtime, over its port, whether it is still there. D44
+describe("kernel handshake", () => {
+  it("answers the shell's ping with its nonce, over its port", () => {
+    const win = fresh("<head></head><body></body>");
+    const sent: unknown[] = [];
+    const handle = installKernel(win, { pageRevision: REV, stale: false });
+    handle.connect({ postMessage: (message: unknown) => sent.push(message), start() {} });
+    handle.deliver({ kind: "thread-page:ping", nonce: 7 });
+    expect(sent).toContainEqual({ kind: "thread-page:pong", nonce: 7 });
+  });
+});

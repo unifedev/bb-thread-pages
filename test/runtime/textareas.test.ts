@@ -378,12 +378,9 @@ describe("dictation inside an embed (R4.51a, A131)", () => {
     manager.embed(win.document.getElementById("box"), { sessionId: "thr_b" });
     await new Promise((resolve) => setTimeout(resolve, 20));
     const frame = win.document.querySelector("iframe")!;
-    let port: MessagePort | null = null;
-    const spy = vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation(((message: unknown, _origin: unknown, transfer?: Transferable[]) => {
-      if ((message as { kind?: string }).kind === "thread-page:connect" && transfer?.[0]) port = transfer[0] as MessagePort;
-    }) as never);
-    win.dispatchEvent(new win.MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "null", source: frame.contentWindow }));
-    spy.mockRestore();
+    const channel = new MessageChannel();
+    win.dispatchEvent(new win.MessageEvent("message", { data: { kind: "thread-page:ready", version: 2 }, origin: "null", source: frame.contentWindow, ports: [channel.port2] as never }));
+    const port: MessagePort | null = channel.port1;
     const received: Record<string, unknown>[] = [];
     port!.onmessage = (event) => received.push(event.data as Record<string, unknown>);
     port!.postMessage({ kind: "thread-page:record", id: "tp-record-1", purpose: "dictate", prompt: "so far" });

@@ -55,18 +55,18 @@ function host(): Host {
   return { invoke, pages, dirty: [], calls: (method) => made.filter((entry) => entry.method === method).map((entry) => entry.params) };
 }
 
-/** Plays the embedded document's kernel: reports ready, takes the port, and talks over it. */
+/** Plays the embedded document's kernel: says ready with a port of its own, and talks over the other end. */
 async function connect(win: Win, frame: HTMLIFrameElement): Promise<{ port: MessagePort; received: unknown[] }> {
   const received: unknown[] = [];
-  let port: MessagePort | null = null;
-  const spy = vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation(((message: unknown, _origin: unknown, transfer?: Transferable[]) => {
-    if ((message as { kind?: string }).kind === "thread-page:connect" && transfer?.[0]) port = transfer[0] as MessagePort;
-  }) as never);
-  win.dispatchEvent(new win.MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "null", source: frame.contentWindow }));
-  spy.mockRestore();
-  expect(port, "the manager hands the embed one port").not.toBeNull();
-  port!.onmessage = (event) => received.push(event.data);
-  return { port: port!, received };
+  const channel = new MessageChannel();
+  const posted = vi.spyOn(frame.contentWindow!, "postMessage");
+  win.dispatchEvent(new win.MessageEvent("message", { data: { kind: "thread-page:ready", version: 2 }, origin: "null", source: frame.contentWindow, ports: [channel.port2] as never }));
+  // The manager posts nothing into the frame: the port came from the embedded runtime. D44
+  expect(posted).not.toHaveBeenCalled();
+  posted.mockRestore();
+  const port = channel.port1;
+  port.onmessage = (event) => received.push(event.data);
+  return { port, received };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 15));

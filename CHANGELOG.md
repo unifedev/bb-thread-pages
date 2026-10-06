@@ -6,6 +6,31 @@ Implements spec 1.7 (`bartsoj/bb-thread-pages`, DECISIONS D43–D45), from the
 templates' test 10 on 1.8.0 with the Syns plugin 0.5.0. Existing pages keep
 working; `window.threadPage.version` and the bridge protocol stay `1`.
 
+### Security: the shell no longer hands its channel to whatever is in the frame (D44, X49)
+
+- **Released 1.8.x is affected.** The shell posted its port into the page's
+  frame, to whatever document was in it at that moment. A new revision of a
+  page, loaded behind the shown one, could `location.replace()` its frame to an
+  HTML file with no runtime right after its runtime said ready; the shell then
+  handed that file the channel, and it answered the session as the reader,
+  with no action of theirs (measured on 1.8.0 in Chromium, Firefox and WebKit
+  by the 1.9.0 review). Update to 1.9.0.
+- The handshake is reversed: the page's runtime makes the channel itself and
+  hands its port to the shell inside its first `ready`, before any page script
+  runs. The shell takes a port only from the first `ready` of a frame it
+  loaded itself and never posts a port into a frame; a refreshed document's
+  port is kept and heard from when it is shown. A port a document made dies
+  with it, so nothing navigated into its frame later can use it.
+- After every load of a frame whose runtime handed over a port, the shell
+  pings that runtime over its port. A document that left its frame — swapped
+  out by a page, even before it finished loading — cannot answer, since its
+  port died with it, and the shell replaces it with the open document in a
+  fresh frame; a page doing this again and again is stopped
+  after three reloads in a row that never answered, with a line in the
+  status that stays until a document of the page answers again.
+- The handshake's version is 2: a page's tab left open across the update
+  shows nothing until it is reloaded.
+
 ### A document's query is carried (D43)
 
 - A link `<a href="tool.html?scope=clients/vela/q3-board#card-1">` opens
@@ -39,9 +64,7 @@ working; `window.threadPage.version` and the bridge protocol stay `1`.
   handshake only once per frame. Now, when the frame it shows reports ready
   for a load the shell did not make, it connects nothing and loads the open
   document again, at its query and fragment, into a fresh frame, connected as
-  any load. So a reload inside the page comes back working, and an HTML file
-  with no runtime that a page navigates its frame to — which the review found
-  could otherwise take the channel and answer the session — gets nothing.
+  any load. So a reload inside the page comes back working.
 
 ### The request budget is per document and scope, under a session cap (D45)
 
@@ -56,14 +79,19 @@ working; `window.threadPage.version` and the bridge protocol stay `1`.
 
 ### Verified (before re-review)
 
-- 425 unit tests (A148–A153 as unit, route and runtime tests).
-- `test/browser/params.mjs`: 21 of 21 in Chromium, Firefox and WebKit — the
+- 427 unit tests (A148–A153 as unit, route and runtime tests).
+- `test/browser/params.mjs`: 24 of 24 in Chromium, Firefox and WebKit — the
   query on open, links, the app's own routes, reload, back and forward;
-  `location.reload()` twice; a frame navigated to a file with no runtime;
-  query-only links and links built from `location.search`; a raw `&` in the
-  address; seven tools of one session loading at once.
+  `location.reload()` twice; a frame navigated to a file with no runtime; the
+  swap-in race (a new revision that `location.replace()`s itself to such a
+  file right after its ready); query-only links and links built from
+  `location.search`; a raw `&` in the address; seven tools of one session
+  loading at once. The race leaks on released 1.8.0 (the file gets the channel
+  in all three engines) and on the first 1.9.0 fix `bfedbc8`.
 - `scope.mjs` 34 of 34 (its 1.8 check that a link's query is not carried now
-  checks that it is) and `kernel-hostile.mjs` 51 of 51, in the three engines.
+  checks that it is), `kernel-hostile.mjs` 51 of 51 (its harness plays the
+  new handshake), `voice.mjs` 53 of 53, and `media-links.mjs` 26 of 26 (25 in
+  WebKit: the third-party Vimeo error, as at 1.8.0), in the three engines.
 
 ## 1.8.0 — 2026-10-06 — a document scopes its calls to a folder; fragments reach documents
 

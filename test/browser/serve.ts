@@ -108,6 +108,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     response.end(JSON.stringify({ ...counts, calls, logs: state.logs.slice(-40) }));
     return;
   }
+  // Publishes a new revision of one file of the page while it is open: POST /__file?path=<path>, the body its content.
+  if (url.pathname === "/__file" && request.method === "POST") {
+    const path = url.searchParams.get("path") ?? "";
+    state.files.set(fileKey(SESSION, path), await body(request));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true }));
+    return;
+  }
   // Spec 1.5 switches for the voice pass: voice on or off, how transcription answers, which attachment fails.
   if (url.pathname === "/__set") {
     const voice = url.searchParams.get("voice");

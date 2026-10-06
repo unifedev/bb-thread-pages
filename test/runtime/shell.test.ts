@@ -65,6 +65,13 @@ function relayWith(fetchImpl: typeof fetch, extras: Partial<Parameters<typeof cr
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** Plays a frame's runtime: says ready with a port of its own, as the kernel does, and keeps the other end. */
+function readyFrom(source: Window | null, extra: Record<string, unknown> = {}): MessagePort {
+  const channel = new MessageChannel();
+  window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 2, ...extra }, origin: "null", source, ports: [channel.port2] }));
+  return channel.port1;
+}
+
 describe("shell relay", () => {
   it("rejects malformed or foreign requests before they reach the host", async () => {
     const fetchImpl = vi.fn();
@@ -413,12 +420,8 @@ describe("shell documents", () => {
     expect(await shell.openDocument("other.html", true, "#x")).toBe(false);
 
     // The document changes its own fragment: the address follows, with no history entry.
-    const ports: MessagePort[] = [];
     const frame = shell.shownFrame();
-    vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation(((_message: unknown, _origin: unknown, transfer?: Transferable[]) => {
-      if (transfer?.[0]) ports.push(transfer[0] as MessagePort);
-    }) as never);
-    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "null", source: frame.contentWindow }));
+    const ports = [readyFrom(frame.contentWindow)];
     const length = window.history.length;
     ports[0]!.postMessage({ kind: "thread-page:fragment", fragment: "#y" });
     await vi.waitFor(() => expect(window.location.hash).toBe("#y"));
@@ -474,9 +477,9 @@ describe("shell documents", () => {
     window.history.replaceState(null, "", "/page?session=thr_a");
   });
 
-  // A ready the shell did not load for — location.reload(), or anything a page navigated its frame to — gets
-  // no channel: the shell loads its own document again into a fresh frame. spec R2.18d, D44
-  it("answers an unexpected ready with nothing but a fresh frame of its own document", async () => {
+  // The runtime hands over its own port in its first ready; nothing is ever posted into a frame. A ready
+  // for a load the shell did not make gets no channel: the shell loads its own document again. R2.18d, D44
+  it("takes a port only from the first ready of a frame it loaded, and answers any other with a fresh frame", async () => {
     const { installShell } = await import("../../src/runtime/shell/install.ts");
     window.history.replaceState(null, "", "/page?session=thr_a#route");
     const elements = chrome();
@@ -490,30 +493,54 @@ describe("shell documents", () => {
     });
     const shell = installShell(window, { ...config }, elements, fetchImpl as never);
     const first = shell.shownFrame();
-    const connects: unknown[] = [];
-    vi.spyOn(first.contentWindow!, "postMessage").mockImplementation(((message: unknown) => connects.push(message)) as never);
-    const ready = (source: Window | null) => window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1, revision: REV }, origin: "null", source }));
-    ready(first.contentWindow);
-    expect(connects).toHaveLength(1);
-    // The frame reports ready again: no second channel for whatever is in it now.
-    ready(first.contentWindow);
-    ready(first.contentWindow);
+    const posted = vi.spyOn(first.contentWindow!, "postMessage");
+    // A ready without a port is not the runtime's: nothing happens.
+    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 2 }, origin: "null", source: first.contentWindow }));
+    const runtime = readyFrom(first.contentWindow, { revision: REV });
+    const heard: unknown[] = [];
+    runtime.onmessage = (event) => heard.push(event.data);
+    await vi.waitFor(() => expect(heard).toContainEqual({ kind: "thread-page:source-state", stale: false }));
+    expect(posted).not.toHaveBeenCalled();
+    // Another ready from that frame — a reload, or a file the page navigated to — gets no channel.
+    readyFrom(first.contentWindow);
+    readyFrom(first.contentWindow);
     await vi.waitFor(() => expect(shell.shownFrame()).not.toBe(first));
-    expect(connects).toHaveLength(1);
     expect(exchanges).toHaveLength(1);
+    expect(posted).not.toHaveBeenCalled();
     const fresh = shell.shownFrame();
     expect(fresh.getAttribute("src")).toBe("/document?session=thr_a#route");
-    // The fresh frame the shell made is connected as any load is.
-    const freshConnects: unknown[] = [];
-    vi.spyOn(fresh.contentWindow!, "postMessage").mockImplementation(((message: unknown) => freshConnects.push(message)) as never);
-    ready(fresh.contentWindow);
-    expect(freshConnects.filter((message) => (message as { kind?: string }).kind === "thread-page:connect")).toHaveLength(1);
-    // Nobody else's ready is answered.
-    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "https://evil.example", source: fresh.contentWindow }));
-    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "null", source: window }));
-    expect(freshConnects.filter((message) => (message as { kind?: string }).kind === "thread-page:connect")).toHaveLength(1);
+    const freshRuntime = readyFrom(fresh.contentWindow);
+    const freshHeard: unknown[] = [];
+    freshRuntime.onmessage = (event) => freshHeard.push(event.data);
+    await vi.waitFor(() => expect(freshHeard).toContainEqual({ kind: "thread-page:source-state", stale: false }));
+    // Nobody else's ready is taken.
+    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 2 }, origin: "https://evil.example", source: fresh.contentWindow, ports: [new MessageChannel().port2] }));
+    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 2 }, origin: "null", source: window, ports: [new MessageChannel().port2] }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(exchanges).toHaveLength(1);
+    expect(shell.shownFrame()).toBe(fresh);
     window.history.replaceState(null, "", "/page?session=thr_a");
+  });
+
+  // A page that leaves its own document again and again is stopped, with a line in the status. D44
+  it("stops reloading a page that keeps navigating away, and says so", async () => {
+    const { installShell } = await import("../../src/runtime/shell/install.ts");
+    const elements = chrome();
+    const fetchImpl = vi.fn(async (url: string) =>
+      url === "/document-session"
+        ? jsonResponse({ ok: true, actionToken: "tok2", pageRevision: REV, expiresAt: Date.now() + 3_600_000, documentUrl: "/document?session=thr_a", path: "index.html", query: "", stale: false, empty: false })
+        : new Response(null, { status: 304, headers: { etag: `"${REV}"` } }),
+    );
+    const shell = installShell(window, { ...config }, elements, fetchImpl as never);
+    for (let round = 0; round < 6; round += 1) {
+      const frame = shell.shownFrame();
+      readyFrom(frame.contentWindow);
+      readyFrom(frame.contentWindow);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const exchanges = fetchImpl.mock.calls.filter(([url]) => url === "/document-session").length;
+    expect(exchanges).toBe(3);
+    expect(elements.status.textContent).toContain("keeps leaving its own document");
   });
 
   it("does nothing on the built-in home, and says so when a document cannot open", async () => {
@@ -544,18 +571,20 @@ describe("shell documents", () => {
     const local: ShellConfig = { ...config };
     const fetchImpl = refreshFetch();
     const shell = installShell(window, local, elements, fetchImpl as never);
+    // The shell makes its first frame itself, from the one in its markup.
+    const shownAtStart = shell.shownFrame();
     const historyLength = window.history.length;
     const address = window.location.href;
     const pushed = vi.spyOn(window.history, "pushState");
     const refreshed = shell.refreshDocument();
     await vi.waitFor(() => expect(document.querySelectorAll("iframe")).toHaveLength(2));
     // The reader still sees the old document, and the token is still the old one.
-    expect(shell.shownFrame()).toBe(elements.frame);
+    expect(shell.shownFrame()).toBe(shownAtStart);
     expect(local.actionToken).toBe("tok");
     const next = document.querySelector<HTMLIFrameElement>("iframe[data-incoming]")!;
     expect(next.getAttribute("src")).toBe("/document?session=thr_a");
-    expect(next.getAttribute("sandbox")).toBe(elements.frame.getAttribute("sandbox"));
-    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "null", source: next.contentWindow }));
+    expect(next.getAttribute("sandbox")).toBe(shownAtStart.getAttribute("sandbox"));
+    readyFrom(next.contentWindow);
     next.dispatchEvent(new Event("load"));
     expect(await refreshed).toBe(true);
     expect(document.querySelectorAll("iframe")).toHaveLength(1);
@@ -582,19 +611,16 @@ describe("shell documents", () => {
     const elements = chrome();
     const local: ShellConfig = { ...config };
     const shell = installShell(window, local, elements, refreshFetch() as never);
+    const shownAtStart = shell.shownFrame();
     // Connect the shown frame so its kernel can report dirt.
-    const ports: MessagePort[] = [];
-    const post = vi.spyOn(elements.frame.contentWindow!, "postMessage").mockImplementation(((_message: unknown, _origin: unknown, transfer?: Transferable[]) => {
-      if (transfer?.[0]) ports.push(transfer[0] as MessagePort);
-    }) as never);
-    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "null", source: elements.frame.contentWindow }));
-    expect(ports).toHaveLength(1);
+    const ports = [readyFrom(shownAtStart.contentWindow)];
+    const post = vi.spyOn(shownAtStart.contentWindow!, "postMessage");
     const refreshed = shell.refreshDocument();
     await vi.waitFor(() => expect(document.querySelectorAll("iframe")).toHaveLength(2));
     ports[0]!.postMessage({ kind: "thread-page:dirty" });
     expect(await refreshed).toBe(false);
     expect(document.querySelectorAll("iframe")).toHaveLength(1);
-    expect(shell.shownFrame()).toBe(elements.frame);
+    expect(shell.shownFrame()).toBe(shownAtStart);
     expect(local.actionToken).toBe("tok");
     expect(elements.status.textContent).toBe("Page changed — reload when ready");
     expect(elements.reload.dataset.visible).toBe("true");

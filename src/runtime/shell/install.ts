@@ -57,6 +57,10 @@ const HISTORY_FRAGMENT = "threadPageFragment";
 const HISTORY_QUERY = "threadPageQuery";
 /** A question's confirm button ignores clicks this long after it appears. */
 const CONFIRM_ARM_MS = 400;
+/** How long a runtime has to answer the shell's ping after its frame loads. */
+const LOADED_GRACE_MS = 3_000;
+/** Reloads in a row that never come back working before the shell stops and says so. */
+const RELOADS_ALLOWED = 3;
 
 export function installShell(win: Window & typeof globalThis, config: ShellConfig, elements: ShellElements, fetchImpl?: typeof fetch): ShellHandle {
   const { status, work, reload, dialog, acts, pin, read, archive, title } = elements;
@@ -69,7 +73,74 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   /** Where the shown document is scrolled to, as its kernel reports it. spec R2.18b */
   let scroll = { x: 0, y: 0 };
   /** A refreshed document loading behind the shown one. spec R2.18a */
-  let incoming: { frame: HTMLIFrameElement; ready: boolean; revision: string | null; loaded: boolean; apply: DocumentSession; timer: ReturnType<typeof setTimeout>; settle(shown: boolean): void } | null = null;
+  let incoming: { frame: HTMLIFrameElement; ready: boolean; port: MessagePort | null; revision: string | null; loaded: boolean; apply: DocumentSession; timer: ReturnType<typeof setTimeout>; settle(shown: boolean): void } | null = null;
+  /** The port each frame's runtime handed over in its first ready. */
+  const portOf = new WeakMap<HTMLIFrameElement, MessagePort>();
+  /** A refreshed document's messages, kept until it is shown. */
+  const waiting = new WeakMap<MessagePort, unknown[]>();
+  /** The last ping each runtime answered: proof its document is still the one in the frame. */
+  const answered = new WeakMap<MessagePort, number>();
+  let pings = 0;
+  /** Reloads in a row whose document never answered: a page that keeps leaving is stopped. */
+  let failedReloads = 0;
+  /** Frames already being replaced: one reload per frame, however many signs it gives. */
+  const replacing = new WeakSet<HTMLIFrameElement>();
+
+  /**
+   * After every load of a frame whose runtime handed over a port, the shell
+   * asks that runtime, over its port, whether it is still there. A document
+   * that left its frame — swapped out by a page for a file with no runtime,
+   * even before it finished loading — cannot answer: its port died with it.
+   * Whatever order an engine fires `load` and messages in, the answer decides,
+   * and the shell loads its own document again. spec R2.18d, D44
+   */
+  function watchLoads(target: HTMLIFrameElement): void {
+    target.addEventListener("load", () => {
+      const port = portOf.get(target);
+      if (!port) return;
+      pings += 1;
+      const ping = pings;
+      try {
+        port.postMessage({ kind: "thread-page:ping", nonce: ping });
+      } catch {
+        // A closed port answers nothing; the check below says so.
+      }
+      setTimeout(() => {
+        if ((answered.get(port) ?? 0) >= ping) return;
+        if (target === frame) void reloadShown();
+        else if (incoming && target === incoming.frame) {
+          cancelIncoming();
+          void reloadShown();
+        }
+      }, LOADED_GRACE_MS);
+    });
+  }
+
+  /** Hears a runtime's port from its first ready: answers to pings always, the rest once its document is shown. */
+  function accept(port: MessagePort, from: HTMLIFrameElement): void {
+    portOf.set(from, port);
+    port.onmessage = (event) => {
+      const data = event.data as unknown;
+      if (isRecord(data) && data.kind === "thread-page:pong") {
+        if (typeof data.nonce === "number") answered.set(port, Math.max(answered.get(port) ?? 0, data.nonce));
+        // The shown document is working: reloads that came back count for nothing.
+        if (framePort === port) {
+          failedReloads = 0;
+          if (stoppedLine !== null) {
+            stoppedLine = null;
+            view.setStatus(config.notice ?? "", false);
+          }
+        }
+        return;
+      }
+      // A frame that was replaced may still be posting; only the shown one is heard, and a refreshed one later.
+      if (framePort === port) relay.handle(port, data);
+      else if (incoming && incoming.port === port) waiting.get(port)?.push(data);
+    };
+    waiting.set(port, []);
+    port.start?.();
+    watchLoads(from);
+  }
   let grantsChrome: GrantsChrome | null = null;
   /** Where to return the shown frame's document to, once its kernel connects. */
   let pendingRestore: { x: number; y: number } | null = null;
@@ -78,8 +149,14 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   /** The shown document's `#fragment`, or "". spec R1.12f */
   let fragment = config.navigable ? documentFragment(win.location.hash) : "";
 
+  /** A line that stays until a document of the page is shown working again: the page that kept leaving. */
+  let stoppedLine: string | null = null;
   const view = {
     setStatus(text: string, warn: boolean) {
+      if (stoppedLine !== null && !warn) {
+        text = stoppedLine;
+        warn = true;
+      }
       status.textContent = text;
       status.dataset.tone = warn ? "warn" : "";
     },
@@ -180,18 +257,18 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     grantsChrome = createGrantsChrome(config, elements.grants, { setStatus: (text, warn) => view.setStatus(text, warn), ...(fetchImpl ? { fetchImpl } : {}) });
   }
 
-  function connectFrame(target: HTMLIFrameElement, restore: { x: number; y: number } | null): void {
+  /**
+   * Starts talking over the port the frame's runtime handed over in its first
+   * `ready`. Nothing is ever posted into the frame itself. spec R2.3, R2.18d, D44
+   */
+  function connectFrame(port: MessagePort, restore: { x: number; y: number } | null): void {
     // Another document now: a bar the previous one asked for is not this one's to finish.
     voice?.cancel();
-    const channel = new win.MessageChannel();
-    const port = channel.port1;
     framePort = port;
-    port.onmessage = (event) => {
-      // A frame that was replaced may still be posting; only the shown one is heard.
-      if (framePort === port) relay.handle(port, event.data);
-    };
-    port.start?.();
-    target.contentWindow?.postMessage({ kind: "thread-page:connect", version: HANDSHAKE_VERSION }, "*", [channel.port2]);
+    // What a refreshed document said while it waited behind the shown one.
+    const held = waiting.get(port) ?? [];
+    waiting.set(port, []);
+    for (const data of held) relay.handle(port, data);
     port.postMessage({ kind: "thread-page:source-state", stale: lastStale });
     if (restore && (restore.x > 0 || restore.y > 0)) port.postMessage({ kind: "thread-page:restore-scroll", x: restore.x, y: restore.y });
     // Dictate is shown only where recording can work. spec R4.59
@@ -208,6 +285,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     if (!from) return;
     const data = event.data as unknown;
     if (!isRecord(data) || data.kind !== "thread-page:ready" || data.version !== HANDSHAKE_VERSION) return;
+    const port = event.ports.length === 1 ? event.ports[0] : undefined;
     if (!awaitingReady.has(from)) {
       // The shown frame loaded something the shell did not load: the document's own location.reload(), or
       // anything a page navigated its frame to — another document, an HTML file with no runtime at all. The
@@ -216,17 +294,22 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       if (from === frame) void reloadShown();
       return;
     }
+    // The first ready of a frame the shell loaded, with the runtime's own port: nothing else is taken.
+    if (!port) return;
     awaitingReady.delete(from);
+    accept(port, from);
     if (from === frame) {
       const restore = pendingRestore;
       pendingRestore = null;
-      connectFrame(frame, restore);
+      connectFrame(port, restore);
       checkRevision(data.revision);
       return;
     }
-    // A refreshed document is connected when it is shown, so the shown one keeps its channel until then.
+    // A refreshed document's port is kept and heard from when it is shown, so the shown one keeps its
+    // channel until then; its messages wait meanwhile.
     if (incoming) {
       incoming.ready = true;
+      incoming.port = port;
       incoming.revision = typeof data.revision === "string" ? data.revision : null;
       if (incoming.loaded) showIncoming();
     }
@@ -280,7 +363,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     scroll = { x: 0, y: 0 };
     generation += 1;
     // A document still loading when its time ran out connects when its kernel reports, and returns there then.
-    if (current.ready) connectFrame(frame, restore);
+    if (current.ready && current.port) connectFrame(current.port, restore);
     else pendingRestore = restore;
     previous.remove();
     frame.removeAttribute("data-incoming");
@@ -367,7 +450,14 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   /** The shown document again, into a fresh frame the shell made, at its query and fragment. One at a time. */
   let reloading = false;
   async function reloadShown(): Promise<void> {
-    if (reloading) return;
+    if (reloading || replacing.has(frame)) return;
+    if (failedReloads >= RELOADS_ALLOWED) {
+      stoppedLine = "This page keeps leaving its own document, so it was stopped. Reload to try again.";
+      view.setStatus(stoppedLine, true);
+      return;
+    }
+    failedReloads += 1;
+    replacing.add(frame);
     reloading = true;
     try {
       if (!config.navigable) {
@@ -466,6 +556,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       const entry = {
         frame: next,
         ready: false,
+        port: null as MessagePort | null,
         revision: null as string | null,
         loaded: false,
         apply: session as DocumentSession,

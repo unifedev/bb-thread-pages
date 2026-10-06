@@ -277,6 +277,11 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
 
   function onShellMessage(data: unknown): void {
     if (!isRecord(data)) return;
+    // The shell asks after each load of the frame whether this document is still the one in it. D44
+    if (data.kind === "thread-page:ping") {
+      if (typeof data.nonce === "number") post({ kind: "thread-page:pong", nonce: data.nonce });
+      return;
+    }
     if (data.kind === "thread-page:source-state") {
       readOnly.apply(data.stale === true);
       textAreas.update();
@@ -328,29 +333,22 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     largeMedia.flush();
   }
 
-  /**
-   * The shell's handshake: a real message (trusted — a page's own dispatch of
-   * a MessageEvent is not) from the parent window, carrying one port. The
-   * kernel's listener runs before any of the page's, and stops every genuine
-   * connect from reaching them, the first and any later one, so no page
-   * listener ever sees the shell's port. Only the first is adopted.
-   */
-  function acceptPort(event: MessageEvent): void {
-    if (!prim.trusted(event) || prim.source(event) !== parentWindow) return;
-    const data = prim.data(event);
-    if (!isRecord(data) || data.kind !== "thread-page:connect") return;
-    prim.stop(event);
-    if (port || data.version !== HANDSHAKE_VERSION) return;
-    const ports = prim.ports(event);
-    if (!ports || ports.length !== 1) return;
-    const next = ports[0];
-    if (next) connect(next);
-  }
-  prim.on(win, "message", acceptPort as (event: Event) => void, true);
-
   if (config.stale) readOnly.apply(true);
-  // The revision lets the shell notice a document newer than the token it holds for it.
-  parentWindow.postMessage({ kind: "thread-page:ready", version: HANDSHAKE_VERSION, revision: config.pageRevision }, "*");
+  /**
+   * The handshake: this runtime makes the channel, keeps one end, and hands
+   * the other to the shell inside its `ready`, before any page script runs.
+   * The shell takes a port only from the first `ready` of a frame it loaded,
+   * and never posts one into a frame, so a document the frame is navigated to
+   * later — a file with no runtime included — can never be handed this
+   * channel: the end kept here dies with this document. The revision lets the
+   * shell notice a document newer than its token. spec R2.3, R2.18d, D44
+   */
+  // Without channels (a test DOM) there is no handshake; the tests connect a port of their own.
+  if (typeof win.MessageChannel === "function") {
+    const channel = new win.MessageChannel();
+    connect(channel.port1);
+    parentWindow.postMessage({ kind: "thread-page:ready", version: HANDSHAKE_VERSION, revision: config.pageRevision }, "*", [channel.port2]);
+  }
 
   return { deliver: (message) => onShellMessage(message), connect: (fake) => connect(fake as MessagePort) };
 }

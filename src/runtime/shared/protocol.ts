@@ -6,7 +6,12 @@
 import { BRIDGE_ERROR_CODES, type BridgeErrorCode } from "../../domain/errors.ts";
 import { isCanonicalScope } from "../../domain/scope.ts";
 
-export const HANDSHAKE_VERSION = 1 as const;
+/**
+ * 2: the runtime makes the channel and hands its port to the shell inside its
+ * `ready`; nothing ever posts a port into a frame (1.9.0). 1 had the shell post
+ * its port into the frame, to whatever document was in it by then. D44
+ */
+export const HANDSHAKE_VERSION = 2 as const;
 export const BRIDGE_VERSION = 1 as const;
 
 export interface BridgeRequestMessage {
@@ -50,6 +55,8 @@ export type KernelMessage =
   | { kind: "thread-page:submit"; submissionId: string; title: string; answers: SubmitAnswer[]; files: SubmitFile[] }
   /** A link to another document of the page: the shell opens it in place, at its fragment if it names one. spec R1.12a, R1.12f */
   | { kind: "thread-page:open-document"; path: string; fragment?: string; query?: string }
+  /** The answer to the shell's ping: this document is still the one in the frame. D44 */
+  | { kind: "thread-page:pong"; nonce: number }
   /**
    * The document's own `#fragment` changed: the shell's address follows. `step`: the kernel moved
    * there for a link, leaving no history entry in the frame, so the shell adds one. spec R1.12f
@@ -75,6 +82,8 @@ export type KernelMessage =
   | BridgeRequestMessage;
 
 export type ShellMessage =
+  /** After each load of the frame: is this document still the one in it? D44 */
+  | { kind: "thread-page:ping"; nonce: number }
   | { kind: "thread-page:source-state"; stale: boolean }
   /** After a refresh: return to where the previous document was scrolled. spec R2.18b */
   | { kind: "thread-page:restore-scroll"; x: number; y: number }

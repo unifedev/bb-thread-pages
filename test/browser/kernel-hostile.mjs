@@ -22,7 +22,7 @@ const pages = {
   handshake: `${K}<script>
     const ch = new MessageChannel();
     addEventListener("message", (e) => { if (e.isTrusted && e.data && e.data.kind === "thread-page:connect" && e.ports.length) { e.ports[0].postMessage({ kind: "thread-page:record", id: "tp-record-1-abcdef", purpose: "dictate", control: true }); parent.postMessage({ kind: "poc", got: "the shell's port" }, "*"); } });
-    dispatchEvent(new MessageEvent("message", { source: parent, data: { kind: "thread-page:connect", version: 1 }, ports: [ch.port2] }));
+    dispatchEvent(new MessageEvent("message", { source: parent, data: { kind: "thread-page:connect", version: 2 }, ports: [ch.port2] }));
   </script>`,
   // C2: a patched postMessage, and an invoke whose params make the original throw.
   fallback: `${K}<script>
@@ -77,17 +77,19 @@ const server = http
     response.setHeader("content-type", "text/html");
     if (pages[name]) return response.end(`<!doctype html><html><head></head>${pages[name]}</html>`);
     const layout = layouts[name] ?? rows[name];
-    if (layout) return response.end(`<!doctype html><html><head>${OPEN}${K}</head><body>${layout}</body></html>`);
+    // Shown on its own, the runtime says ready to its own window: this listener plays the shell and takes its port.
+    const TAKE = `<script>addEventListener("message", (e) => { if (e.data && e.data.kind === "thread-page:ready" && e.ports.length === 1 && !window.__p) { window.__p = e.ports[0]; window.__p.postMessage({ kind: "thread-page:voice", available: true }); } });</script>`;
+    if (layout) return response.end(`<!doctype html><html><head>${OPEN}${TAKE}${K}</head><body>${layout}</body></html>`);
     if (name === "top") {
       return response.end(`<!doctype html><body style="margin:0"><iframe sandbox="allow-scripts" style="width:900px;height:700px;border:0" src="/${url.searchParams.get("p")}"></iframe><script>
         window.log = [];
         addEventListener("message", (e) => {
-          if (e.data && e.data.kind === "thread-page:ready" && !window.port) {
-            const ch = new MessageChannel();
-            ch.port1.onmessage = (m) => log.push(m.data);
-            e.source.postMessage({ kind: "thread-page:connect", version: 1 }, "*", [ch.port2]);
-            ch.port1.postMessage({ kind: "thread-page:voice", available: true });
-            window.port = ch.port1;
+          // As the shell does since 1.9.0: the runtime's own port, from its first ready; nothing posted into the frame.
+          if (e.data && e.data.kind === "thread-page:ready" && !window.port && e.ports.length === 1) {
+            const port = e.ports[0];
+            port.onmessage = (m) => { if (!(m.data && m.data.kind === "thread-page:loaded")) log.push(m.data); };
+            port.postMessage({ kind: "thread-page:voice", available: true });
+            window.port = port;
           } else if (e.data && e.data.kind === "poc") log.push({ poc: e.data.got });
         });
       </script></body>`);
@@ -144,12 +146,7 @@ for (const engine of engines) {
   for (const name of Object.keys(layouts)) {
     const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
     await page.goto(`http://localhost:${PORT}/${name}`);
-    await page.evaluate(() => {
-      const ch = new MessageChannel();
-      window.postMessage({ kind: "thread-page:connect", version: 1 }, "*", [ch.port2]);
-      ch.port1.postMessage({ kind: "thread-page:voice", available: true });
-      window.__p = ch.port1;
-    });
+    await page.waitForFunction(() => Boolean(window.__p));
     await page.waitForTimeout(500);
     const scripted = await page.evaluate(async (layout) => {
       const scroller = layout === "body" ? document.body : layout === "main" ? document.getElementById("s") : document.scrollingElement;
@@ -202,12 +199,7 @@ for (const engine of engines) {
   for (const name of Object.keys(rows)) {
     const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
     await page.goto(`http://localhost:${PORT}/${name}`);
-    await page.evaluate(() => {
-      const ch = new MessageChannel();
-      window.postMessage({ kind: "thread-page:connect", version: 1 }, "*", [ch.port2]);
-      ch.port1.postMessage({ kind: "thread-page:voice", available: true });
-      window.__p = ch.port1;
-    });
+    await page.waitForFunction(() => Boolean(window.__p));
     await page.waitForTimeout(500);
     await page.locator('input[type="file"]').setInputFiles(["alpha.txt", "beta.txt", "gamma.txt"].map((file) => ({ name: file, mimeType: "text/plain", buffer: Buffer.from("x") })));
     await page.waitForTimeout(300);

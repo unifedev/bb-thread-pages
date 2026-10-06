@@ -492,14 +492,15 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     if (!embed || embed.port || embed.status !== "shown") return;
     const data = event.data as unknown;
     if (!isRecord(data) || data.kind !== "thread-page:ready" || data.version !== HANDSHAKE_VERSION) return;
-    const channel = new win.MessageChannel();
-    const port = channel.port1;
+    // The embedded runtime's own port, from the first ready of the document this manager put in the frame;
+    // no port is ever posted into the frame. spec R2.18d, D44
+    const port = event.ports?.length === 1 ? event.ports[0] : undefined;
+    if (!port) return;
     embed.port = port;
     port.onmessage = (message) => {
       if (embed.port === port) onEmbedMessage(embed, message.data);
     };
     port.start?.();
-    embed.frame.contentWindow?.postMessage({ kind: "thread-page:connect", version: HANDSHAKE_VERSION }, "*", [channel.port2]);
     const restore = embed.restore;
     embed.restore = null;
     if (restore && (restore.x > 0 || restore.y > 0)) port.postMessage({ kind: "thread-page:restore-scroll", x: restore.x, y: restore.y });
