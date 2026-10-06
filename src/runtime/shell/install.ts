@@ -57,8 +57,15 @@ const HISTORY_FRAGMENT = "threadPageFragment";
 const HISTORY_QUERY = "threadPageQuery";
 /** A question's confirm button ignores clicks this long after it appears. */
 const CONFIRM_ARM_MS = 400;
-/** How long a runtime has to answer the shell's ping after its frame loads. */
-const LOADED_GRACE_MS = 3_000;
+/**
+ * How long a runtime has to answer after its frame loads: pinged at the load
+ * and again halfway, it is taken for gone only when neither is answered. Long,
+ * because a busy page answers late and nothing about security rides on it: a
+ * document that left has no port, whatever the timing. D44
+ */
+const LIVENESS_MS = 15_000;
+/** How long the shown document must keep answering before reloads it survived stop counting. */
+const SETTLED_MS = 10_000;
 /** Reloads in a row that never come back working before the shell stops and says so. */
 const RELOADS_ALLOWED = 3;
 
@@ -81,6 +88,9 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   /** The last ping each runtime answered: proof its document is still the one in the frame. */
   const answered = new WeakMap<MessagePort, number>();
   let pings = 0;
+  /** The shown document's port while it is proving it stays, and the timer that will clear the reload count. */
+  let settling: MessagePort | null = null;
+  let settledTimer: ReturnType<typeof setTimeout> | null = null;
   /** Reloads in a row whose document never answered: a page that keeps leaving is stopped. */
   let failedReloads = 0;
   /** Frames already being replaced: one reload per frame, however many signs it gives. */
@@ -98,21 +108,28 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     target.addEventListener("load", () => {
       const port = portOf.get(target);
       if (!port) return;
-      pings += 1;
-      const ping = pings;
-      try {
-        port.postMessage({ kind: "thread-page:ping", nonce: ping });
-      } catch {
-        // A closed port answers nothing; the check below says so.
-      }
+      const send = (): number => {
+        pings += 1;
+        try {
+          port.postMessage({ kind: "thread-page:ping", nonce: pings });
+        } catch {
+          // A closed port answers nothing; the check below says so.
+        }
+        return pings;
+      };
+      const first = send();
       setTimeout(() => {
-        if ((answered.get(port) ?? 0) >= ping) return;
+        if ((answered.get(port) ?? 0) < first) send();
+      }, LIVENESS_MS / 2);
+      setTimeout(() => {
+        // Either answer will do: anything at or after the first ping.
+        if ((answered.get(port) ?? 0) >= first) return;
         if (target === frame) void reloadShown();
         else if (incoming && target === incoming.frame) {
           cancelIncoming();
           void reloadShown();
         }
-      }, LOADED_GRACE_MS);
+      }, LIVENESS_MS);
     });
   }
 
@@ -123,13 +140,20 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       const data = event.data as unknown;
       if (isRecord(data) && data.kind === "thread-page:pong") {
         if (typeof data.nonce === "number") answered.set(port, Math.max(answered.get(port) ?? 0, data.nonce));
-        // The shown document is working: reloads that came back count for nothing.
-        if (framePort === port) {
-          failedReloads = 0;
-          if (stoppedLine !== null) {
-            stoppedLine = null;
-            view.setStatus(config.notice ?? "", false);
-          }
+        // Reloads stop counting only once the shown document has stayed and kept answering: a page that answers
+        // and then leaves again at once is still stopped.
+        if (framePort === port && settling !== port) {
+          settling = port;
+          if (settledTimer !== null) clearTimeout(settledTimer);
+          settledTimer = setTimeout(() => {
+            settledTimer = null;
+            if (framePort !== port || settling !== port) return;
+            failedReloads = 0;
+            if (stoppedLine !== null) {
+              stoppedLine = null;
+              view.setStatus(config.notice ?? "", false);
+            }
+          }, SETTLED_MS);
         }
         return;
       }
@@ -450,6 +474,12 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   /** The shown document again, into a fresh frame the shell made, at its query and fragment. One at a time. */
   let reloading = false;
   async function reloadShown(): Promise<void> {
+    // Whatever happens next, the shown document did not stay: it has not settled.
+    settling = null;
+    if (settledTimer !== null) {
+      clearTimeout(settledTimer);
+      settledTimer = null;
+    }
     if (reloading || replacing.has(frame)) return;
     if (failedReloads >= RELOADS_ALLOWED) {
       stoppedLine = "This page keeps leaving its own document, so it was stopped. Reload to try again.";

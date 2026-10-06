@@ -130,7 +130,9 @@ a minute for a fresh budget, then opens seven of them at once.
     ECHO=1 SESSION=thr_scope node test/browser/serve.ts test/browser/pages/scope 8796
     PLAYWRIGHT=<…>/playwright/index.mjs ENGINE=chromium BASE=http://localhost:8796 node test/browser/params.mjs
 
-Results of 6 October 2026, after the second review: 24 of 24 in Chromium,
+Release 1.9.0, 6 October 2026: 27 of 27 in Chromium, Firefox and WebKit, with
+section 13 (a page busy 3.5 s and 5 s after load stays shown) and section 14 (a
+page leaving 300 ms after every load is stopped). After the second review: 24 of 24 in Chromium,
 Firefox and WebKit, section 12 being the swap-in race (it needs `/__file`,
 which publishes a new revision while the page is open; released 1.8.0 hands
 the foreign file the channel in all three engines). Earlier: The reviewed build `a1a336e` gives a file with no runtime the channel (section 9: a forged answer reached the session) and fails sections 10 and 11; 1.8.0

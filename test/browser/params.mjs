@@ -116,6 +116,11 @@ const foreign = page.frames().find((frame) => frame.url().includes("/thread-stor
 const foreignTitle = foreign ? await foreign.evaluate(() => document.title).catch(() => "gone") : "gone";
 ok("a file with no runtime is never given the channel", foreignTitle !== "foreign: got the channel", foreignTitle);
 ok("…and answers nothing to the session", (await sends()) === sentBefore, `${sentBefore} → ${await sends()}`);
+// The file says nothing the shell takes, so it is found gone by the liveness check: within its 15 s. Wait for the
+// frame to hold the file first, then for the shell's own document to be back.
+const inFrame = () => page.frames().some((frame) => frame.url().includes("/foreign/"));
+for (let i = 0; i < 50 && !inFrame(); i += 1) await page.waitForTimeout(100);
+for (let i = 0; i < 25 && (inFrame() || docOf(page) === null); i += 1) await page.waitForTimeout(1000);
 values = await read(page, at("#card-1", "clients/vela/q3-board"));
 ok("…and the shell shows its own document again, scoped and connected", echoed(values)?.scope === "clients/vela/q3-board" && values.route === "#card-1", `${values.route} ${values.echo}`);
 
@@ -145,12 +150,41 @@ for (let i = 0; i < 50 && !(await docOf(page)?.evaluate(() => document.getElemen
 const raceBefore = await sends();
 const RACE = `<!doctype html><html><head><meta charset="utf-8"><title>race: second revision</title><script>location.replace("foreign/evil.html");</script></head><body>second</body></html>`;
 await fetch(`${BASE}/__file?path=race.html`, { method: "POST", body: RACE });
-await page.waitForTimeout(20_000);
+// Each try takes up to the shell's 15 s liveness window; wait for it to give up, at most 90 s.
+for (let i = 0; i < 90 && !((await page.locator("[data-shell-status]").textContent()) ?? "").includes("keeps leaving"); i += 1) await page.waitForTimeout(1000);
 const titles = await Promise.all(page.frames().map((frame) => frame.evaluate(() => document.title).catch(() => "")));
 ok("a revision that replaces itself with a foreign file right after ready hands it no channel", !titles.includes("foreign: got the channel"), JSON.stringify(titles));
 ok("…and the session receives nothing", (await sends()) === raceBefore, `${raceBefore} → ${await sends()}`);
 const status = await page.locator("[data-shell-status]").textContent();
 ok("…and the shell stops reloading it after a few tries, and says so", (status ?? "").includes("keeps leaving its own document"), status ?? "");
+
+// 13. A busy page — its main thread blocked 3.5 s and 5 s after load — answers the shell late and stays shown
+// (the 1.9.0 review, finding 1: Firefox reloaded such pages forever).
+for (const ms of [3500, 5000]) {
+  const busy = await context.newPage();
+  const exchanges = [];
+  busy.on("request", (request) => { if (request.url().includes("/document-session")) exchanges.push(request.url()); });
+  await busy.goto(`${SHELL}&path=busy.html?ms=${ms}`);
+  await busy.waitForTimeout(25_000);
+  const busyDoc = docOf(busy);
+  const echo = busyDoc ? await busyDoc.evaluate(() => document.getElementById("echo").textContent).catch(() => "") : "";
+  const busyStatus = await busy.locator("[data-shell-status]").textContent();
+  ok(`a page busy ${ms / 1000} s after load stays shown, connected, without a reload`, exchanges.length === 0 && echo.startsWith("{") && !(busyStatus ?? "").includes("keeps leaving"), `reloads: ${exchanges.length}; echo: ${echo}; status: ${busyStatus}`);
+  await busy.close();
+}
+
+// 14. A page that answers, then leaves its document 300 ms after every load, is stopped (finding 2: each answer
+// used to reset the count, so it reloaded forever).
+{
+  const leaving = await context.newPage();
+  const exchanges = [];
+  leaving.on("request", (request) => { if (request.url().includes("/document-session")) exchanges.push(request.url()); });
+  await leaving.goto(`${SHELL}&path=leave.html`);
+  await leaving.waitForTimeout(20_000);
+  const leftStatus = await leaving.locator("[data-shell-status]").textContent();
+  ok("a page that leaves 300 ms after every load is stopped after a few reloads, and says so", (leftStatus ?? "").includes("keeps leaving") && exchanges.length <= 4, `reloads: ${exchanges.length}; status: ${leftStatus}`);
+  await leaving.close();
+}
 
 // 8. Seven tools load at once in one session, 60 calls each (D45): 420, under the session's 600 a minute.
 await new Promise((resolve) => setTimeout(resolve, 61_000)); // a fresh minute for the session's budget

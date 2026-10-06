@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.9.0 — unreleased — a document's query; a reload inside the page; a budget per document
+## 1.9.0 — 2026-10-06 — a document's query; a reload inside the page; a budget per document
 
 Implements spec 1.7 (`bartsoj/bb-thread-pages`, DECISIONS D43–D45), from the
 templates' test 10 on 1.8.0 with the Syns plugin 0.5.0. Existing pages keep
@@ -22,12 +22,13 @@ working; `window.threadPage.version` and the bridge protocol stay `1`.
   port is kept and heard from when it is shown. A port a document made dies
   with it, so nothing navigated into its frame later can use it.
 - After every load of a frame whose runtime handed over a port, the shell
-  pings that runtime over its port. A document that left its frame — swapped
-  out by a page, even before it finished loading — cannot answer, since its
-  port died with it, and the shell replaces it with the open document in a
-  fresh frame; a page doing this again and again is stopped
-  after three reloads in a row that never answered, with a line in the
-  status that stays until a document of the page answers again.
+  pings that runtime over its port, at the load and again 7.5 s later. A
+  document that left its frame — swapped out by a page, even before it
+  finished loading — cannot answer, since its port died with it; with neither
+  ping answered within 15 s, the shell replaces it with the open document in a
+  fresh frame. A busy page answers late and stays. A page doing this again and
+  again is stopped after three reloads in a row, with a line in the status;
+  the count clears only once a document has kept answering for 10 s.
 - The handshake's version is 2: a page's tab left open across the update
   shows nothing until it is reloaded.
 
@@ -77,16 +78,21 @@ working; `window.threadPage.version` and the bridge protocol stay `1`.
 - Known divergence X48: a malformed capability request is refused before it is
   charged to a budget (the scope it carries picks the budget).
 
-### Verified (before re-review)
+### Verified
 
 - 427 unit tests (A148–A153 as unit, route and runtime tests).
-- `test/browser/params.mjs`: 24 of 24 in Chromium, Firefox and WebKit — the
+- Reviewed before release in four passes; the last found the security fix
+  closed in all three engines, and its two functional findings (a busy page
+  taken for gone in Firefox; a reload count that a page could keep resetting)
+  are fixed here.
+- `test/browser/params.mjs`: 27 of 27 in Chromium, Firefox and WebKit — the
   query on open, links, the app's own routes, reload, back and forward;
   `location.reload()` twice; a frame navigated to a file with no runtime; the
   swap-in race (a new revision that `location.replace()`s itself to such a
   file right after its ready); query-only links and links built from
-  `location.search`; a raw `&` in the address; seven tools of one session
-  loading at once. The race leaks on released 1.8.0 (the file gets the channel
+  `location.search`; a raw `&` in the address; a page busy 3.5 s and 5 s
+  after load, which stays; a page leaving 300 ms after every load, which is
+  stopped; seven tools of one session loading at once. The race leaks on released 1.8.0 (the file gets the channel
   in all three engines) and on the first 1.9.0 fix `bfedbc8`.
 - `scope.mjs` 34 of 34 (its 1.8 check that a link's query is not carried now
   checks that it is), `kernel-hostile.mjs` 51 of 51 (its harness plays the
