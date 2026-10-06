@@ -474,23 +474,46 @@ describe("shell documents", () => {
     window.history.replaceState(null, "", "/page?session=thr_a");
   });
 
-  // location.reload() inside the frame: the new runtime asks again and is connected. spec R2.18d, D44
-  it("connects the shown frame again each time its document reloads and reports ready", async () => {
+  // A ready the shell did not load for — location.reload(), or anything a page navigated its frame to — gets
+  // no channel: the shell loads its own document again into a fresh frame. spec R2.18d, D44
+  it("answers an unexpected ready with nothing but a fresh frame of its own document", async () => {
     const { installShell } = await import("../../src/runtime/shell/install.ts");
+    window.history.replaceState(null, "", "/page?session=thr_a#route");
     const elements = chrome();
-    installShell(window, { ...config }, elements, vi.fn(async () => new Response(null, { status: 304, headers: { etag: `"${REV}"` } })) as never);
+    const exchanges: unknown[] = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/document-session") {
+        exchanges.push(JSON.parse(String(init!.body)));
+        return jsonResponse({ ok: true, actionToken: "tok2", pageRevision: REV, expiresAt: Date.now() + 3_600_000, documentUrl: "/document?session=thr_a", path: "index.html", query: "", stale: false, empty: false });
+      }
+      return new Response(null, { status: 304, headers: { etag: `"${REV}"` } });
+    });
+    const shell = installShell(window, { ...config }, elements, fetchImpl as never);
+    const first = shell.shownFrame();
     const connects: unknown[] = [];
-    vi.spyOn(elements.frame.contentWindow!, "postMessage").mockImplementation(((message: unknown) => connects.push(message)) as never);
-    const ready = () => window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1, revision: REV }, origin: "null", source: elements.frame.contentWindow }));
-    ready();
-    ready();
-    ready();
-    expect(connects.filter((message) => (message as { kind?: string }).kind === "thread-page:connect")).toHaveLength(3);
-    // Nobody else's ready is answered: another window, another origin, another message.
-    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "https://evil.example", source: elements.frame.contentWindow }));
+    vi.spyOn(first.contentWindow!, "postMessage").mockImplementation(((message: unknown) => connects.push(message)) as never);
+    const ready = (source: Window | null) => window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1, revision: REV }, origin: "null", source }));
+    ready(first.contentWindow);
+    expect(connects).toHaveLength(1);
+    // The frame reports ready again: no second channel for whatever is in it now.
+    ready(first.contentWindow);
+    ready(first.contentWindow);
+    await vi.waitFor(() => expect(shell.shownFrame()).not.toBe(first));
+    expect(connects).toHaveLength(1);
+    expect(exchanges).toHaveLength(1);
+    const fresh = shell.shownFrame();
+    expect(fresh.getAttribute("src")).toBe("/document?session=thr_a#route");
+    // The fresh frame the shell made is connected as any load is.
+    const freshConnects: unknown[] = [];
+    vi.spyOn(fresh.contentWindow!, "postMessage").mockImplementation(((message: unknown) => freshConnects.push(message)) as never);
+    ready(fresh.contentWindow);
+    expect(freshConnects.filter((message) => (message as { kind?: string }).kind === "thread-page:connect")).toHaveLength(1);
+    // Nobody else's ready is answered.
+    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "https://evil.example", source: fresh.contentWindow }));
     window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:ready", version: 1 }, origin: "null", source: window }));
-    window.dispatchEvent(new MessageEvent("message", { data: { kind: "thread-page:hello", version: 1 }, origin: "null", source: elements.frame.contentWindow }));
-    expect(connects.filter((message) => (message as { kind?: string }).kind === "thread-page:connect")).toHaveLength(3);
+    expect(freshConnects.filter((message) => (message as { kind?: string }).kind === "thread-page:connect")).toHaveLength(1);
+    expect(exchanges).toHaveLength(1);
+    window.history.replaceState(null, "", "/page?session=thr_a");
   });
 
   it("does nothing on the built-in home, and says so when a document cannot open", async () => {

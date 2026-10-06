@@ -38,9 +38,20 @@ const IN_PLACE_TARGETS: ReadonlySet<string> = new Set(["", "_self", "_parent", "
  * `embedded`: the page is shown inside another page, whose shell is not its
  * own, so its own files cannot be fetched for it (R4.50).
  */
-export function decideAnchor(anchor: HTMLAnchorElement, documentUrl: string, siteBase: string | null, siteRoot: string | null = siteBase, embedded = false): AnchorDecision {
+export function decideAnchor(anchor: HTMLAnchorElement, documentUrl: string, siteBase: string | null, siteRoot: string | null = siteBase, embedded = false, documentPath: string | null = null): AnchorDecision {
   const raw = anchor.getAttribute("href");
   if (raw === null) return { kind: "default" };
+  // Resolved against the page's <base>, `?…` would name the page's folder: it is this document with
+  // another query. spec R1.12g
+  if (raw.startsWith("?") && documentPath) {
+    try {
+      // Against the document's own URL, as a browser without the <base> would.
+      const target = new URL(raw.trim(), anchor.ownerDocument?.URL || documentUrl);
+      return { kind: "document", path: documentPath, fragment: documentFragment(target.hash), query: target.search };
+    } catch {
+      return { kind: "block" };
+    }
+  }
   // Resolved against the page's <base>, `#…` would leave the document for the page's folder:
   // it is this document's own fragment. spec R1.12f
   if (raw.startsWith("#")) return { kind: "fragment", fragment: raw.trim() };
@@ -97,7 +108,7 @@ export interface AnchorHandlers {
   handler(url: string): void;
 }
 
-export function installAnchorInterception(doc: Document, handlers: AnchorHandlers, siteRoot: string | null = null, embedded = false): void {
+export function installAnchorInterception(doc: Document, handlers: AnchorHandlers, siteRoot: string | null = null, embedded = false, documentPath: string | null = null): void {
   const decide = (event: MouseEvent): AnchorDecision | null => {
     if (event.defaultPrevented || event.button !== 0) return null;
     const target = event.target as Element | null;
@@ -106,7 +117,7 @@ export function installAnchorInterception(doc: Document, handlers: AnchorHandler
     const base = doc.querySelector("base")?.getAttribute("href") ?? null;
     const siteBase = base ? new URL(base, doc.baseURI).href : null;
     const root = siteRoot ? new URL(siteRoot, doc.baseURI).href : siteBase;
-    return decideAnchor(anchor, doc.baseURI, siteBase, root, embedded);
+    return decideAnchor(anchor, doc.baseURI, siteBase, root, embedded, documentPath);
   };
   doc.addEventListener(
     "click",

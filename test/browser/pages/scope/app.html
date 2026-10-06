@@ -39,4 +39,10 @@
 </dl>
 <p><a id="card-2" href="#card-2">Card 2</a> <a id="deck" href="app.html?scope=decks/q3-pitch#card-1">Deck app</a> <a id="index" href="index.html">Index</a></p>
 <button id="reload" type="button" onclick="location.reload()">Reload from inside</button>
+<p><a id="query-only" href="?scope=decks/q3-pitch#card-9">Query only</a> <a id="keep" href="#">Same parameters, another folder</a></p>
+<button id="leave" type="button" onclick="location.href = 'foreign/evil.html'">Navigate the frame to a file with no runtime</button>
+<script>
+  // A link that keeps the current parameters, as a router does: the host's own come with them. D43, review finding 2
+  document.getElementById("keep").href = "app.html" + location.search.replace(/scope=[^&]*/, "scope=kept/folder");
+</script>
 </body></html>

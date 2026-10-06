@@ -572,7 +572,10 @@ describe("kernel queries", () => {
   const BODY = `<head><base href="https://bb.example/api/v1/threads/thr_a/thread-storage/files/"></head><body>
     <a id="same" href="tool.html?scope=a&view=grid#card-2">Same</a>
     <a id="other" href="tool.html?scope=b#card-2">Other</a>
-    <a id="none" href="tool.html#card-3">None</a></body>`;
+    <a id="none" href="tool.html#card-3">None</a>
+    <a id="keep" href="other.html?session=thr_a&path=tool.html&scope=a&view=grid">Keeps the current parameters</a>
+    <a id="foreign" href="other.html?session=thr_b&scope=a">Another session</a>
+    <a id="query-only" href="?scope=c#card-4">Query only</a></body>`;
   const click = (win: PageWindow, id: string) => win.document.getElementById(id)!.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
 
   it("moves within itself for its own path and query, and opens another document for another query", async () => {
@@ -584,9 +587,19 @@ describe("kernel queries", () => {
     click(win, "other");
     click(win, "none");
     const opened = posted.messages.filter((entry) => (entry as { kind?: string }).kind === "thread-page:open-document");
-    expect(opened).toEqual([
+    // The host's own parameters, when they are this document's, are dropped; another session's is left for the
+    // shell to refuse. A query-only link is this document with another query. R1.12g
+    click(win, "keep");
+    click(win, "foreign");
+    click(win, "query-only");
+    const all = posted.messages.filter((entry) => (entry as { kind?: string }).kind === "thread-page:open-document");
+    expect(all).toEqual([
       { kind: "thread-page:open-document", path: "tool.html", fragment: "#card-2", query: "?scope=b" },
       { kind: "thread-page:open-document", path: "tool.html", fragment: "#card-3" },
+      { kind: "thread-page:open-document", path: "other.html", query: "?scope=a&view=grid" },
+      { kind: "thread-page:open-document", path: "other.html", query: "?session=thr_b&scope=a" },
+      { kind: "thread-page:open-document", path: "tool.html", fragment: "#card-4", query: "?scope=c" },
     ]);
+    void opened;
   });
 });

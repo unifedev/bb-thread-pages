@@ -66,13 +66,20 @@ await page.reload();
 values = await read(page, at("#card-2", "clients/vela/q3-board"));
 ok("reload keeps the folder and the route", values.route === "#card-2" && echoed(values)?.scope === "clients/vela/q3-board", `${values.route} ${values.echo}`);
 
-// 4. location.reload() inside the frame reconnects (D44).
-await click(page, "#reload");
-values = await read(page, (v) => v.loads === "reload" && at("#card-2", "clients/vela/q3-board")(v));
-ok("location.reload() inside the frame reloads and reconnects", values.loads === "reload" && echoed(values)?.scope === "clients/vela/q3-board", JSON.stringify(values));
-await click(page, "#reload");
-values = await read(page, (v) => v.loads === "reload" && at("#card-2", "clients/vela/q3-board")(v));
-ok("…again", echoed(values)?.scope === "clients/vela/q3-board", values.echo);
+// 4. location.reload() inside the frame (D44): the shell answers it with its own document in a fresh frame,
+// connected as any load is, at the same query and route.
+for (const round of ["", "…again"]) {
+  const before = docOf(page);
+  await click(page, "#reload");
+  let fresh = null;
+  for (let i = 0; i < 100 && !fresh; i += 1) {
+    const now = docOf(page);
+    if (now && now !== before) fresh = now;
+    else await page.waitForTimeout(100);
+  }
+  values = await read(page, at("#card-2", "clients/vela/q3-board"));
+  ok(round || "location.reload() inside the frame comes back connected, in a fresh frame, at its query and route", Boolean(fresh) && docOf(page) === fresh && echoed(values)?.scope === "clients/vela/q3-board" && values.route === "#card-2", `${values.route} ${values.echo}`);
+}
 
 // 5. A link to the same app with another query, then back and forward.
 await click(page, "#deck");
@@ -96,6 +103,37 @@ ok("…into the address", address().searchParams.get("path") === "app.html?scope
 // 7. A query using the host's names is refused, not silently dropped.
 const refused = await page.goto(`${SHELL}&path=app.html?session=thr_other`);
 ok("an address whose query uses the host's names is refused", refused.status() === 400, String(refused.status()));
+
+// 9. A frame navigated to an HTML file with no runtime gets no channel (review 1.9.0, finding 1): the shell
+// loads its own document again, and the session receives nothing.
+const sends = async () => (await (await fetch(`${BASE}/__stats`)).json()).calls.filter((call) => call.method === "sessions.send").length;
+const sentBefore = await sends();
+await page.goto(`${SHELL}&path=app.html?scope=clients/vela/q3-board#card-1`);
+await read(page, at("#card-1", "clients/vela/q3-board"));
+await click(page, "#leave");
+await page.waitForTimeout(3000);
+const foreign = page.frames().find((frame) => frame.url().includes("/thread-storage/files/foreign/"));
+const foreignTitle = foreign ? await foreign.evaluate(() => document.title).catch(() => "gone") : "gone";
+ok("a file with no runtime is never given the channel", foreignTitle !== "foreign: got the channel", foreignTitle);
+ok("…and answers nothing to the session", (await sends()) === sentBefore, `${sentBefore} → ${await sends()}`);
+values = await read(page, at("#card-1", "clients/vela/q3-board"));
+ok("…and the shell shows its own document again, scoped and connected", echoed(values)?.scope === "clients/vela/q3-board" && values.route === "#card-1", `${values.route} ${values.echo}`);
+
+// 10. A query-only link, and a link that keeps the current parameters (review findings 3 and 2).
+await click(page, "#query-only");
+values = await read(page, at("#card-9", "decks/q3-pitch"));
+ok("a query-only link opens this document with the new query", echoed(values)?.scope === "decks/q3-pitch" && values.route === "#card-9" && (docOf(page)?.url() ?? "").includes("/document?"), `${values.search} ${values.route}`);
+await click(page, "#keep");
+values = await read(page, at("", "kept/folder"));
+ok("a link built from location.search opens, the host's own parameters dropped", echoed(values)?.scope === "kept/folder" && address().searchParams.get("path") === "app.html?scope=kept/folder", `${values.search} ${page.url()}`);
+
+// 11. An address typed with a raw & keeps every parameter, and is written back in the address's own form (finding 4).
+await page.goto(`${SHELL}&path=app.html?scope=clients/vela/q3-board&view=grid#card-1`);
+values = await read(page, at("#card-1", "clients/vela/q3-board"));
+const typed = new URLSearchParams(values.search ?? "");
+ok("a raw & in a typed address keeps every parameter", typed.get("scope") === "clients/vela/q3-board" && typed.get("view") === "grid", values.search);
+await page.waitForTimeout(300);
+ok("…and the address is written back inside path", address().searchParams.get("path") === "app.html?scope=clients/vela/q3-board&view=grid" && !address().searchParams.has("view"), page.url());
 
 // 8. Seven tools load at once in one session, 60 calls each (D45): 420, under the session's 600 a minute.
 await new Promise((resolve) => setTimeout(resolve, 61_000)); // a fresh minute for the session's budget

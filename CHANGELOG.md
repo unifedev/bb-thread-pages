@@ -15,8 +15,15 @@ working; `window.threadPage.version` and the bridge protocol stay `1`.
   document query may not use: such a link does not open, and the status says
   why.
 - The address carries it inside `path`:
-  `…/page?session=<id>&path=tool.html?scope=clients/vela/q3-board#card-1`. A
-  second parameter's `&` is written `%26` there, as the shell writes it.
+  `…/page?session=<id>&path=tool.html?scope=clients/vela/q3-board#card-1`. The
+  shell writes a second parameter's `&` as `%26`; a raw `&` typed there
+  (`path=tool.html?scope=a&view=grid`) gives the document every parameter the
+  address does not use itself, and the address is written back with `%26`.
+- A link built from `location.search` (`"tool.html" + location.search`, or a
+  router keeping the query) works: the host's own `session` and `path` are
+  dropped when they are the open document's. A query-only link (`?scope=b`),
+  which the page's `<base>` would send to the page's folder, opens this
+  document with that query.
 - Kept on open, links, reload, back and forward, and `location.reload()`. A
   link to the same document with another query loads it again; a `#…` link
   keeps the query. At most 2,048 characters, no `#`, spaces or control
@@ -29,10 +36,12 @@ working; `window.threadPage.version` and the bridge protocol stay `1`.
 ### A reload inside the page reconnects (D44)
 
 - `location.reload()` in a page left it on "Loading…": the shell took a
-  handshake only once per frame. It now connects the document it shows every
-  time it reports ready, dropping the previous channel. A page faking the
-  message only cuts itself off; the runtime still adopts only the first
-  channel it is given.
+  handshake only once per frame. Now, when the frame it shows reports ready
+  for a load the shell did not make, it connects nothing and loads the open
+  document again, at its query and fragment, into a fresh frame, connected as
+  any load. So a reload inside the page comes back working, and an HTML file
+  with no runtime that a page navigates its frame to — which the review found
+  could otherwise take the channel and answer the session — gets nothing.
 
 ### The request budget is per document and scope, under a session cap (D45)
 
@@ -42,13 +51,17 @@ working; `window.threadPage.version` and the bridge protocol stay `1`.
   600 a minute and 32 in flight. Seven tools in one session, which were
   refused with "Too many requests from this page", now load and save.
 
-### Verified (before review)
+- Known divergence X48: a malformed capability request is refused before it is
+  charged to a budget (the scope it carries picks the budget).
+
+### Verified (before re-review)
 
 - 425 unit tests (A148–A153 as unit, route and runtime tests).
-- `test/browser/params.mjs`: 14 of 14 in Chromium, Firefox and WebKit — the
+- `test/browser/params.mjs`: 21 of 21 in Chromium, Firefox and WebKit — the
   query on open, links, the app's own routes, reload, back and forward;
-  `location.reload()` twice; seven tools of one session loading at once.
-  1.8.0 fails 13 of them.
+  `location.reload()` twice; a frame navigated to a file with no runtime;
+  query-only links and links built from `location.search`; a raw `&` in the
+  address; seven tools of one session loading at once.
 - `scope.mjs` 34 of 34 (its 1.8 check that a link's query is not carried now
   checks that it is) and `kernel-hostile.mjs` 51 of 51, in the three engines.
 

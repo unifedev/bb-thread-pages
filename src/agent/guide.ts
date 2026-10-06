@@ -879,12 +879,16 @@ carried: a \`#…\` link only scrolls.
 A link may carry a query too — \`<a href="tool.html?scope=clients/vela/q3-board#card-1">\`
 — and the document reads it as on any site:
 \`new URLSearchParams(location.search).get("scope")\`. \`location.search\` also
-holds the host's own \`session\` and \`path\`; those two names are the host's,
-and a link whose query uses either does not open. The address shows the
-query inside \`path\` (\`…&path=tool.html?scope=clients/vela/q3-board#card-1\`),
-and opening it, reload, back and forward keep it, as does
-\`location.reload()\`. The same document with another query is another load;
-a \`#…\` link keeps the query. At most ${LIMITS.documentQueryChars} characters, and no \`#\`, spaces or
+holds the host's own \`session\` and \`path\`; those two names are the host's.
+A link built from \`location.search\` still works (the host's own values are
+dropped), but one naming another session or path does not open. A query-only
+link, \`<a href="?scope=decks/q3-pitch">\`, opens this document with that
+query. The address shows the query inside \`path\`
+(\`…&path=tool.html?scope=clients/vela/q3-board#card-1\`); a raw \`&\` there
+(\`path=tool.html?scope=a&view=grid\`) works too. Opening it, reload, back and
+forward keep it, as does \`location.reload()\`, which reloads the document in
+a fresh frame. The same document with another query is another load; a
+\`#…\` link keeps the query. At most ${LIMITS.documentQueryChars} characters, and no \`#\`, spaces or
 control characters. Use the query for what selects the document's data, and
 leave the fragment to the app's own routes.
 

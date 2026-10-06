@@ -200,6 +200,11 @@ describe("a document's query", () => {
     // The document is served at that URL, its own parameters ignored by the host.
     const doc = await fixture.get(`${ROUTE_BASE}/document?session=thr_a&path=tool.html&scope=clients/vela/q3-board&view=grid`);
     expect(doc.status).toBe(200);
+    // A query typed with a raw & arrives as further address parameters: they are the document's, in order.
+    for (const [address, query] of <[string, string][]>[["path=tool.html?scope=a/b&view=grid", "?scope=a/b&view=grid"], ["path=tool.html&scope=a/b", "?scope=a/b"], ["scope=a/b&path=tool.html?x=1", "?x=1&scope=a/b"]]) {
+      const typed = await (await fixture.get(`${ROUTE_BASE}/page?session=thr_a&${address}`)).text();
+      expect(typed, address).toContain(`documentQuery&quot;:&quot;${query.replace(/&/g, "&amp;")}&quot;`);
+    }
     // The entry document takes a query too.
     const entry = await (await fixture.get(`${ROUTE_BASE}/page?session=thr_a&path=index.html?tab=2`)).text();
     expect(entry).toContain(`documentUrl&quot;:&quot;${ROUTE_BASE}/document?session=thr_a&amp;tab=2&quot;`);

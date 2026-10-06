@@ -209,12 +209,11 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     const data = event.data as unknown;
     if (!isRecord(data) || data.kind !== "thread-page:ready" || data.version !== HANDSHAKE_VERSION) return;
     if (!awaitingReady.has(from)) {
-      // The shown document loaded again inside its frame — location.reload(), or its own URL — and its new
-      // runtime asks to be connected as any load does. A page faking this only cuts itself off: the runtime
-      // adopts the first channel it is given and stops every later one before page script sees it. spec R2.18d, D44
-      if (from !== frame) return;
-      connectFrame(frame, null);
-      checkRevision(data.revision);
+      // The shown frame loaded something the shell did not load: the document's own location.reload(), or
+      // anything a page navigated its frame to — another document, an HTML file with no runtime at all. The
+      // shell cannot tell which, so it connects nothing and loads its own document again into a fresh frame,
+      // which is connected as any load is. spec R2.18d, D44
+      if (from === frame) void reloadShown();
       return;
     }
     awaitingReady.delete(from);
@@ -300,7 +299,8 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
    */
   function shellAddress(path: string): string {
     const url = new URL(win.location.href);
-    url.searchParams.delete("path");
+    // Only the address's own parameters; the document's are written into `path`. spec R1.12g
+    for (const name of [...url.searchParams.keys()]) if (name !== "session" && name !== "threadId") url.searchParams.delete(name);
     const query = config.documentQuery ?? "";
     const value = path === ENTRY_DOCUMENT && !query ? "" : readable(`${path}${query}`);
     const search = url.search ? `${url.search}${value ? `&path=${value}` : ""}` : value ? `?path=${value}` : "";
@@ -362,6 +362,41 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     config.empty = session.empty;
     config.deferredFiles = session.deferredFiles;
     lastStale = config.stale;
+  }
+
+  /** The shown document again, into a fresh frame the shell made, at its query and fragment. One at a time. */
+  let reloading = false;
+  async function reloadShown(): Promise<void> {
+    if (reloading) return;
+    reloading = true;
+    try {
+      if (!config.navigable) {
+        win.location.reload();
+        return;
+      }
+      const startedAt = generation;
+      let session: DocumentSession | string;
+      try {
+        session = await documentSession(config.documentPath);
+      } catch {
+        session = "unavailable";
+      }
+      if (startedAt !== generation) return;
+      if (typeof session === "string") {
+        win.location.reload();
+        return;
+      }
+      cancelIncoming();
+      applySession(session);
+      framePort = null;
+      scroll = { x: 0, y: 0 };
+      pendingRestore = null;
+      generation += 1;
+      loadFrame(config.documentUrl);
+      poller.retarget();
+    } finally {
+      reloading = false;
+    }
   }
 
   /** A link to another document of the page: the frame is swapped and the address follows. */
@@ -451,7 +486,8 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
 
   if (config.navigable) {
     try {
-      win.history.replaceState(historyState(), "", win.location.href);
+      // The address in its own form: a query typed with a raw `&` is written back inside `path`.
+      win.history.replaceState(historyState(), "", shellAddress(config.documentPath));
     } catch {
       // A history the shell cannot write only loses back and forward.
     }

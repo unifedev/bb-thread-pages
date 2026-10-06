@@ -130,5 +130,5 @@ a minute for a fresh budget, then opens seven of them at once.
     ECHO=1 SESSION=thr_scope node test/browser/serve.ts test/browser/pages/scope 8796
     PLAYWRIGHT=<…>/playwright/index.mjs ENGINE=chromium BASE=http://localhost:8796 node test/browser/params.mjs
 
-Results of 6 October 2026: 14 of 14 in Chromium, Firefox and WebKit; 1.8.0
+Results of 6 October 2026, after the review: 21 of 21 in Chromium, Firefox and WebKit. The reviewed build `a1a336e` gives a file with no runtime the channel (section 9: a forged answer reached the session) and fails sections 10 and 11; 1.8.0
 fails 13 of them, since it refuses the address form outright.

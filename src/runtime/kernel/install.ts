@@ -152,6 +152,20 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   function sameQuery(query: string, own: string): boolean {
     return new ParamsOf(query).toString() === own;
   }
+  /** The query less any of the host's parameters whose value is this document's own, kept as written otherwise. */
+  function withoutOwnHostParameters(query: string): string {
+    if (!query || query === "?") return "";
+    const own = new ParamsOf(win.location.search);
+    const kept = query
+      .slice(1)
+      .split("&")
+      .filter((pair) => {
+        if (!pair) return false;
+        const [name, value] = [...new ParamsOf(pair).entries()][0] ?? ["", ""];
+        return !(RESERVED_QUERY_NAMES.includes(name) && own.get(name) === value);
+      });
+    return kept.length > 0 ? `?${kept.join("&")}` : "";
+  }
   let moving: string | null = null;
   function moveToFragment(fragment: string): void {
     if (config.embedded) {
@@ -228,7 +242,10 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   installAnchorInterception(
     doc,
     {
-      document: (path, fragment, query) => {
+      document: (path, fragment, linked) => {
+        // A link that keeps the current parameters (`"tool.html" + location.search`) carries the host's own
+        // session and path; they are dropped when they are this document's, and refused otherwise. spec R1.12g
+        const query = withoutOwnHostParameters(linked);
         // The same document — path and query — at another fragment is a fragment navigation, as on any
         // site; another query is another load. spec R1.12f, R1.12g
         if (fragment && path === config.documentPath && sameQuery(query, ownQuery())) {
@@ -255,6 +272,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     },
     config.siteRoot ?? null,
     config.embedded === true,
+    config.documentPath ?? null,
   );
 
   function onShellMessage(data: unknown): void {
