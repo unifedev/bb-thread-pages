@@ -1,111 +1,50 @@
+// The composition root: settings → kv sweep → provider → serving → core → CLI (DESIGN §A). The only file that
+// imports everything.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { registerCli } from "./agent/cli.ts";
-import { buildGuide } from "./agent/guide.ts";
-import { createBbHost } from "./bb/bb-host.ts";
-import { bbSessionUrl } from "./bb/host-urls.ts";
-import { defineSettings } from "./config/settings.ts";
-import { capabilityRegistry } from "./domain/capabilities/index.ts";
-import { createPageBudget } from "./domain/rate-limit.ts";
-import { createOutcomeMemory } from "./domain/submissions/idempotency.ts";
-import type { SessionHost } from "./host/contract.ts";
-import { createAssembler } from "./pages/assemble.ts";
-import { createPageStore } from "./pages/page-store.ts";
-import { createCoreStorageSite, type SiteStrategy } from "./pages/site.ts";
-import { createHeldAttachments, releaseHeld } from "./serving/attach-route.ts";
-import { createSelectionStore } from "./serving/bridge/selection-store.ts";
-import { budgetWarnings, createContributions, instructionBudget, joinInstruction } from "./serving/contributions.ts";
-import { createGrantStore } from "./serving/grants.ts";
-import type { ServingContext } from "./serving/context.ts";
-import { registerRoutes } from "./serving/routes.ts";
-import { loadSigningKey } from "./serving/signing-key.ts";
-import { createVoiceAvailability } from "./serving/voice.ts";
+import { registerCli } from "./cli.ts";
+import { mountPages, type MountPages, type PagesServer } from "./core.ts";
+import { sweepForeignKv } from "./migrate.ts";
+import { createBbProvider, type BbProvider } from "./provider/index.ts";
+import { createBbServingHost } from "./serving/index.ts";
+import { defineSettings, type LiveSettings } from "./settings.ts";
 
-/**
- * The composition root: the only file that knows every package. Builds the
- * host adapter, the stores and the serving context, then registers routes,
- * the CLI and the agent-instruction hook.
- */
+/** The host's spelling of the five command roles (04 §Command roles; DESIGN §B.6, DR-23): `bb pages <role>`. */
+export const COMMANDS = { init: "bb pages init", guide: "bb pages guide", status: "bb pages status", home: "bb pages home", grants: "bb pages grants" } as const;
+
 export interface PluginOptions {
-  /** Override the host (tests). */
-  host?: SessionHost;
-  /** Override the site strategy (tests, or a host with prefix routes). */
-  site?: (routeBase: string) => SiteStrategy;
+  /** The core's `mountPages` (tests inject a fake). */
+  mount?: MountPages;
   now?: () => number;
 }
 
-export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {}): Promise<ServingContext> {
+export interface Plugin {
+  server: PagesServer;
+  provider: BbProvider;
+  settings: LiveSettings;
+}
+
+export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {}): Promise<Plugin> {
   const settings = await defineSettings(bb);
-  const host = options.host ?? createBbHost(bb);
-  const signingKey = await loadSigningKey(host);
-  const routeBase = `/api/v1/plugins/${bb.pluginId}/http`;
-  const site = options.site
-    ? options.site(routeBase)
-    : createCoreStorageSite(routeBase, (session) => `/api/v1/threads/${encodeURIComponent(session)}/thread-storage/files/`);
-
-  const now = options.now ?? (() => Date.now());
-  const contributions = createContributions(host.contributors, host.log, now);
-  const serving: ServingContext = {
-    host,
-    contributions,
-    // Every document goes through one pipeline: parts in, then own files carried. spec R5.56
-    pages: createPageStore(host, createAssembler(host)),
-    settings,
-    signingKey,
-    site,
-    routeBase,
-    registry: capabilityRegistry,
-    rate: createPageBudget(),
-    submissions: createOutcomeMemory(),
-    replies: createOutcomeMemory(),
-    selections: createSelectionStore(),
-    grants: createGrantStore(host),
-    voice: createVoiceAvailability(host, now),
-    // A grant that ran out holds attachments no call will carry: released, or logged. spec R5.79
-    attachments: createHeldAttachments((call) => void releaseHeld(serving, call.entries, "its upload grant ran out")),
-    hostSessionUrl: bbSessionUrl,
-    now,
-  };
-
-  // The standing instruction, followed by each contributor's fragment so the
-  // agent reads one instruction. Fragments ride only with the instruction;
-  // bb builds instructions synchronously, so they come from the last set read.
-  // spec R6.29, D27
-  /** Each cut fragment is told to the operator once, not at every session start. spec R6.31 */
-  const warned = new Set<string>();
-  const budgetNow = () => {
-    const current = settings.current();
-    if (!current.agentInstructions || !current.agentInstructionText.trim()) return null;
-    return instructionBudget(current.agentInstructionText, contributions.cached(), host.instructionChars ?? null);
-  };
-  const effectiveInstruction = (): string | null => {
-    const current = settings.current();
-    if (!current.agentInstructions || !current.agentInstructionText.trim()) return null;
-    const set = contributions.cached();
-    const budget = instructionBudget(current.agentInstructionText, set, host.instructionChars ?? null);
-    for (const warning of budgetWarnings(budget)) {
-      if (warned.has(warning)) continue;
-      warned.add(warning);
-      host.log.warn(`instructions: ${warning}`);
-    }
-    return joinInstruction(current.agentInstructionText, set);
-  };
-  // Read the contributors once at start, so the first session gets their fragments.
-  void contributions.current();
-
-  // The standing instruction: only eligible sessions, only when enabled.
-  // Visibility is not known here, so `init` rechecks eligibility at call time. spec R6.14
-  bb.agents.configure((context) => {
-    const instruction = effectiveInstruction();
-    const root = context.thread.parentThreadId === null && context.thread.sourceThreadId === null && context.origin.kind === null;
-    return instruction && root ? { tools: [], skills: [], instructions: instruction } : { tools: [], skills: [] };
+  await sweepForeignKv(bb, bb.log, options.now); // 1.9 → 1.10: the old plugin's rows go before the core opens its stores (DESIGN §E)
+  const provider = createBbProvider(bb, {
+    instructionEnabled: () => settings.current().agentInstructions,
+    ...(options.now ? { now: options.now } : {}),
   });
-
-  registerRoutes(bb, serving);
-  registerCli(bb, {
-    serving,
-    guide: async () => buildGuide(capabilityRegistry, site, (await contributions.current()).contributors),
-    effectiveInstruction,
-    instructionBudget: budgetNow,
+  const serving = createBbServingHost(bb);
+  const server = await (options.mount ?? mountPages)(serving, provider.provider, {
+    settings: () => settings.pages(),
+    commands: { ...COMMANDS },
+    routeStrategy: "exact",
+    ...(options.now ? { now: options.now } : {}),
   });
-  return serving;
+  registerCli(bb, { handlers: provider.handlers, log: bb.log });
+  settings.onChange(() => {
+    server.reinject().catch((error: unknown) => bb.log.warn(`instruction: reinject failed: ${error instanceof Error ? error.message : String(error)}`));
+  });
+  bb.events.on("thread.deleted", async ({ thread }) => {
+    provider.forget(thread.id);
+    await server.forgetSession(thread.id); // DR-8: storage, grants, offline copy go with the session
+  });
+  bb.onDispose(() => server.close());
+  return { server, provider, settings };
 }

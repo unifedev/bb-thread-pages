@@ -1,8 +1,0 @@
-<!doctype html>
-<html><head><meta charset="utf-8"><title>race: first revision</title>
-<script>
-  addEventListener("DOMContentLoaded", async () => {
-    try { document.getElementById("echo").textContent = JSON.stringify(await threadPage.invoke("echo.caller", {})); } catch (error) { document.getElementById("echo").textContent = `error ${error.code}`; }
-  });
-</script></head>
-<body><p id="echo"></p></body></html>

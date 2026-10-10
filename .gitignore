@@ -1,5 +1,2 @@
+dist/
 node_modules/
-coverage/
-.DS_Store
-dist/.stage-*
-examples/*/dist/
