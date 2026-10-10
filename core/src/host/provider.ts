@@ -1,4 +1,4 @@
-// `ProviderHost`, `SessionRecord`, `Waiting`, `RespondPayload`, `Message`, `ActivityItem`, `AttachmentRef`, `ProviderError`, `ProviderChoice`, `Placement`, `Logger` — 06 §Required and §Optional, verbatim. Imports only the type ContributorHost from ./contributor.ts.
+// `ProviderHost`, `SessionRecord`, `SessionSettings`, `Waiting`, `RespondPayload`, `Message`, `ActivityItem`, `AttachmentRef`, `ProviderError`, `ProviderChoice`, `Placement`, `Logger` — 06 §Required and §Optional, verbatim. Imports only the type ContributorHost from ./contributor.ts.
 import type { ContributorHost } from "./contributor.ts";
 
 /** What the server asks of the agent runtime. spec 06 §Required, §Optional */
@@ -74,7 +74,11 @@ export interface SessionRecord {
   unread?: boolean; attentionAtMs?: number;
   clearedFromId?: string | null;                                  // the session this one continues after a host-side clear, whose page `init` names (R-P1; DR-7)
   providerId?: string;                                            // the AI provider running this session, one of `providers.list`'s ids; absent where the host has one provider or cannot tell (U47)
+  settings?: SessionSettings;                                     // the session's current model, reasoning level and permission mode as the host knows them, in `providers.list`'s ids; a field absent where the host does not know it — never a guess (U50)
 }
+
+/** A session's current settings as the host knows them: values as `providers.list` lists them; a field is absent where the host cannot tell. spec 03 §`context.get`, 06 R-P2, U50 */
+export interface SessionSettings { model?: string; reasoningLevel?: string; permissionMode?: string }
 
 /** What a waiting session waits on. spec 03 §Session state vocabulary (canonical), 06 R8.7a */
 export type Waiting = {

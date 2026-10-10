@@ -1,7 +1,7 @@
 // `session.reply { settings }` checked against the session's provider row in `providers.list` before any dialog or delivery (03 §`session.reply`, §Errors `settings_unsupported`; U47), and the per-call confirmation of `permissionMode` worded like a decision (R-C7, U29).
 import { SETTING_FIELDS, type SettingField } from "../../../domain/capabilities/specs.ts";
 import { PageError, mapProviderError, settingsUnsupported } from "../../../domain/errors.ts";
-import type { AppliedSettings, ProviderChoice, ReplySettings, SessionRecord, SettingScope } from "../../../host/provider.ts";
+import type { AppliedSettings, ProviderChoice, ReplySettings, SessionRecord, SessionSettings, SettingScope } from "../../../host/provider.ts";
 import type { ServingContext } from "../../context.ts";
 import { quotable } from "../../../domain/quotable.ts";
 import { boundTitle, quoted } from "../handler.ts";
@@ -19,6 +19,25 @@ export interface CheckedSettings {
 export function namedSettings(settings: ReplySettings | undefined): SettingField[] {
   if (!settings) return [];
   return SETTING_FIELDS.filter((field) => settings[field] !== undefined);
+}
+
+const SETTING_VALUE_MAX: Record<SettingField, number> = { model: 160, reasoningLevel: 64, permissionMode: 64 };
+
+/**
+ * A session's current settings as `context.get` and `sessions.snapshot` report them: the record's `settings`, kept to
+ * the three known fields, each a non-empty one-line string the result validator accepts; anything else is dropped, and
+ * an empty set is `undefined` so the key is absent rather than `{}`. The host reports what it knows, never a guess
+ * (06 R-P2; U50).
+ */
+export function knownSettings(record: Pick<SessionRecord, "settings">): SessionSettings | undefined {
+  const given = record.settings;
+  if (!given) return undefined;
+  const out: SessionSettings = {};
+  for (const field of SETTING_FIELDS) {
+    const value = given[field];
+    if (typeof value === "string" && value.length > 0 && value.length <= SETTING_VALUE_MAX[field] && !/[\u0000-\u001f\u007f]/.test(value)) out[field] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** The provider row a session runs on: by `providerId`, else the default row, else the first. 06 R-P2 `providerId` (U47) */

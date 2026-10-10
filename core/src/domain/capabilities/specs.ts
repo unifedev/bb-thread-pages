@@ -43,6 +43,8 @@ const settingScope = s.literal(SETTING_SCOPES, "Scope");
 const settingScopes = s.object({ model: s.optional(settingScope), reasoningLevel: s.optional(settingScope), permissionMode: s.optional(settingScope) }, "Settings");
 /** `session.reply { settings }`: values from `providers.list`, applied to the next turn. U47 */
 const replySettings = s.object({ model: s.optional(safeName("Model id")), reasoningLevel: s.optional(safeName("Reasoning level", 64)), permissionMode: s.optional(safeName("Permission mode", 64)) }, "Settings");
+/** A session's current settings as the host knows them, on `context.get`'s `session` and on `sessions.snapshot` rows: the same ids a reply would name; a field absent where the host cannot tell. U50 */
+const sessionSettings = replySettings;
 const replyDeliveryResult = s.object({ delivery, duplicate: s.boolean(), settings: s.optional(settingScopes) });
 
 export const DECISIONS = ["allow_once", "allow_for_session", "deny"] as const;
@@ -130,15 +132,15 @@ export const contextGet = spec({
   validateResult: result(
     s.object({
       protocolVersion: s.literal([1]),
-      session: s.nullable(s.object({ id: entityId("Session id"), title: title(), workspaceId: entityId("Workspace id") })),
+      session: s.nullable(s.object({ id: entityId("Session id"), title: title(), workspaceId: entityId("Workspace id"), settings: s.optional(sessionSettings) })),
       page: s.object({ revision, readOnly: s.boolean() }),
       capabilities: s.array(rosterEntry, 512),
     }),
   ),
   doc: {
     params: "None.",
-    result: "`{ protocolVersion: 1, session: { id, title, workspaceId } | null, page: { revision, readOnly }, capabilities: [{ method, effect, confirmation, maxRequestBytes, maxResponseBytes, contributor?, description?, reasons? }] }`. `confirmation` is `none`, `required`, or `grant` (asked once per session pair, then remembered). `session` is `null` on the built-in home page. `page.readOnly` is true for an offline copy and for an archived session's page.",
-    notes: "The roster lists what is actually enabled, contributed capabilities included; check it rather than assume.",
+    result: "`{ protocolVersion: 1, session: { id, title, workspaceId, settings? } | null, page: { revision, readOnly }, capabilities: [{ method, effect, confirmation, maxRequestBytes, maxResponseBytes, contributor?, description?, reasons? }] }`. `confirmation` is `none`, `required`, or `grant` (asked once per session pair, then remembered). `session` is `null` on the built-in home page. `session.settings` is `{ model?, reasoningLevel?, permissionMode? }` — this session's current values as the host knows them, in the ids `providers.list` uses; a field the host cannot tell is absent, never guessed. `page.readOnly` is true for an offline copy and for an archived session's page.",
+    notes: "The roster lists what is actually enabled, contributed capabilities included; check it rather than assume. A composer that offers `session.reply { settings }` starts from `session.settings`, so the reader's current choice is the preselected one.",
   },
 });
 
@@ -302,6 +304,7 @@ const sessionRow = s.object({
   turnEndedAtMs: s.nullable(timestamp),
   unread: s.optional(s.boolean()),
   attentionAtMs: s.optional(timestamp),
+  settings: s.optional(sessionSettings),
 });
 export type SessionRow = s.Infer<typeof sessionRow>;
 
@@ -329,7 +332,7 @@ export const sessionsSnapshot = spec({
   validateResult: result(s.object({ sessions: s.array(sessionRow, LIMITS.snapshotMax), nextCursor: s.nullable(cursor), generatedAtMs: timestamp })),
   doc: {
     params: `\`{ workspaceId?, includeArchived?, includeChildren?, limit?, cursor? }\` — \`limit\` 1 to ${LIMITS.snapshotMax}, default ${LIMITS.snapshotDefault}, over it \`invalid_params\`; pass the previous result's \`nextCursor\` to continue. By default only root sessions are listed; \`includeChildren: true\` adds sub-agent sessions. \`projectId\` is accepted for \`workspaceId\`.`,
-    result: "`{ sessions: [{ id, title, workspaceId, parentSessionId, state, status, waiting, archived, page: { available, revision }, updatedAtMs, startedAtMs, turnEndedAtMs, unread?, attentionAtMs? }], nextCursor, generatedAtMs }`. `status` repeats `state` for 0.x readers. `waiting` is as `session.activity` reports it. `page.revision` is known for pages this host served recently and null otherwise.",
+    result: "`{ sessions: [{ id, title, workspaceId, parentSessionId, state, status, waiting, archived, page: { available, revision }, updatedAtMs, startedAtMs, turnEndedAtMs, unread?, attentionAtMs?, settings? }], nextCursor, generatedAtMs }`. `status` repeats `state` for 0.x readers. `waiting` is as `session.activity` reports it. `page.revision` is known for pages this host served recently and null otherwise. `settings` is `{ model?, reasoningLevel?, permissionMode? }`, the session's current values where this host knows them (ids as `providers.list`); absent otherwise.",
     notes: "No message bodies are included; the one piece of agent output is `waiting`. The transcript is `sessions.messages`.",
   },
 });

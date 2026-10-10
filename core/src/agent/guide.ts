@@ -690,7 +690,20 @@ decision; \`model\` and \`reasoningLevel\` are not.
 scope is \`turn\` holds for this one answer: say “for this answer”. One
 whose scope is \`session\` holds from now on, until something changes it
 again: say “from now on”. A field the roster leaves out cannot be changed
-mid-session on this host: do not draw a control for it.`;
+mid-session on this host: do not draw a control for it.
+
+**Start from the session's current values.** \`context.get\` answers
+\`session.settings: { model?, reasoningLevel?, permissionMode? }\` — what this
+session runs on now, as the host knows it, in the same ids \`providers.list\`
+uses; a field the host cannot tell is absent, never guessed. Preselect those
+in your composer, so a reply that does not change anything sends nothing
+under \`settings\`. **A field absent there starts with no value chosen** — an
+“as it is now” choice, or the control left blank — and the reply carries that
+field only when the reader picks a value; never fill it from the first id in
+a list, and never from the provider's \`default\` (that flag says what a new
+session gets, and \`reasoningLevels\` carry none; the control may name it as
+that, not as the selection). Rows of \`sessions.snapshot\` carry the same
+\`settings\` where the host knows them.`;
   if (!provider) return `${head}
 
 On this host no provider is listed, so \`settings\` has nothing to name: a reply that carries it is \`settings_unsupported\`.`;

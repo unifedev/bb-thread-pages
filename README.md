@@ -6,7 +6,7 @@ is, from bb, a browser or your phone over bb Connect.
 
 ```sh
 bb plugin install thread-pages                                                   # the BB Community marketplace
-bb plugin install git:https://github.com/unifedev/bb-thread-pages.git@^1.10.0       # or straight from this repository
+bb plugin install git:https://github.com/unifedev/bb-thread-pages.git@^1.10.1       # or straight from this repository
 ```
 
 bb 0.42 or later. From install, every new session receives a short standing instruction and writes a page; the agent
@@ -30,7 +30,7 @@ A build artefact. The plugin is developed in the private monorepo `unifedev/unif
 tree is written from it by `scripts/release-bb.mjs`: the bb host (`server.ts`, `src/`) with the reference server
 `@unifedev/pages-core` vendored under `core/src/` so that bb's git install — `npm install --omit=dev --omit=optional
 --ignore-scripts`, then `bb plugin build` — builds it with no monorepo around. Nothing here is edited by hand, and
-`main` is only ever a reviewed release (tags `vX.Y.Z`; this is 1.10.0). Report problems in this repository's issues.
+`main` is only ever a reviewed release (tags `vX.Y.Z`; this is 1.10.1). Report problems in this repository's issues.
 
 Thread Pages is a host of the Unife Pages protocol for agent-written pages; the protocol spec is published separately.
 

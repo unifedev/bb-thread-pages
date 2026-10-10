@@ -133,11 +133,23 @@ export function createBbSessions(bb: BbPluginApi, deps: SessionsDeps): ProviderH
     return { request, applied };
   }
 
+  /** `threads.defaultExecutionOptions` for a record's `settings` (U50): the resolved options, or null on `null` and on any failure, thrown or rejected. */
+  async function resolvedOptions(threadId: string): Promise<Record<string, unknown> | null> {
+    try {
+      return asRecord(await bb.sdk.threads.defaultExecutionOptions({ threadId }));
+    } catch {
+      return null;
+    }
+  }
+
   const sessions: ProviderHost["sessions"] = {
     async get(id) {
       const thread = await threadOf(id, "sessions.get");
       if (!thread) return null;
-      return sessionRecordOf(thread, await pendingInteractions(id)); // always, not only when idle (X50)
+      // The pending interactions always, not only when idle (X50); the resolved execution options for `settings` (U50) — a
+      // failure or `null` leaves the record without them, never with a guess. `list` does not make this call per row.
+      const [pending, options] = await Promise.all([pendingInteractions(id), resolvedOptions(id)]);
+      return sessionRecordOf(thread, pending, options);
     },
 
     async list(q) {

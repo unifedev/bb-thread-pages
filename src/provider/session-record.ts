@@ -1,10 +1,12 @@
-// thread → SessionRecord; pending interactions → `waiting` (DESIGN §B.1 `sessionRecordOf`, `waitingOf`).
+// thread → SessionRecord; pending interactions → `waiting`; resolved execution options → `settings` (DESIGN §B.1 `sessionRecordOf`, `waitingOf`, `settingsOf`).
 // A pending interaction wins over `active` (X50); `stopped` is never produced on bb (D-bb-9).
-import type { SessionRecord, Waiting } from "../../core/src/host/index.ts";
+import type { SessionRecord, SessionSettings, Waiting } from "../../core/src/host/index.ts";
 import { asRecord } from "./errors.ts";
 
 export type ThreadLike = Record<string, unknown>;
 export type PendingInteraction = Record<string, unknown>;
+/** What `threads.defaultExecutionOptions({ threadId })` answers: the thread's resolved per-turn options, or null before bb has resolved any. */
+export type ResolvedOptions = Record<string, unknown>;
 
 const WORKING = new Set(["active", "starting", "provisioning", "stopping", "waiting-for-host", "host-reconnecting"]);
 
@@ -24,7 +26,22 @@ export function unreadOf(thread: ThreadLike): boolean {
   return attention > 0 && (read === null || read < attention);
 }
 
-export function sessionRecordOf(thread: ThreadLike, pending: readonly PendingInteraction[]): SessionRecord {
+/**
+ * The thread's current settings as `threads.defaultExecutionOptions` resolves them — `model` (a `providers.models`
+ * id), `reasoningLevel` (an effort id) and `permissionMode` (a `capabilities.permissionModes` id), the same ids
+ * `providers.list` reports, so a page can preselect them (U50). Only string fields are taken; `null` (bb has
+ * resolved nothing for the thread yet) gives nothing: the record then carries no `settings` at all.
+ */
+export function settingsOf(options: ResolvedOptions | null | undefined): SessionSettings | undefined {
+  if (!options) return undefined;
+  const out: SessionSettings = {};
+  if (typeof options.model === "string" && options.model) out.model = options.model;
+  if (typeof options.reasoningLevel === "string" && options.reasoningLevel) out.reasoningLevel = options.reasoningLevel;
+  if (typeof options.permissionMode === "string" && options.permissionMode) out.permissionMode = options.permissionMode;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+export function sessionRecordOf(thread: ThreadLike, pending: readonly PendingInteraction[], options?: ResolvedOptions | null): SessionRecord {
   const state = sessionStateOf(thread, pending);
   const attentionAtMs = numberOf(thread.latestAttentionAt);
   const record: SessionRecord = {
@@ -44,6 +61,8 @@ export function sessionRecordOf(thread: ThreadLike, pending: readonly PendingInt
     attentionAtMs,
   };
   if (typeof thread.providerId === "string" && thread.providerId) record.providerId = thread.providerId;   // the row of `providers.list` a reply's settings are checked against (U47)
+  const settings = settingsOf(options);
+  if (settings) record.settings = settings;   // the thread's current model, effort and mode, where bb has resolved them (U50)
   return record;
 }
 

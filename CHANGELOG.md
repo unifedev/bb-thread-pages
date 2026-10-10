@@ -1,10 +1,64 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` fa37b9d): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 5137b61): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.10.1 (bb plugin) — 2026-10-10
+
+The bb plugin's release of the 0.2.1 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.10.1`; the marketplace entry's range `^1.3.1` reaches
+it). What changes for bb is U50: `context.get`'s `session.settings` carries the thread's current model, reasoning
+level and permission mode as provider ids, read from `threads.defaultExecutionOptions` on `sessions.get`; snapshot
+rows carry no `settings` (one SDK call per row per poll is not paid). Review: `reviews/current-settings.md`. Root
+`pnpm check` on `main` after the merge (`175a86b`): 101 files, 671 tests passed, 1 skipped.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.10.1. `src/provider/session-record.ts` and `src/provider/sessions.ts`: `SessionRecord.settings`
+  from the resolved execution options, mapped to the ids `providers.list` uses; a value the roster does not name is
+  left absent. Tests in `test/provider/session-record.test.ts` and `test/provider/sessions.test.ts`.
+
+## 0.2.1 — 2026-10-10
+
+One decision of the owner's (U50, from owner test 4 finding 5: "always my reasoning") in the protocol
+`bartsoj/unife-pages` (spec 03 R-C10 and R5.11d, 04 R6.24, 06 R-P2, 08 A191), on branch `current-settings`, reviewed
+in `reviews/current-settings.md` (`fb73724`: ship-after CS-1, CS-2; after `b942da6` with CS-1…CS-4 applied: ship) and
+merged as `175a86b`. `PROTOCOL_VERSION` stays 1: the new field is optional on both reads. Root `pnpm check` on the
+merge: 101 files, 671 tests passed, 1 skipped.
+
+### Added
+
+- **A page reads the session's current settings (U50).** `context.get`'s `session` gains `settings?: { model?,
+  reasoningLevel?, permissionMode? }` and `sessions.snapshot` rows the same field: the session's current values as the
+  host knows them, in the ids `providers.list` uses; a field the host cannot tell is absent, never guessed. The guide's
+  "Settings for the next turn" tells a composer to start from them. `SessionRecord.settings?` on the provider contract
+  (06 R-P2); `knownSettings` in `@unifedev/pages-core`'s `serving/bridge/handlers/settings.ts` bounds what is
+  projected. On **bb**, `sessions.get` reads
+  `threads.defaultExecutionOptions` for all three (snapshot rows carry none: one SDK call per row per poll is not
+  paid). On **Claude Code**, the mod reports the model (`$.config.list()`'s alias, `$.session.model()`'s id) and the
+  effort from the `Set effort level to …` line any `/effort` prints — the person's in the terminal or its own — at
+  hello, on every such line and at each turn's end; the daemon maps them to the roster's ids (an alias the roster
+  cannot express, `opus[1m]` or `opusplan`, leaves `model` absent); `permissionMode` is never reported (the only
+  config row is the person's default, not the session's mode — probe on 2.1.296, `claude-pages/NOTES.md` "Current
+  settings"). The guide: a composer starts from `session.settings`; a field absent there starts with no value
+  chosen and travels only when the reader picks one.
+
+### Fixed
+
+- **CS-2 — no default stands in for an absent field.** The guide (`@unifedev/pages-core` `agent/guide.ts`, pinned in
+  `guide.test.ts`), spec 04 R6.24 and the Claude host statement XC15 now say: a field absent from `session.settings`
+  starts with no value chosen — an "as it is now" choice or the control left blank — and the reply carries it only when
+  the reader picks a value; never a list's first id, never the provider's `default` (`reasoningLevels` carry none).
+
+### `@unifedev/pages-core`
+
+- `PAGES_CORE_VERSION` 0.2.1. `domain/capabilities/specs.ts` (the optional `settings` on `context.get`'s session and on
+  snapshot rows), `host/provider.ts` and `host/index.ts` (`SessionRecord.settings`, the `SessionSettings` type),
+  `serving/bridge/handlers/context.ts`, `handlers/sessions.ts`, `handlers/settings.ts` (`knownSettings`),
+  `agent/guide.ts`. Tests: `test/serving/bridge.test.ts`, `test/agent/guide.test.ts`.
 
 ## 1.10.0 (bb plugin) — 2026-10-10
 

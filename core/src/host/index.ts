@@ -3,6 +3,7 @@ export type { ServingHost, RouteTable, Route, PagesRequest, PagesResponse, Reade
 export type {
   ProviderHost,
   SessionRecord,
+  SessionSettings,
   Waiting,
   RespondPayload,
   Message,

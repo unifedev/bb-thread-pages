@@ -10,6 +10,7 @@ import { type BridgeContext, boundTitle, excerpt, existingSession, handler, quot
 import { checkFiles, checkFilesFit, fitSummary } from "./files.ts";
 import { providerCursor, readTranscript } from "./messages.ts";
 import { decisionRequest, executeRespond, refuseRespond } from "./respond.ts";
+import { knownSettings } from "./settings.ts";
 
 // --- reads -------------------------------------------------------------------
 
@@ -50,12 +51,19 @@ export const sessionsSnapshot = handler<SnapshotParams, unknown>({
           turnEndedAtMs: record.turnEndedAtMs,
           ...(record.unread !== undefined ? { unread: record.unread } : {}),
           ...(record.attentionAtMs !== undefined ? { attentionAtMs: record.attentionAtMs } : {}),
+          ...settingsRow(record),
         };
       }),
     );
     return { result: { sessions, nextCursor: listed.nextCursor !== null ? encodeCursor(caller, listed.nextCursor, serving.signingKey) : null, generatedAtMs: serving.now() } };
   },
 });
+
+/** The row's `settings` where the host knows the session's current values (U50); the key is absent otherwise. */
+function settingsRow(record: SessionRecord): { settings?: NonNullable<SessionRecord["settings"]> } {
+  const settings = knownSettings(record);
+  return settings ? { settings } : {};
+}
 
 export const sessionsMessages = handler<MessagesParams & { sessionId: string }, unknown>({
   method: "sessions.messages",
