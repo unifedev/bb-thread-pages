@@ -109,7 +109,8 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     navigator,
     voice,
     readerGesture: (given) => gesture.decide(given),
-    onGranted: () => void poller.pollNow(),
+    // A new grant is in the poll body, not in a new revision: ask for the body. 03 R5.65
+    onGranted: () => void poller.pollNow({ fresh: true }),
     onAnswered: () => poller.expectChange(),
     onStatus: (text) => (text ? notice.set(text) : notice.clear()),
     onBlockedOpen: (url) => notice.link(BLOCKED_TAB_LINE, url, "Open it"),

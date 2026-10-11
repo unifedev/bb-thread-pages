@@ -24,7 +24,9 @@ export interface Poller {
   retarget(): void;
   /** The reader just answered: poll at the working cadence for a while. 05 R2.17a */
   expectChange(): void;
-  pollNow(): Promise<void>;
+  /** Polls now. `fresh` asks without If-None-Match, so the body comes back even when the revision did not move: a
+   *  grant changes the home's grant list, not its document. If a poll is in flight, the fresh one follows it. */
+  pollNow(options?: { fresh?: boolean }): Promise<void>;
   isStopped(): boolean;
 }
 
@@ -54,6 +56,7 @@ export function createPoller(win: Window, config: ShellConfig, events: PollEvent
   let answeredUntil = 0;
   let unreachable = false;
   let lastSource: PageSource = config.source;
+  let freshNext = false;
 
   const hidden = () => win.document.visibilityState === "hidden";
 
@@ -83,8 +86,10 @@ export function createPoller(win: Window, config: ShellConfig, events: PollEvent
     polling = true;
     controller = new AbortController();
     const source = config.documentUrl;
+    const headers: Record<string, string> = freshNext ? { [POLL_HEADER]: "1" } : { "if-none-match": etag, [POLL_HEADER]: "1" };
+    freshNext = false;
     try {
-      const response = await fetchImpl(pollUrl(source), { method: "GET", credentials: "same-origin", cache: "no-store", headers: { "if-none-match": etag, [POLL_HEADER]: "1" }, signal: controller.signal });
+      const response = await fetchImpl(pollUrl(source), { method: "GET", credentials: "same-origin", cache: "no-store", headers, signal: controller.signal });
       if (source !== config.documentUrl) return;
       if (unreachable) {
         unreachable = false;
@@ -139,7 +144,7 @@ export function createPoller(win: Window, config: ShellConfig, events: PollEvent
     } finally {
       controller = null;
       polling = false;
-      schedule(interval());
+      schedule(freshNext ? 0 : interval());
     }
   }
 
@@ -173,7 +178,10 @@ export function createPoller(win: Window, config: ShellConfig, events: PollEvent
       polling = false;
       schedule(interval());
     },
-    pollNow: () => poll(),
+    pollNow(options) {
+      if (options && options.fresh) freshNext = true;
+      return poll();
+    },
     isStopped: () => stopped,
   };
 }

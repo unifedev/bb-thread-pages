@@ -3,535 +3,1873 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Sessions</title>
+<title>Home</title>
 <style>
-  /* The built-in home page: every session on this host and the page it writes.
+  /* The built-in home page: every session on this host, its page or its chat, and the home's own duties.
      Host-neutral, reader-neutral, one file; it holds no authority a page does not hold. 05 R-S12 */
   :root {
     color-scheme: light dark;
-    --bg: #fbfaf7; --panel: #ffffff; --ink: #1b1d22; --ink-2: #555a64; --ink-3: #8a8f99;
-    --line: #e2e0da; --accent: #2f5bd7; --accent-ink: #ffffff; --soft: #eef2fb;
-    --working: #2f8f5b; --waiting: #c47a12; --failed: #c23b3b; --idle: #8a8f99;
+    --bg: #ffffff; --side: #fafafa; --ink: #333333; --ink-2: #525252; --ink-3: #636363;
+    --line: #dfdfdf; --seam: #e9eaea; --hover: #ededed; --sel: #e7e7e7; --btnh: #f3f3f3; --recessed: #f3f3f3;
+    --code: #e6e6e6b3; --warn: #b0540e; --red: #a5000f; --live: #3bb974;
+    --send: #333333; --send-ink: #ffffff; --scrim: #00000066;
+    --lift: 0 -4px 12px -4px #33333312; --md: 0 2px 0 0 #33333326, 0 2px 4px -1px #33333326; --lg: 0 2px 0 0 #33333326, 0 4px 6px -1px #33333326;
+    --font: "Inter Variable", Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    --row: 28px; --side-w: 267px; --col: 728px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #121418; --panel: #1a1d23; --ink: #e8e9ec; --ink-2: #aeb3bd; --ink-3: #7b8190;
-      --line: #2a2e36; --accent: #8fa8ff; --accent-ink: #0f1220; --soft: #1f2536;
-      --working: #5ad48f; --waiting: #f0b25a; --failed: #ff7b7b; --idle: #7b8190;
+      --bg: #151515; --side: #1b1b1b; --ink: #c1c1c1; --ink-2: #b7b7b7; --ink-3: #989898;
+      --line: #313131; --seam: #252525; --hover: #262626; --sel: #333333; --btnh: #262626; --recessed: #1f1f1f;
+      --code: #2c2c2cb3; --warn: #fc8c45; --red: #e06062; --live: #4bc680;
+      --send: #c1c1c1; --send-ink: #151515; --scrim: #00000099;
+      --lift: 0 -4px 12px -4px #00000042; --md: 0 2px 0 0 #00000066, 0 2px 4px -1px #00000066; --lg: 0 2px 0 0 #00000066, 0 4px 6px -1px #00000080;
     }
   }
+  @media (pointer: coarse) { :root { --row: 40px; } .menu .mi { min-height: 40px; } }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
+  html, body { height: 100%; }
   html { background: var(--bg); -webkit-text-size-adjust: 100%; }
-  body { margin: 0; color: var(--ink); background: var(--bg);
-         font: 16px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }
-  main { max-width: 52rem; margin: 0 auto; padding: 1.5rem 1rem 5rem; }
-  @media (min-width: 640px) { main { padding: 2.5rem 1.5rem 6rem; } }
-  h1 { margin: 0 0 .25rem; font-size: 1.75rem; letter-spacing: -.02em; line-height: 1.15; }
-  h2 { margin: 2rem 0 .75rem; font-size: 1.05rem; }
-  h3 { margin: 1.25rem 0 .4rem; font-size: .95rem; color: var(--ink-2); }
-  p { margin: 0 0 .75rem; }
-  .lede { color: var(--ink-2); margin-bottom: 1.25rem; }
-  .note { color: var(--ink-3); font-size: .9rem; border-top: 1px solid var(--line); padding-top: 1rem; margin-top: 2.5rem; }
-  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .9em; }
-  a { color: var(--accent); }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  button { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line);
-           border-radius: 8px; padding: .4rem .75rem; cursor: pointer; }
-  button:hover { border-color: var(--ink-3); }
-  button[disabled] { opacity: .55; cursor: default; }
-  button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
-  button.link { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
-  .toolbar { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; margin-bottom: 1rem; color: var(--ink-2); font-size: .92rem; }
-  .toolbar label { display: inline-flex; gap: .35rem; align-items: center; }
-  [data-error] { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: .6rem .8rem; color: var(--failed); }
-  .workspace { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); margin-bottom: 1rem; overflow: hidden; }
-  .workspace > header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
-                        padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
-  .workspace > header h2 { margin: 0; font-size: 1rem; }
-  .counts { color: var(--ink-3); font-size: .85rem; white-space: nowrap; }
-  .row { display: grid; grid-template-columns: auto 1fr auto; gap: .35rem .7rem; align-items: start;
-         padding: .65rem 1rem; border-bottom: 1px solid var(--line); }
-  .row:last-child { border-bottom: 0; }
-  .dot { width: .6rem; height: .6rem; border-radius: 50%; margin-top: .45rem; background: var(--idle); }
-  .row[data-state="working"] .dot { background: var(--working); }
-  .row[data-state="waiting"] .dot { background: var(--waiting); }
-  .row[data-state="failed"] .dot { background: var(--failed); }
-  .row[data-unread="true"] .title::after { content: ""; display: inline-block; width: .45rem; height: .45rem;
-      border-radius: 50%; background: var(--accent); margin-left: .45rem; vertical-align: middle; }
-  .title { border: 0; background: none; padding: 0; text-align: left; font: inherit; font-weight: 600; color: inherit; cursor: pointer; }
-  .title:hover { text-decoration: underline; }
-  .meta { grid-column: 2; color: var(--ink-2); font-size: .88rem; }
-  .meta em { font-style: normal; font-weight: 600; }
-  .row[data-state="waiting"] .meta em { color: var(--waiting); }
-  .row[data-state="failed"] .meta em { color: var(--failed); }
-  .acts { display: flex; gap: .4rem; flex-wrap: wrap; justify-content: flex-end; }
-  .acts button { font-size: .82rem; padding: .25rem .55rem; }
-  .peek { grid-column: 1 / -1; border-top: 1px dashed var(--line); padding-top: .6rem; margin-top: .3rem; font-size: .9rem; }
-  .peek ol { list-style: none; margin: 0; padding: 0; max-height: 22rem; overflow: auto; }
-  .peek li { padding: .3rem 0; border-bottom: 1px solid var(--line); white-space: pre-wrap; word-break: break-word; }
-  .peek li:last-child { border-bottom: 0; }
-  .peek .who { color: var(--ink-3); font-size: .78rem; display: block; }
-  .peek li[data-kind="assistant"] { color: var(--ink); }
-  .peek li[data-kind="user"] { color: var(--ink-2); }
-  .peek li[data-kind="tool"] { color: var(--ink-3); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .8rem; }
-  .embeds { display: grid; gap: 1rem; grid-template-columns: 1fr; }
-  @media (min-width: 760px) { .embeds { grid-template-columns: 1fr 1fr; } }
-  .embed { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
-  .embed > header { display: flex; justify-content: space-between; gap: .5rem; padding: .5rem .8rem; font-size: .88rem; border-bottom: 1px solid var(--line); }
-  .embed > div { height: 20rem; }
-  .embed iframe { width: 100%; height: 100%; border: 0; display: block; }
-  form[data-start] { display: grid; gap: .8rem; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 1rem; }
-  form[data-start] label { display: grid; gap: .3rem; font-size: .9rem; color: var(--ink-2); }
-  form[data-start] select, form[data-start] textarea, form[data-start] input[type="file"] {
-    font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: .5rem .6rem; width: 100%; }
-  form[data-start] textarea { min-height: 6rem; resize: vertical; }
-  .choices { display: grid; gap: .8rem; grid-template-columns: 1fr; }
-  @media (min-width: 640px) { .choices { grid-template-columns: 1fr 1fr; } }
-  .submit { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; }
-  [role="status"] { color: var(--ink-2); font-size: .9rem; }
-  .empty { color: var(--ink-3); padding: 1rem; }
-  [data-thread-page-notice] { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: .6rem .8rem; color: var(--ink-2); margin-bottom: 1rem; }
-  .grants { grid-column: 2 / -1; margin: .2rem 0 0; padding: 0; list-style: none; font-size: .85rem; color: var(--ink-2); }
-  .grants li { display: flex; flex-wrap: wrap; gap: .4rem .6rem; align-items: center; padding: .2rem 0; }
-  .grants button { font-size: .8rem; padding: .15rem .5rem; }
-  .drafts { list-style: none; margin: 0; padding: 0; display: grid; gap: .8rem; }
-  .draft { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: .8rem 1rem; display: grid; gap: .5rem; }
-  .draft .where { font-size: .88rem; color: var(--ink-2); }
-  .draft textarea { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: .5rem .6rem; width: 100%; min-height: 4rem; resize: vertical; }
-  .draft .acts { justify-content: flex-start; }
-  @media (prefers-reduced-motion: no-preference) { .row { transition: background .15s; } }
+  body { margin: 0; color: var(--ink); background: var(--bg); font: 13px/1.45 var(--font); overflow: hidden; }
+  button, input, textarea { font: inherit; color: inherit; }
+  button { background: none; border: 0; padding: 0; cursor: pointer; text-align: inherit; }
+  button[disabled] { cursor: default; opacity: .5; }
+  :focus-visible { outline: 2px solid var(--ink-3); outline-offset: 1px; border-radius: 6px; }
+  svg.i { width: 16px; height: 16px; flex: none; }
+  svg.i14 { width: 14px; height: 14px; } svg.i12 { width: 12px; height: 12px; }
+  code { font: 12px/16px var(--mono); background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+  /* ---- frame ---- */
+  .app { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr); height: 100%; }
+  .side { background: var(--side); border-right: 1px solid var(--seam); display: flex; flex-direction: column; min-height: 0; }
+  .chrome { height: 48px; display: flex; align-items: center; gap: 2px; padding: 0 8px; flex: none; }
+  .newrow { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 6px; flex: 1; min-width: 0; }
+  .newrow:hover, .ib:hover, .picker:hover { background: var(--btnh); }
+  .newrow.on { background: var(--sel); }
+  .ib { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; color: var(--ink-3); flex: none; position: relative; }
+  .ib:hover { color: var(--ink); }
+  .ib.on { background: var(--sel); color: var(--ink); }
+  .list { flex: 1; overflow: auto; padding: 0 8px 8px; overscroll-behavior: contain; }
+  .group { display: flex; align-items: center; gap: 4px; height: 24px; margin-top: 14px; padding: 0 0 0 8px; font-size: 12px; color: var(--ink-2); border-radius: 6px; cursor: pointer; user-select: none; }
+  .group:first-child { margin-top: 2px; }
+  .group .gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .group .gchev { opacity: 0; color: var(--ink-3); display: inline-flex; }
+  .group:hover .gchev, .group[aria-expanded="false"] .gchev { opacity: 1; }
+  .group .gadd { margin-left: auto; width: 24px; height: 24px; opacity: 0; }
+  .group .gsp { flex: 1; }
+  .group .gsp ~ .gadd { margin-left: 0; display: none; }
+  .group .slot { width: 24px; height: 24px; }
+  .group:hover .gadd, .group .gadd:focus-visible { opacity: 1; }
+  @media (hover: hover) { .group:hover .gsp ~ .gadd { display: inline-flex; } .group:hover .gsp ~ .slot { display: none; } }
+  .row { position: relative; display: flex; align-items: center; gap: 6px; height: var(--row); padding-left: 8px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; }
+  .row .tw[aria-expanded="true"] { opacity: 0; }
+  .row:hover .tw, .row:focus-within .tw { opacity: 1; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .row:hover { background: var(--hover); }
+  .row.sel { background: var(--sel); }
+  .row .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; border-radius: 4px; }
+  .row .sp { flex: 1; }
+  .row .tw { color: var(--ink-3); display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; border-radius: 4px; flex: none; }
+  .row .tw:hover { background: var(--btnh); color: var(--ink); }
+  .row[data-depth="1"] { margin-left: 24px; } .row[data-depth="2"] { margin-left: 48px; } .row[data-depth="3"] { margin-left: 72px; }
+  .row[data-depth]::before { content: ""; position: absolute; left: -15px; top: 0; bottom: 0; border-left: 1px solid var(--line); }
+  .slot { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; color: var(--ink-2); flex: none; }
+  .slot.working { opacity: .5; } .slot.waiting { opacity: .75; } .slot.failed { color: var(--red); }
+  .udot { width: 5px; height: 5px; border-radius: 50%; background: var(--ink-2); opacity: .6; }
+  .hov { display: none; }
+  @media (hover: hover) { .row:hover .hov, .row:focus-within .hov { display: inline-flex; } .row:hover .slot, .row:focus-within .slot { display: none; } }
+  .empty-side { color: var(--ink-3); padding: 14px 8px; }
+  .none-side { color: var(--ink-3); margin: 0; padding: 0 8px; height: var(--row); display: flex; align-items: center; }
+  .more-side { display: block; width: 100%; margin-top: 10px; height: var(--row); padding: 0 8px; border-radius: 6px; color: var(--ink-3); text-align: left; }
+  .more-side:hover { background: var(--hover); color: var(--ink); }
+  .foot { display: flex; align-items: center; gap: 2px; padding: 6px 8px 8px; flex: none; }
+  .foot .ib { width: 32px; height: 32px; }
+  .bdg { position: absolute; top: 2px; right: 1px; min-width: 14px; height: 14px; border-radius: 7px; background: var(--ink); color: var(--bg); font: 600 9.5px/14px var(--font); text-align: center; padding: 0 3px; }
+
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; background: var(--bg); }
+  [data-thread-page-notice] { margin: 8px 16px 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--side); color: var(--ink-2); }
+  .view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .bar { height: 48px; display: flex; align-items: center; gap: 4px; padding: 0 10px 0 16px; flex: none; min-width: 0; }
+  .bar.line { border-bottom: 1px solid color-mix(in oklab, var(--seam) 60%, transparent); }
+  .bar .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .bar .fill { flex: 1; }
+  .drawer-btn { display: none; }
+  .seg { display: inline-flex; gap: 2px; margin-right: 6px; flex: none; }
+  .seg button { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px; border-radius: 6px; color: var(--ink-2); font-size: 12px; }
+  .seg button:hover:not([disabled]) { background: var(--btnh); }
+  .seg button[aria-pressed="true"] { background: var(--sel); color: var(--ink); }
+  .chip { font-size: 11.5px; color: var(--ink-3); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; line-height: 18px; flex: none; margin-left: 6px; }
+  .hostbtn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; font-weight: 500; white-space: nowrap; flex: none; margin-left: 2px; }
+  .hostbtn:hover { background: var(--btnh); }
+  .seg button.attn::after { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--ink-2); margin-left: 1px; }
+  .strip { display: flex; align-items: center; gap: 10px; padding: 6px 10px 6px 16px; border-top: 1px solid color-mix(in oklab, var(--seam) 60%, transparent); background: var(--side); color: var(--ink-2); font-size: 12.5px; flex: none; }
+  .strip .gbtn { margin-left: auto; }
+  .hdot { width: 6px; height: 6px; border-radius: 50%; background: var(--live); }
+  .hdot.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); width: 7px; height: 7px; }
+
+  /* ---- composer ---- */
+  .compose { width: 100%; max-width: var(--col); border: 1px solid var(--line); border-radius: 12px; background: var(--bg); box-shadow: var(--lift); position: relative; }
+  .compose:focus-within { border-color: color-mix(in oklab, var(--ink-3) 45%, var(--line)); }
+  .compose .chips { display: flex; gap: 6px; padding: 10px 12px 0; flex-wrap: wrap; }
+  .compose .chips:empty { display: none; }
+  .fchip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 4px 1px 8px; color: var(--ink-2); max-width: 100%; }
+  .fchip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fchip button { display: inline-flex; width: 18px; height: 18px; align-items: center; justify-content: center; border-radius: 50%; color: var(--ink-3); }
+  .fchip button:hover { background: var(--btnh); color: var(--ink); }
+  .compose .edrow { display: flex; align-items: flex-end; }
+  .compose textarea { flex: 1; min-width: 0; display: block; border: 0; outline: 0; resize: none; background: transparent; padding: 12px 16px 39px; margin-bottom: 7px; line-height: 1.7; min-height: 105px; max-height: 50vh; }
+  .compose textarea::placeholder { color: var(--ink-3); opacity: 1; }
+  .compose .tools { position: absolute; left: 8px; bottom: 8px; display: flex; align-items: center; gap: 2px; right: 56px; pointer-events: none; }
+  .compose .tools > * { pointer-events: auto; }
+  .compose .sendcol { flex: none; padding: 0 8px 8px 0; display: flex; gap: 6px; align-items: center; }
+  .send { width: 32px; height: 32px; border-radius: 6px; background: var(--send); color: var(--send-ink); display: inline-flex; align-items: center; justify-content: center; }
+  .send[disabled] { opacity: .5; }
+  .picker { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border-radius: 6px; color: var(--ink-2); font-size: 12px; white-space: nowrap; max-width: 100%; overflow: hidden; }
+  .picker .pl { overflow: hidden; text-overflow: ellipsis; }
+  .under { width: 100%; max-width: var(--col); display: flex; align-items: center; gap: 2px; padding: 4px 8px 0; min-height: 28px; }
+  .under .picker { height: 24px; font-weight: 500; }
+  .under .perm { margin-left: auto; }
+  .under .perm.warn { color: var(--warn); }
+  .status { width: 100%; max-width: var(--col); color: var(--ink-3); font-size: 12px; padding: 4px 12px 0; min-height: 20px; }
+  .status:empty { display: none; }
+  .status.err { color: var(--red); }
+
+  /* ---- new session ---- */
+  .newview { flex: 1; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 8px 24px 24px; }
+  .recent { display: none; }
+  .note-host { color: var(--ink-3); max-width: var(--col); width: 100%; padding: 16px 4px; }
+
+  /* ---- session: page ---- */
+  .pagewrap { flex: 1; min-height: 0; position: relative; border-top: 1px solid color-mix(in oklab, var(--seam) 60%, transparent); }
+  .pagewrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
+
+  /* ---- session: chat ---- */
+  .scroller { flex: 1; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 14px 24px 12px; overscroll-behavior: contain; }
+  .col { width: 100%; max-width: var(--col); display: flex; flex-direction: column; gap: 8px; line-height: 1.625; }
+  .older { align-self: center; color: var(--ink-3); font-size: 12px; padding: 2px 0 8px; }
+  .ub { align-self: flex-end; max-width: min(70%, 510px); background: var(--recessed); border: 1px solid var(--seam); border-radius: 12px; padding: 8px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ub .from { display: block; font-size: 11.5px; color: var(--ink-3); white-space: normal; }
+  .ub .files, .md .files { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; white-space: normal; }
+  .md { overflow-wrap: anywhere; }
+  .md p { margin: 0 0 8px; } .md p:last-child { margin-bottom: 0; }
+  .md ul, .md ol { margin: 0 0 8px; padding-left: 22px; }
+  .md h1, .md h2, .md h3, .md h4 { font-size: 14px; margin: 10px 0 6px; font-weight: 600; }
+  .md pre { margin: 0 0 8px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; font: 12px/1.45 var(--mono); overflow: auto; white-space: pre; }
+  .md a { color: inherit; text-underline-offset: 2px; }
+  .md strong { font-weight: 700; }
+  .worked { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-3); align-self: flex-start; border-radius: 6px; padding: 0 2px; }
+  .worked:hover { color: var(--ink-2); }
+  .worked .chev { transition: transform .15s; } .worked[aria-expanded="true"] .chev { transform: rotate(90deg); }
+  .tl { margin-left: 5px; padding-left: 16px; border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; }
+  .tl .md { color: var(--ink); }
+  .trow { display: flex; align-items: center; gap: 7px; color: var(--ink-2); min-height: 22px; text-align: left; width: 100%; border-radius: 4px; }
+  .trow:hover { color: var(--ink); }
+  .trow .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .trow .tn em { font-style: normal; color: var(--ink-3); }
+  .trow .errtag { font: 12px var(--mono); color: var(--ink-3); opacity: .75; }
+  .tbox .out { display: block; margin-top: 6px; color: var(--ink-2); }
+  .tbox { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; margin: 2px 0 4px; }
+  .tbox .lbl { color: var(--ink-3); font-family: var(--font); display: block; margin-bottom: 2px; }
+  .sysline { color: var(--ink-3); display: flex; gap: 6px; align-items: center; }
+  .waitslot { width: 100%; max-width: var(--col); }
+  .ask { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--bg); box-shadow: var(--md); margin-top: 8px; }
+  .ask .q { font-weight: 500; margin: 0 0 8px; display: flex; gap: 8px; align-items: flex-start; }
+  .ask .q svg { margin-top: 1px; opacity: .75; }
+  .ask .qtext { white-space: pre-wrap; }
+  .ask fieldset { border: 0; margin: 0 0 8px; padding: 0; }
+  .ask legend { padding: 0; margin-bottom: 4px; }
+  .ask label.o { display: flex; align-items: center; gap: 9px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; margin-top: 6px; cursor: pointer; }
+  .ask label.o:has(input:checked) { background: var(--btnh); }
+  .ask input[type="radio"], .ask input[type="checkbox"] { accent-color: var(--ink); margin: 0; }
+  .ask input[type="text"] { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; background: var(--bg); margin-top: 6px; outline: 0; }
+  .ask input[type="text"]:focus { border-color: var(--ink-3); }
+  .ask pre { margin: 0 0 4px; font: 12px/1.45 var(--mono); background: var(--recessed); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
+  .ask .act { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+  .ask .hint { color: var(--ink-3); font-size: 12px; }
+  .pbtn { display: inline-flex; align-items: center; height: 28px; padding: 0 12px; border-radius: 6px; background: var(--send); color: var(--send-ink); font-weight: 500; font-size: 12px; }
+  .gbtn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--line); font-weight: 500; font-size: 12px; background: var(--bg); white-space: nowrap; }
+  .gbtn:hover { background: var(--btnh); }
+  .gbtn.red { color: var(--red); }
+  .dock { flex: none; display: flex; flex-direction: column; align-items: center; padding: 0 24px 10px; }
+  .dock .compose textarea { min-height: 88px; }
+  .nudge { width: 100%; max-width: var(--col); display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-bottom: 0; background: var(--side); border-radius: 12px 12px 0 0; padding: 7px 8px 13px 12px; margin-bottom: -6px; font-size: 12.5px; color: var(--ink-2); }
+  .nudge .gbtn { margin-left: auto; }
+  .readonly { width: 100%; max-width: var(--col); color: var(--ink-3); text-align: center; padding: 10px; border: 1px dashed var(--line); border-radius: 12px; }
+
+  /* ---- lists: drafts, permissions, gone ---- */
+  .doc { flex: 1; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 8px 24px 40px; }
+  .doc .col { gap: 10px; }
+  .doc h1 { font-size: 15px; font-weight: 600; margin: 4px 0 2px; }
+  .doc .lede { color: var(--ink-3); margin: 0 0 6px; }
+  .card { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .card .where { color: var(--ink-2); font-size: 12px; }
+  .card textarea { width: 100%; min-height: 64px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--recessed); resize: vertical; }
+  .card .act { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pair { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .pair:first-of-type { border-top: 0; }
+  .pair .pt { flex: 1; min-width: 0; }
+  .pair .pt b { font-weight: 500; }
+  .pair .pt span { display: block; color: var(--ink-3); font-size: 12px; }
+  .muted { color: var(--ink-3); }
+
+  /* ---- floating layer: menus, search, toasts ---- */
+  .menu { position: fixed; z-index: 35; min-width: 214px; max-width: min(340px, calc(100vw - 16px)); max-height: min(440px, calc(100vh - 16px)); overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--md); padding: 4px; font-size: 12px; }
+  .menu .mi { display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 4px 8px; border-radius: 4px; width: 100%; text-align: left; }
+  .menu .mi:hover, .menu .mi:focus-visible, .menu .mi.cur { background: var(--btnh); outline: 0; }
+  .menu .mi .k { margin-left: auto; color: var(--ink-3); padding-left: 12px; }
+  .menu .mi.red { color: var(--red); }
+  .menu .mi .ck { width: 16px; display: inline-flex; flex: none; margin-left: 8px; }
+  .menu .mi .ck.push { margin-left: auto; }
+  .menu .mi .ml { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .menu .sep { height: 1px; background: var(--line); margin: 4px -4px; }
+  .menu .mh { font-size: 11.5px; color: var(--ink-3); padding: 6px 8px 2px; }
+  .menu input[type="search"] { width: 100%; border: 0; border-bottom: 1px solid var(--line); outline: 0; background: transparent; padding: 6px 8px 8px; margin-bottom: 4px; }
+  .menu .tabs { display: flex; gap: 2px; padding: 2px 2px 6px; overflow-x: auto; scrollbar-width: none; }
+  .menu .tabs button, .menu .segrow button { white-space: nowrap; flex: none; }
+  .menu.wide { min-width: 320px; }
+  .menu .tabs button { height: 24px; padding: 0 8px; border-radius: 4px; color: var(--ink-2); }
+  .menu .tabs button[aria-pressed="true"] { background: var(--sel); color: var(--ink); }
+  .menu .segrow { display: flex; gap: 2px; padding: 2px 4px 4px; overflow-x: auto; scrollbar-width: none; }
+  .menu .segrow button { height: 24px; padding: 0 8px; border-radius: 4px; color: var(--ink-2); }
+  .menu .segrow button:hover { background: var(--btnh); }
+  .menu .segrow button[aria-pressed="true"] { background: var(--sel); color: var(--ink); }
+  .scrim { position: fixed; inset: 0; z-index: 30; background: var(--scrim); display: flex; justify-content: center; align-items: flex-start; padding: 108px 16px 16px; }
+  .palette { width: 640px; max-width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--lg); overflow: hidden; display: flex; flex-direction: column; max-height: calc(100vh - 140px); }
+  .palette .ph { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--line); color: var(--ink-3); }
+  .palette .ph input { flex: 1; border: 0; outline: 0; background: transparent; font-size: 14px; padding: 6px 0; color: var(--ink); min-width: 0; }
+  .palette .res { overflow: auto; padding: 4px; }
+  .palette .pr { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 6px; width: 100%; text-align: left; }
+  .palette .pr.cur { background: var(--btnh); }
+  .palette .pr .pt { flex: 1; min-width: 0; }
+  .palette .pr .pt b { display: block; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .palette .pr .pt span { color: var(--ink-3); font-size: 12px; }
+  .palette .none { color: var(--ink-3); padding: 14px 10px; }
+  .palette .sec { color: var(--ink-3); font-size: 12px; margin: 6px 10px 2px; }
+  .palette .pr .pt span svg { vertical-align: -1px; }
+  .toasts { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 40; display: flex; flex-direction: column; gap: 6px; align-items: center; width: max-content; max-width: calc(100vw - 24px); pointer-events: none; }
+  .toast { background: var(--ink); color: var(--bg); border-radius: 8px; padding: 7px 12px; font-size: 12.5px; box-shadow: var(--lg); pointer-events: auto; display: flex; gap: 10px; align-items: center; }
+  .toast button { text-decoration: underline; text-underline-offset: 2px; }
+  .tip { position: fixed; z-index: 50; background: #1f1f1f; color: #fff; font-size: 12px; padding: 3px 8px; border-radius: 6px; pointer-events: none; white-space: nowrap; }
+
+  /* ---- phone: no sidebar column; it opens as a drawer that pushes the main view ---- */
+  @media (max-width: 720px) {
+    .app { transition: transform .2s cubic-bezier(.4,0,.2,1); grid-template-columns: min(335px, 86vw) 100vw; transform: translateX(calc(-1 * min(335px, 86vw))); }
+    .app.drawer { transform: none; }
+    .app.drawer .main::after { content: ""; position: absolute; inset: 0; z-index: 5; }
+    .drawer-btn { display: inline-flex; }
+    .bar { padding: 0 6px; gap: 2px; }
+    .bar .title { padding-left: 4px; }
+    .seg button .sl, .hostbtn .hl, .tabbtn { display: none; }
+    .hostbtn { padding: 0 7px; gap: 4px; }
+    .seg button { padding: 0 7px; }
+    .seg { margin-right: 0; }
+    .newview { padding: 0 10px 8px; justify-content: flex-end; }
+    .newview .compose textarea { font-size: 15px; min-height: 96px; }
+    .recent { display: block; width: 100%; margin-bottom: 10px; }
+    .recent h2 { font-size: 12px; font-weight: 400; color: var(--ink-3); margin: 0 0 6px 6px; }
+    .rc { display: flex; align-items: center; gap: 10px; padding: 7px 6px; width: 100%; text-align: left; border-radius: 8px; }
+    .rc .tile { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line); display: inline-flex; align-items: center; justify-content: center; color: var(--ink-2); flex: none; }
+    .rc .tx { min-width: 0; flex: 1; } .rc .tx b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .rc .tx span { color: var(--ink-3); font-size: 12px; }
+    .scroller { padding: 10px 12px; }
+    .dock { padding: 0 10px 8px; }
+    .dock .compose textarea { font-size: 15px; min-height: 72px; }
+    .ub { max-width: 85%; }
+    .doc { padding: 8px 12px 32px; }
+    .scrim { padding-top: 56px; }
+  }
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <h1>Sessions</h1>
-    <p class="lede">Every session on this host and the page its agent writes. <span data-meta></span></p>
-  </header>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-new" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v8M8 12h8"/><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></symbol>
+    <symbol id="i-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></symbol>
+    <symbol id="i-ask" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.1-2.4 3.6"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-fail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m14.8 9.2-5.6 5.6M9.2 9.2l5.6 5.6"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 8h15v9.5a2.5 2.5 0 0 1-2.5 2.5H7a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M3.5 4.5h17V8h-17z"/><path d="M12 11v5.5M9.8 14.3 12 16.5l2.2-2.2"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5.5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18.5" cy="12" r="1.4"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 6 6 6-6 6"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9.5 6 6 6-6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+    <symbol id="i-enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 5v6.5a3 3 0 0 1-3 3H6"/><path d="m9.5 11-3.5 3.5L9.5 18"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.2l2 2.2h7.8A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5Z"/></symbol>
+    <symbol id="i-folder-add" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V9.7a2.5 2.5 0 0 0-2.5-2.5h-7.8l-2-2.2H5.5A2.5 2.5 0 0 0 3 7.5v10A2.5 2.5 0 0 0 5.5 20H12"/><path d="M18 15v6M15 18h6"/></symbol>
+    <symbol id="i-page" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4" width="17" height="16" rx="2.5"/><path d="M3.5 8.5h17M7 12.5h6M7 15.5h9"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17A2.5 2.5 0 0 1 4 14.5Z"/></symbol>
+    <symbol id="i-tab" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 4H20v6.5M20 4l-8.5 8.5"/><path d="M18 14v3.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 4 17.5v-9A2.5 2.5 0 0 1 6.5 6H10"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5"/></symbol>
+    <symbol id="i-host" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7 10 2.5 2L7 14M12 15h4"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+    <symbol id="i-draft" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3.5H7.5A2.5 2.5 0 0 0 5 6v12a2.5 2.5 0 0 0 2.5 2.5h9A2.5 2.5 0 0 0 19 18V8.5Z"/><path d="M14 3.5v5h5M8.5 13h7M8.5 16.5h4.5"/></symbol>
+    <symbol id="i-dot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3.5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 7 4.5 4.5L5 16M12 17h7"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3.5H7.5A2.5 2.5 0 0 0 5 6v12a2.5 2.5 0 0 0 2.5 2.5h9A2.5 2.5 0 0 0 19 18V8.5Z"/><path d="M14 3.5v5h5"/></symbol>
+    <symbol id="i-tool" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.5a4 4 0 0 0 5 5L12 19a2.1 2.1 0 0 1-3-3Z"/><path d="M14.5 6.5 17 4l3 3-2.5 2.5"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9Z"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5h.01"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4" width="17" height="16" rx="3"/><path d="M9.5 4v16"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M7 12h10M10 18h4"/></symbol>
+  </defs>
+</svg>
 
-  <p data-thread-page-notice hidden></p>
-  <p data-error hidden role="alert"></p>
-
-  <section data-embeds-section hidden>
-    <h2>Working now</h2>
-    <div class="embeds" data-embeds></div>
-  </section>
-
-  <section>
-    <div class="toolbar">
-      <label><input type="checkbox" data-archived> Show archived</label>
-      <label><input type="checkbox" data-children> Show sub-agent sessions</label>
-      <button type="button" data-refresh>Refresh</button>
+<div class="app" data-app>
+  <aside class="side" data-side aria-label="Sessions">
+    <div class="chrome">
+      <button type="button" class="ib drawer-btn" data-drawer-close aria-label="Hide sessions"><svg class="i"><use href="#i-panel"/></svg></button>
+      <button type="button" class="newrow" data-new><svg class="i"><use href="#i-new"/></svg>New session</button>
+      <button type="button" class="ib" data-search data-tip="Search sessions (⌘K)" aria-label="Search sessions"><svg class="i"><use href="#i-search"/></svg></button>
     </div>
-    <div data-workspaces><p class="empty">Loading…</p></div>
-  </section>
-
-  <section data-drafts-section hidden>
-    <h2>Unsent drafts</h2>
-    <p class="lede">Text you typed into a page that could not be put back where it was: the form changed, or the page filled the field itself. Copy it where you need it, or discard it.</p>
-    <ul class="drafts" data-drafts></ul>
-  </section>
-
-  <section>
-    <h2>Start a session</h2>
-    <form data-start data-thread-page-manual>
-      <div class="choices">
-        <label>Workspace <select name="workspace" required></select></label>
-        <label data-environment hidden>Environment <select name="environment"></select></label>
-        <label data-provider hidden>Provider <select name="provider"></select></label>
-        <label data-model hidden>Model <select name="model"></select></label>
-      </div>
-      <label>What should it do? Say what to report and what not to change.
-        <textarea name="prompt" rows="4"></textarea></label>
-      <label data-files>Files to attach <input type="file" name="files" multiple></label>
-      <div class="submit">
-        <button type="submit" class="primary">Start</button>
-        <span data-start-status role="status"></span>
-      </div>
-    </form>
-  </section>
-
-  <p class="note">Any page can replace this one: run the <code>home</code> command in a session to make its page home, and
-    <code>home --clear</code> to come back here. This page keeps nothing about you; it reads what the host already shows.</p>
-</main>
+    <nav class="list" data-list><p class="empty-side">Loading…</p></nav>
+    <div class="foot" data-foot>
+      <button type="button" class="ib" data-drafts data-tip="Unsent drafts" aria-label="Unsent drafts"><svg class="i"><use href="#i-draft"/></svg></button>
+      <button type="button" class="ib" data-perms data-tip="Page permissions" aria-label="Page permissions"><svg class="i"><use href="#i-lock"/></svg></button>
+    </div>
+  </aside>
+  <main class="main" data-main>
+    <p data-thread-page-notice hidden></p>
+    <div class="view" data-view></div>
+  </main>
+</div>
+<!-- The new-session field is in the markup from the start, so the shell finds it when it restores a draft after a
+     reload, before the script has built the view; the script moves it into the composer. 02 R-K4 -->
+<div hidden data-parking><textarea id="hub-new-prompt" rows="1" placeholder="Ask anything." aria-label="What should the new session do?"></textarea></div>
+<div data-layer></div>
+<div class="toasts" data-toasts role="status" aria-live="polite"></div>
 
 <script>
 (async () => {
+  "use strict";
   const tp = window.threadPage;
   const $ = (selector, root) => (root || document).querySelector(selector);
-  const el = (tag, text, className) => {
-    const node = document.createElement(tag);
-    if (text !== undefined) node.textContent = text;
-    if (className) node.className = className;
-    return node;
-  };
-  const errorEl = $("[data-error]"), metaEl = $("[data-meta]"), listEl = $("[data-workspaces]");
-  const archivedEl = $("[data-archived]"), childrenEl = $("[data-children]"), refreshEl = $("[data-refresh]");
-  const embedsSection = $("[data-embeds-section]"), embedsEl = $("[data-embeds]");
-  const draftsSection = $("[data-drafts-section]"), draftsEl = $("[data-drafts]");
-  const form = $("[data-start]"), startStatus = $("[data-start-status]");
 
-  // Every piece of state `render()` and `renderDrafts()` read, declared before any listener that can call them: the host
-  // hands grants and drafts at connect, before the reads below resolve, and `let`/`const` after an `await` would be in
-  // their temporal dead zone then. Loaded values are assigned, never declared, further down.
-  const WATCH_MS = 8000, PAGE_LIMIT = 200, MAX_PAGES = 5, PEEK_ROWS = 20, EMBEDS = 4;
+  // Every piece of state a listener can reach is declared before the first `await`: the host hands grants and drafts
+  // at connect, before the reads below resolve. 05 R-S12
+  const SNAPSHOT_MS = 6000, CHAT_MS = 2000, CHAT_ROWS = 60, MAX_FILES = 8;
   let grants = [], drafts = [];
-  let workspaces = [], sessions = [], stopWatch = null, loadedAt = 0;
-  let capabilities = new Set(), canEmbed = false;
-  let prefs = { archived: false, children: false, open: {} };
-  let providers = [];
-  const peeks = new Map();
-  const embedded = new Map();
-  const has = (method) => capabilities.has(method);
+  let roster = new Set(), canEmbed = false;
+  let workspaces = [], providers = [], sessions = [], byId = new Map(), loadedAt = 0, loadFailed = false;
+  let archived = null;
+  let prefs = { view: null, modes: {}, groups: {}, open: {}, compose: {} };
+  let view = { kind: "new" };
+  let teardown = null, refresh = null;
+  let sideSig = "";
+  const readMarked = new Map();
+  const chatDrafts = new Map();
+  const has = (method) => roster.has(method);
 
-  const fail = (message) => { errorEl.hidden = !message; errorEl.textContent = message || ""; };
-  const describe = (error) => (error && error.code ? error.code + ": " : "") + ((error && error.message) || String(error));
-  const handle = (error) => {
-    if (!error) return;
-    if (error.code === "cancelled") return;
-    if (error.code === "rate_limited") { fail("The host is rate limiting this page; it keeps watching."); return; }
-    fail(describe(error));
-  };
+  // ---- small DOM helpers -----------------------------------------------------------------------------
+  function h(tag, props, ...children) {
+    const node = document.createElement(tag);
+    if (props) for (const [key, value] of Object.entries(props)) {
+      if (value === undefined || value === null || value === false) continue;
+      if (key === "class") node.className = value;
+      else if (key === "text") node.textContent = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else if (key === "dataset") Object.assign(node.dataset, value);
+      else node.setAttribute(key, value === true ? "" : value);
+    }
+    for (const child of children.flat()) if (child !== null && child !== undefined && child !== false) node.append(typeof child === "string" ? document.createTextNode(child) : child);
+    return node;
+  }
+  const SVG = "http://www.w3.org/2000/svg";
+  function icon(name, size, extra) {
+    const svg = document.createElementNS(SVG, "svg");
+    svg.setAttribute("class", "i" + (size ? " i" + size : "") + (extra ? " " + extra : ""));
+    svg.setAttribute("aria-hidden", "true");
+    const use = document.createElementNS(SVG, "use");
+    use.setAttribute("href", "#i-" + name);
+    svg.append(use);
+    return svg;
+  }
+  function button(props, ...children) { return h("button", { type: "button", ...props }, ...children); }
+
+  const describe = (error) => (error && error.message) || String(error);
   const ago = (ms) => {
     if (!ms) return "";
     const delta = Date.now() - ms;
-    if (delta < 45e3) return "just now";
-    if (delta < 3600e3) return Math.max(1, Math.round(delta / 60e3)) + " min ago";
-    if (delta < 86400e3) return Math.round(delta / 3600e3) + " h ago";
-    return Math.round(delta / 86400e3) + " d ago";
+    if (delta < 45e3) return "now";
+    if (delta < 3600e3) return Math.max(1, Math.round(delta / 60e3)) + "m ago";
+    if (delta < 86400e3) return Math.round(delta / 3600e3) + "h ago";
+    return Math.round(delta / 86400e3) + "d ago";
   };
-  const recency = (session) => Math.max(session.attentionAtMs || 0, session.updatedAtMs || 0);
-  const stateWord = { working: "working", waiting: "waiting on you", failed: "failed", stopped: "stopped", idle: "idle" };
-  const when = (ms) => (ms ? new Date(ms).toLocaleString() : "never");
+  const span = (ms) => {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + "s";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + "m " + (s % 60) + "s";
+    return Math.floor(m / 60) + "h " + (m % 60) + "m";
+  };
+  const size = (bytes) => (bytes < 1024 ? bytes + " B" : bytes < 1048576 ? Math.round(bytes / 1024) + " KB" : (bytes / 1048576).toFixed(1) + " MB");
+  const recency = (session) => Math.max(session.attentionAtMs || 0, session.updatedAtMs || 0, session.startedAtMs || 0);
+  const titleOf = (session) => (session && session.title) || "Untitled session";
+  const workspaceName = (id) => { const found = workspaces.find((workspace) => workspace.id === id); return found ? found.name : "Other"; };
+  const isPhone = () => typeof window.matchMedia === "function" && window.matchMedia("(max-width: 720px)").matches;
+
+  // ---- toasts and errors ----------------------------------------------------------------------------
+  function toast(text, action) {
+    const host = $("[data-toasts]");
+    const node = h("div", { class: "toast" }, h("span", { text }));
+    if (action) node.append(button({ onclick: () => { node.remove(); action.run(); } }, action.label));
+    host.append(node);
+    setTimeout(() => node.remove(), action ? 9000 : 6000);
+  }
+  /** Says what failed, unless the reader declined a confirmation themselves. 03 R5.39 */
+  function handle(error, what) {
+    if (!error || error.code === "cancelled") return;
+    if (error.code === "rate_limited") { toast("The host is busy; the hub keeps trying."); return; }
+    toast((what ? what + ": " : "") + describe(error));
+  }
 
   // What the host hands this page: every grant pair on the host, and the drafts no page could restore. 05 R-S12
-  document.addEventListener("thread-page:grants", (event) => { grants = (event.detail && event.detail.grants) || []; render(); });
-  document.addEventListener("thread-page:drafts", (event) => { drafts = (event.detail && event.detail.drafts) || []; renderDrafts(); });
+  document.addEventListener("thread-page:grants", (event) => { grants = (event.detail && event.detail.grants) || []; dutiesChanged(); });
+  document.addEventListener("thread-page:drafts", (event) => { drafts = (event.detail && event.detail.drafts) || []; dutiesChanged(); });
+
+  const viewEl = $("[data-view]"), listEl = $("[data-list]"), appEl = $("[data-app]"), layerEl = $("[data-layer]");
+  // ↑ and ↓ move between rows, as in the host's own list.
+  listEl.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const all = [...listEl.querySelectorAll(".row .t, .group")];
+    const at = all.indexOf(document.activeElement);
+    if (at < 0) return;
+    event.preventDefault();
+    const next = all[Math.max(0, Math.min(all.length - 1, at + (event.key === "ArrowDown" ? 1 : -1)))];
+    if (next) next.focus();
+  });
 
   if (!tp) {
-    listEl.replaceChildren(el("p", "This document is a page of the host: open it through the host, not as a file.", "empty"));
+    listEl.replaceChildren(h("p", { class: "empty-side", text: "Open this page through the host." }));
+    viewEl.replaceChildren(h("div", { class: "newview" }, h("p", { class: "note-host", text: "This document is the home page of a host: open it through the host, not as a file." })));
     return;
   }
 
-  // What is on this host: the roster decides what the page offers. 03 R5.9
-  try {
-    const context = await tp.invoke("context.get");
-    capabilities = new Set(context.capabilities.map((entry) => entry.method));
-  } catch (error) { fail("Could not read this page's capabilities: " + describe(error)); }
-  canEmbed = typeof tp.embed === "function" && has("pages.read");
-
-  // Preferences live in this page's own storage namespace; nothing about the reader is kept. 05 R-S12
-  try {
-    const stored = await tp.invoke("storage.get", { key: "home.prefs" });
-    if (stored.found && stored.value && typeof stored.value === "object") prefs = { ...prefs, ...stored.value };
-  } catch (error) { if (error.code !== "unavailable") handle(error); }
-  if (!prefs.open || typeof prefs.open !== "object") prefs.open = {};
-  const savePrefs = () => tp.invoke("storage.set", { key: "home.prefs", value: prefs }).catch(() => {});
-  archivedEl.checked = !!prefs.archived;
-  childrenEl.checked = !!prefs.children;
-
-  async function loadWorkspaces() {
-    try {
-      const result = await tp.invoke("workspaces.list");
-      workspaces = result.workspaces;
-    } catch (error) { handle(error); workspaces = []; }
+  // ---- floating menus -------------------------------------------------------------------------------
+  let closeMenu = null, menuAnchor = null;
+  function dismiss() { if (closeMenu) { const close = closeMenu; closeMenu = null; close(); } }
+  /** One menu at a time, anchored under (or above) its control; Escape and an outside press close it. */
+  function popup(anchor, build, options) {
+    dismiss();
+    const menu = h("div", { class: "menu", role: "menu" });
+    build(menu, dismiss);
+    layerEl.append(menu);
+    const box = anchor.getBoundingClientRect();
+    const width = menu.offsetWidth, height = menu.offsetHeight;
+    let left = options && options.alignRight ? box.right - width : box.left;
+    left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+    let top = box.bottom + 4;
+    if (top + height > window.innerHeight - 8) top = Math.max(8, box.top - height - 4);
+    menu.style.left = left + "px";
+    menu.style.top = top + "px";
+    anchor.setAttribute("aria-expanded", "true");
+    menuAnchor = anchor;
+    const outside = (event) => { if (!menu.contains(event.target) && !anchor.contains(event.target)) dismiss(); };
+    setTimeout(() => document.addEventListener("pointerdown", outside, true), 0);
+    closeMenu = () => { document.removeEventListener("pointerdown", outside, true); anchor.setAttribute("aria-expanded", "false"); menu.remove(); menuAnchor = null; };
+    const first = menu.querySelector("input, .mi");
+    if (first && !(options && options.noFocus)) first.focus();
+    return menu;
   }
-
-  /** The rest of a snapshot past the first page: the watch brings the first, `invoke` the others. 03 R5.11 */
-  async function loadMore(first) {
-    const all = first.sessions.slice();
-    let cursor = first.nextCursor;
-    for (let page = 1; page < MAX_PAGES && cursor; page += 1) {
-      const next = await tp.invoke("sessions.snapshot", { limit: PAGE_LIMIT, includeArchived: !!prefs.archived, includeChildren: !!prefs.children, cursor });
-      all.push(...next.sessions);
-      cursor = next.nextCursor;
-    }
-    return all;
-  }
-
-  function startWatch() {
-    if (stopWatch) stopWatch();
-    stopWatch = tp.watch("sessions.snapshot", { limit: PAGE_LIMIT, includeArchived: !!prefs.archived, includeChildren: !!prefs.children }, async (value, error) => {
-      if (error) { handle(error); return; }
-      try {
-        sessions = await loadMore(value);
-        loadedAt = value.generatedAtMs || Date.now();
-        fail("");
-        render();
-        renderEmbeds();
-      } catch (loadError) { handle(loadError); }
-    }, { intervalMs: WATCH_MS });
-  }
-
-  function openPage(session) {
-    if (session.page && session.page.available) { tp.invoke("pages.open", { sessionId: session.id }).catch(handle); return; }
-    if (has("sessions.openHost")) { openInHost(session, null); return; }
-    fail("“" + (session.title || session.id) + "” has no page yet, and this host offers no other way to open it from here.");
-  }
-
-  /** The host's own view of the session; a host with nowhere to open it from here says so in a line. 03 R5.31b */
-  async function openInHost(session, button) {
-    const result = await tp.invoke("sessions.openHost", { sessionId: session.id });
-    if (result && result.opened === false && result.notice) {
-      const row = button && button.closest(".row");
-      const meta = row && row.querySelector(".meta");
-      if (meta) { const note = el("span", " — " + result.notice); meta.append(note); setTimeout(() => note.remove(), 8000); }
-      else fail(result.notice);
-    }
-  }
-
-  /** The pairs this session's page may answer into, with Revoke; the kernel carries the act to the host. 03 R5.65 */
-  function grantsOf(sessionId) {
-    const own = grants.filter((grant) => grant.from === sessionId);
-    if (!own.length) return null;
-    const list = el("ul", undefined, "grants");
-    for (const grant of own) {
-      const item = el("li");
-      item.append(el("span", "May answer “" + (grant.title || grant.sessionId) + "” — granted " + when(grant.grantedAtMs) + ", last answered " + when(grant.lastAnsweredAtMs) + ", " + grant.count + (grant.count === 1 ? " answer" : " answers")));
-      item.append(action("Revoke", () => { document.dispatchEvent(new CustomEvent("thread-page:grant-revoke", { detail: { from: grant.from, to: grant.sessionId } })); }));
-      list.append(item);
-    }
-    return list;
-  }
-
-  /** The drafts no page could restore, by session; Copy selects and copies, Discard asks the host to drop it. 02 R-K7 */
-  function renderDrafts() {
-    draftsSection.hidden = drafts.length === 0;
-    const titles = new Map(sessions.map((session) => [session.id, session.title || session.id]));
-    draftsEl.replaceChildren(...drafts.map((draft) => {
-      const item = el("li", undefined, "draft");
-      item.dataset.session = draft.session;
-      const where = el("p", undefined, "where");
-      where.textContent = (titles.get(draft.session) || draft.session) + " · " + draft.documentPath + " · " + draft.label + " · " + draft.field + " — " + (draft.reason === "field-filled" ? "the page filled this field" : "not on the current version") + ", " + ago(draft.atMs);
-      const text = el("textarea", draft.value);
-      text.readOnly = true;
-      const acts = el("span", undefined, "acts");
-      acts.append(action("Copy", async () => {
-        text.focus(); text.select();
-        try { await navigator.clipboard.writeText(draft.value); } catch (error) { try { document.execCommand("copy"); } catch (again) { /* the text is selected: the reader copies it */ } }
-      }));
-      acts.append(action("Discard", () => { document.dispatchEvent(new CustomEvent("thread-page:draft-discard", { detail: { session: draft.session, documentPath: draft.documentPath, key: draft.key, field: draft.field } })); }));
-      item.append(where, text, acts);
-      return item;
-    }));
-  }
-
-  function action(label, run, options) {
-    const button = el("button", label);
-    button.type = "button";
-    if (options && options.title) button.title = options.title;
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      button.disabled = true;
-      try { await run(button); } catch (error) { handle(error); } finally { button.disabled = false; }
-    });
-    return button;
-  }
-
-  /** A short look at a session's transcript, read through `sessions.messages`. 03 R-C1 */
-  async function togglePeek(session, row) {
-    const open = peeks.get(session.id);
-    if (open) { open.remove(); peeks.delete(session.id); return; }
-    const panel = el("div", undefined, "peek");
-    panel.append(el("p", "Loading the last " + PEEK_ROWS + " rows…"));
-    row.append(panel);
-    peeks.set(session.id, panel);
-    try {
-      const result = await tp.invoke("sessions.messages", { sessionId: session.id, limit: PEEK_ROWS });
-      const list = el("ol");
-      for (const message of result.messages) {
-        const item = el("li");
-        item.dataset.kind = message.kind;
-        const who = message.kind === "user" ? (message.from && message.from.kind === "page" ? "page" : message.from && message.from.label ? message.from.label : "reader") : message.kind;
-        item.append(el("span", who + " · " + new Date(message.atMs).toLocaleTimeString(), "who"));
-        const text = message.kind === "tool" && message.tool ? message.tool.name + (message.tool.isError ? " (error)" : "") : message.text || (message.question ? "(a question)" : "");
-        item.append(document.createTextNode(text + (message.truncated ? " …" : "")));
-        list.append(item);
-      }
-      panel.replaceChildren(result.messages.length ? list : el("p", "No rows yet.", "empty"));
-      list.scrollTop = list.scrollHeight;
-    } catch (error) {
-      panel.replaceChildren(el("p", "Could not read the transcript: " + describe(error), "empty"));
-    }
-  }
-
-  function row(session) {
-    const node = el("div", undefined, "row");
-    node.dataset.state = session.state;
-    node.dataset.unread = String(!!session.unread);
-    node.dataset.id = session.id;
-    node.append(el("span", undefined, "dot"));
-    const title = el("button", session.title || "(untitled)", "title");
-    title.type = "button";
-    title.title = session.page && session.page.available ? "Open its page" : "No page yet";
-    title.addEventListener("click", () => openPage(session));
-    node.append(title);
-    const acts = el("span", undefined, "acts");
-    acts.append(action("Transcript", () => togglePeek(session, node)));
-    if (session.state === "working" && has("sessions.stop")) acts.append(action("Stop", () => tp.invoke("sessions.stop", { sessionId: session.id }), { title: "Stop the running turn (confirmed)" }));
-    if (has("sessions.openHost")) acts.append(action("Open in host", (button) => openInHost(session, button), { title: "Open this session in the host's own interface" }));
-    if (has("sessions.markRead")) acts.append(action(session.unread ? "Mark read" : "Mark unread", async () => { await tp.invoke("sessions.markRead", { sessionId: session.id, read: !!session.unread }); }));
-    if (has("sessions.archive") && !session.archived) acts.append(action("Archive", () => tp.invoke("sessions.archive", { sessionId: session.id }), { title: "Archive (confirmed)" }));
-    node.append(acts);
-    const meta = el("p", undefined, "meta");
-    const state = el("em", stateWord[session.state] || session.state);
-    meta.append(state, document.createTextNode(" · " + ago(recency(session))));
-    if (session.archived) meta.append(document.createTextNode(" · archived"));
-    if (session.parentSessionId) meta.append(document.createTextNode(" · sub-agent"));
-    if (!(session.page && session.page.available)) meta.append(document.createTextNode(" · no page yet"));
-    if (session.waiting && session.waiting.text) meta.append(el("span", " — " + session.waiting.text));
-    else if (session.waiting && session.waiting.kind === "approval" && session.waiting.approval) meta.append(el("span", " — needs a decision: " + session.waiting.approval.subject));
-    else if (session.waiting && session.waiting.kind === "question") meta.append(el("span", " — asked a question"));
-    node.append(meta);
-    const pairs = grantsOf(session.id);
-    if (pairs) node.append(pairs);
+  function item(label, iconName, run, extra) {
+    const checkable = !!extra && "check" in extra;
+    const node = button({ class: "mi" + (extra && extra.red ? " red" : ""), role: checkable ? "menuitemradio" : "menuitem", "aria-checked": checkable ? String(!!extra.check) : null, disabled: extra && extra.disabled },
+      iconName ? icon(iconName) : null, h("span", { class: "ml", text: label }), extra && extra.hint ? h("span", { class: "k", text: extra.hint }) : null,
+      checkable ? h("span", { class: "ck" + (extra.hint ? "" : " push") }, extra.check ? icon("check") : null) : null);
+    node.addEventListener("click", () => { dismiss(); run(); });
     return node;
   }
+  const sep = () => h("div", { class: "sep" });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && closeMenu) { dismiss(); event.preventDefault(); return; }
+    if (event.key === "Escape" && appEl.classList.contains("drawer")) { appEl.classList.remove("drawer"); event.preventDefault(); return; }
+    if ((event.metaKey || event.ctrlKey) && (event.key === "k" || event.key === "K")) { event.preventDefault(); openSearch(); }
+  });
+  window.addEventListener("resize", dismiss);
 
-  function render() {
-    const byWorkspace = new Map(workspaces.map((workspace) => [workspace.id, []]));
-    const other = [];
-    for (const session of sessions) {
-      if (byWorkspace.has(session.workspaceId)) byWorkspace.get(session.workspaceId).push(session);
-      else other.push(session);
+  // Tooltips like the host's: a small dark pill under icon buttons.
+  let tipEl = null;
+  document.addEventListener("pointerover", (event) => {
+    const target = event.target.closest && event.target.closest("[data-tip]");
+    if (tipEl) { tipEl.remove(); tipEl = null; }
+    if (!target || isPhone()) return;
+    const box = target.getBoundingClientRect();
+    tipEl = h("div", { class: "tip", text: target.getAttribute("data-tip") });
+    layerEl.append(tipEl);
+    const left = Math.max(6, Math.min(box.left + box.width / 2 - tipEl.offsetWidth / 2, window.innerWidth - tipEl.offsetWidth - 6));
+    const top = box.top - tipEl.offsetHeight - 6 < 4 ? box.bottom + 6 : box.top - tipEl.offsetHeight - 6;
+    tipEl.style.left = left + "px"; tipEl.style.top = top + "px";
+  });
+  document.addEventListener("pointerdown", () => { if (tipEl) { tipEl.remove(); tipEl = null; } }, true);
+
+  // ---- the hub's own budget. Every call it makes goes through `call`: a token bucket of 60 a minute (a burst of 8)
+  // and 4 at once, whatever the logic above asks; the rest of the page's 120 a minute and 8 at once is the embed's
+  // (05 R2.38). The reader's own actions go first. A logic bug can make the hub slow, never a storm.
+  const RATE = 60, BURST = 8, AT_ONCE = 4;
+  let tokens = BURST, refilledAt = Date.now(), inFlight = 0, wake = null;
+  const waiting = [];
+  function pump() {
+    const now = Date.now();
+    tokens = Math.min(BURST, tokens + ((now - refilledAt) * RATE) / 60000);
+    refilledAt = now;
+    while (waiting.length && inFlight < AT_ONCE && tokens >= 1) {
+      const next = waiting.shift();
+      tokens -= 1;
+      inFlight += 1;
+      next.run().finally(() => { inFlight -= 1; pump(); });
     }
-    const groups = workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name, list: byWorkspace.get(workspace.id) }));
-    if (other.length) groups.push({ id: "~other", name: "Other", list: other });
-    const needs = (session) => session.state === "waiting" || session.state === "working" || session.unread;
-    groups.sort((a, b) => {
-      const na = a.list.filter(needs).length, nb = b.list.filter(needs).length;
-      if ((na > 0) !== (nb > 0)) return na > 0 ? -1 : 1;
-      return Math.max(0, ...b.list.map(recency)) - Math.max(0, ...a.list.map(recency));
+    if (waiting.length && tokens < 1 && !wake) wake = setTimeout(() => { wake = null; pump(); }, Math.ceil(((1 - tokens) * 60000) / RATE));
+  }
+  /** One capability call under the hub's budget; `urgent` for what the reader just did. */
+  function call(method, params, urgent) {
+    return new Promise((resolve, reject) => {
+      const entry = { urgent: !!urgent, run: () => (params === undefined ? tp.invoke(method) : tp.invoke(method, params)).then(resolve, reject) };
+      const at = urgent ? waiting.findIndex((one) => !one.urgent) : -1;
+      if (at >= 0) waiting.splice(at, 0, entry); else waiting.push(entry);
+      pump();
     });
-    const fragment = document.createDocumentFragment();
-    for (const group of groups) {
-      if (!group.list.length && group.id === "~other") continue;
-      const section = el("section", undefined, "workspace");
-      const header = el("header");
-      const heading = el("h2", group.name);
-      const counts = el("span", undefined, "counts");
-      const waiting = group.list.filter((session) => session.state === "waiting").length;
-      const working = group.list.filter((session) => session.state === "working").length;
-      counts.textContent = group.list.length + (working ? " · " + working + " working" : "") + (waiting ? " · " + waiting + " waiting" : "");
-      header.append(heading, counts);
-      section.append(header);
-      if (!group.list.length) section.append(el("p", "No sessions yet.", "empty"));
-      for (const session of group.list.slice().sort((a, b) => recency(b) - recency(a))) {
-        const node = row(session);
-        section.append(node);
-        if (peeks.has(session.id)) { peeks.delete(session.id); togglePeek(session, node); }
+  }
+  /** A read repeated every `intervalMs` after the last one finished, through `call`; paused while the tab is hidden. */
+  function every(method, params, intervalMs, listener) {
+    let stopped = false, timer = null;
+    const run = async () => {
+      timer = null;
+      if (stopped) return;
+      if (document.visibilityState !== "hidden") {
+        let value, failure;
+        try { value = await call(method, params); } catch (error) { failure = error; }
+        if (stopped) return;
+        try { await listener(value, failure); } catch (error) { /* the listener reports its own failures */ }
       }
-      fragment.append(section);
-    }
-    if (!groups.length) fragment.append(el("p", loadedAt ? "No workspaces on this host yet." : "Loading…", "empty"));
-    const homeGrants = grantsOf("~home");
-    if (homeGrants) { const section = el("section", undefined, "workspace"); const header = el("header"); header.append(el("h2", "This page")); section.append(header, homeGrants); fragment.append(section); }
-    listEl.replaceChildren(fragment);
-    renderDrafts();
-    const waitingAll = sessions.filter((session) => session.state === "waiting").length;
-    metaEl.textContent = !loadedAt ? "" : sessions.length + " session" + (sessions.length === 1 ? "" : "s") + (waitingAll ? ", " + waitingAll + " waiting on you" : "") + " · as of " + new Date(loadedAt).toLocaleTimeString();
+      if (!stopped) timer = setTimeout(run, intervalMs);
+    };
+    run();
+    return () => { stopped = true; clearTimeout(timer); };
   }
 
-  /** Up to four working sessions' pages, live, where the host composes pages. 02 §Embedded pages */
-  function renderEmbeds() {
-    if (!canEmbed) return;
-    const wanted = sessions.filter((session) => session.state === "working" && session.page && session.page.available).sort((a, b) => recency(b) - recency(a)).slice(0, EMBEDS);
-    const ids = new Set(wanted.map((session) => session.id));
-    for (const [id, entry] of embedded) {
-      if (!ids.has(id)) { entry.stop(); entry.node.remove(); embedded.delete(id); }
-    }
-    for (const session of wanted) {
-      if (embedded.has(session.id)) { $(".embed-title", embedded.get(session.id).node).textContent = session.title || session.id; continue; }
-      const node = el("article", undefined, "embed");
-      const header = el("header");
-      const title = el("button", session.title || session.id, "link embed-title");
-      title.type = "button";
-      title.addEventListener("click", () => openPage(session));
-      const state = el("span", "working");
-      header.append(title, state);
-      const frame = el("div");
-      node.append(header, frame);
-      embedsEl.append(node);
-      const stop = tp.embed(frame, { sessionId: session.id, onState: (info) => { state.textContent = info.status === "shown" ? (info.working ? "working" : "idle") : info.status; } });
-      embedded.set(session.id, { node, stop });
-    }
-    embedsSection.hidden = embedded.size === 0;
+  // ---- what this host offers: the roster decides every control. 03 R5.9 ---------------------------------
+  try {
+    const context = await call("context.get");
+    roster = new Set(context.capabilities.map((entry) => entry.method));
+  } catch (error) { handle(error, "Could not read what this host offers"); }
+  canEmbed = typeof tp.embed === "function" && has("pages.read");
+  $("[data-search]").addEventListener("click", () => openSearch());
+  // The phone's drawer closes from its own toggle, a tap on the main view beside it, or Escape.
+  $("[data-drawer-close]").addEventListener("click", () => appEl.classList.remove("drawer"));
+  $("[data-main]").addEventListener("click", (event) => { if (appEl.classList.contains("drawer")) { event.preventDefault(); event.stopPropagation(); appEl.classList.remove("drawer"); } }, true);
+  $("[data-new]").addEventListener("click", () => go({ kind: "new" }));
+  $("[data-drafts]").addEventListener("click", () => go({ kind: "drafts" }));
+  $("[data-perms]").addEventListener("click", () => go({ kind: "permissions" }));
+
+  // The hub's view state lives in its own storage namespace; nothing about the reader is kept. 03 R5.18a
+  try {
+    const stored = await call("storage.get", { key: "hub.v1" });
+    if (stored.found && stored.value && typeof stored.value === "object") prefs = { ...prefs, ...stored.value };
+  } catch (error) { if (error.code !== "unavailable" && error.code !== "unknown_method") handle(error); }
+  for (const key of ["modes", "groups", "open", "compose"]) if (!prefs[key] || typeof prefs[key] !== "object") prefs[key] = {};
+  let saveTimer = null;
+  function savePrefs() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      const modes = Object.entries(prefs.modes);
+      if (modes.length > 200) prefs.modes = Object.fromEntries(modes.slice(-200));
+      call("storage.set", { key: "hub.v1", value: prefs }).catch(() => {});
+    }, 600);
   }
 
-  // --- Start a session ---------------------------------------------------------
-  const workspaceSelect = form.elements.workspace, environmentSelect = form.elements.environment;
-  const providerSelect = form.elements.provider, modelSelect = form.elements.model;
-
-  function fillWorkspaces() {
-    workspaceSelect.replaceChildren(...workspaces.map((workspace) => { const option = el("option", workspace.name); option.value = workspace.id; return option; }));
-    if (prefs.workspace && workspaces.some((workspace) => workspace.id === prefs.workspace)) workspaceSelect.value = prefs.workspace;
-    fillEnvironments();
-  }
-  function fillEnvironments() {
-    const workspace = workspaces.find((candidate) => candidate.id === workspaceSelect.value);
-    const environments = workspace && workspace.environments ? workspace.environments : [];
-    $("[data-environment]").hidden = environments.length === 0;
-    environmentSelect.replaceChildren(...environments.map((environment) => { const option = el("option", environment.name + (environment.isDefault ? " (default)" : "")); option.value = environment.id; if (environment.isDefault) option.selected = true; return option; }));
-  }
-  function fillModels() {
-    const provider = providers.find((candidate) => candidate.id === providerSelect.value);
-    const models = provider ? provider.models : [];
-    $("[data-model]").hidden = models.length === 0;
-    modelSelect.replaceChildren(...models.map((model) => { const option = el("option", model.displayName + (model.default ? " (default)" : "")); option.value = model.id; if (model.default) option.selected = true; return option; }));
+  // ---- data -----------------------------------------------------------------------------------------
+  async function loadWorkspaces(quiet) {
+    try { workspaces = (await call("workspaces.list")).workspaces || []; } catch (error) { if (!quiet) handle(error, "Could not list workspaces"); }
   }
   async function loadProviders() {
     if (!has("providers.list")) return;
-    try {
-      providers = (await tp.invoke("providers.list")).providers.filter((provider) => provider.available);
-    } catch (error) { if (error.code !== "unavailable") handle(error); return; }
-    if (!providers.length) return;
-    $("[data-provider]").hidden = false;
-    providerSelect.replaceChildren(...providers.map((provider) => { const option = el("option", provider.displayName + (provider.default ? " (default)" : "")); option.value = provider.id; if (provider.default) option.selected = true; return option; }));
-    fillModels();
+    try { providers = ((await call("providers.list")).providers || []).filter((provider) => provider.available); } catch (error) { if (error.code !== "unavailable") handle(error, "Could not list models"); }
   }
-  workspaceSelect.addEventListener("change", () => { prefs.workspace = workspaceSelect.value; savePrefs(); fillEnvironments(); });
-  providerSelect.addEventListener("change", fillModels);
-  form.elements.prompt.addEventListener("input", () => tp.setDirty(form.elements.prompt.value.trim().length > 0));
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const prompt = form.elements.prompt.value.trim();
-    if (!prompt) { startStatus.textContent = "Say what it should do first."; return; }
-    if (!has("sessions.start")) { startStatus.textContent = "This host cannot start sessions from a page."; return; }
-    const params = { workspaceId: workspaceSelect.value, prompt };
-    if (!$("[data-environment]").hidden && environmentSelect.value) params.environment = environmentSelect.value;
-    if (!$("[data-provider]").hidden && providerSelect.value) params.providerId = providerSelect.value;
-    if (!$("[data-model]").hidden && modelSelect.value) params.model = modelSelect.value;
-    const files = form.elements.files;
-    if (files && files.files && files.files.length) params.files = files;
-    startStatus.textContent = "Waiting for your confirmation…";
-    const button = $("button[type=submit]", form);
-    button.disabled = true;
-    try {
-      const result = await tp.invoke("sessions.start", params);
-      startStatus.textContent = "Started.";
-      form.elements.prompt.value = "";
-      if (files) files.value = "";
-      tp.setDirty(false);
-      startStatus.textContent = "Started: " + result.sessionId + ". It appears in the list as it works.";
-    } catch (error) {
-      startStatus.textContent = error && error.code === "cancelled" ? "Nothing started." : describe(error);
-    } finally {
-      button.disabled = false;
+  // ---- the session list, in pages small enough for the 64 KiB response bound. 03 R5.11, R5.12, §Limits ---------
+  // A page starts at 50 rows and halves whenever the host answers `response_too_large`. The first 200 sessions load
+  // at once; "Show more sessions" loads the next; the watch refreshes the first page and one further page per tick.
+  let pageLimit = 50, pages = [], rotation = 0, stale = [], listErrorShown = false, capped = false;
+  let stopSnapshot = null, perWorkspace = false, generation = 0;
+  const WANT = 200;
+  const listParams = (extra) => ({ limit: pageLimit, includeArchived: false, includeChildren: true, ...extra });
+  /** One page of a list; a page too large for the bound is asked again at half the size. Returns null when the size changed (the caller restarts). */
+  /** What `readPage` answers when the read moved the hub to the per-workspace fallback: stop this pass. */
+  const SWITCHED = "switched";
+  /** One page of a list. Null: the page size halved, ask again. SWITCHED: the hub now reads by workspace. */
+  async function readPage(params, cursor) {
+    const limit = pageLimit;
+    try { return await call("sessions.snapshot", { ...params, limit, ...(cursor ? { cursor } : {}) }); }
+    catch (error) {
+      if (error.code === "response_too_large" && pageLimit > 5) { pageLimit = Math.max(5, Math.floor(limit / 2)); return null; }
+      // A row that does not validate, on whichever page of the whole list: read workspace by workspace instead.
+      if (error.code === "invalid_result" && !params.workspaceId) { if (!perWorkspace) { perWorkspace = true; watchSessions(); } return SWITCHED; }
+      throw error;
     }
-  });
+  }
+  const goneIds = new Set(), goneChecked = new Map();
+  /** Asks the host whether a session the list no longer shows still exists, at most every 30 s. */
+  function checkGone(id) {
+    if (Date.now() - (goneChecked.get(id) || 0) < 30000) return;
+    goneChecked.set(id, Date.now());
+    const drop = () => {
+      sessions = sessions.filter((session) => session.id !== id);
+      byId.delete(id);
+      sideSig = "";
+      renderSidebar();
+      if (refresh) refresh();
+    };
+    call("sessions.messages", { sessionId: id, limit: 1 }).then(async () => {
+      // Still there: archived in the host, perhaps. Its workspace's archived rows say so; then it stays open, read-only.
+      const row = byId.get(id);
+      if (!row || !row.workspaceId) return;
+      let cursor = null;
+      for (let page = 0; page < 3; page += 1) {
+        const found = await readPage({ includeArchived: true, includeChildren: true, workspaceId: row.workspaceId }, cursor).catch(() => null);
+        if (!found || found === SWITCHED) return;
+        const hit = found.sessions.find((session) => session.id === id);
+        if (hit) {
+          if (!hit.archived) return;
+          archived = archived || [];
+          if (!archived.some((session) => session.id === id)) archived.unshift(hit);
+          goneIds.add(id);
+          drop();
+          return;
+        }
+        cursor = found.nextCursor;
+        if (!cursor) return;
+      }
+    }, (error) => {
+      if (error.code !== "not_found") return;
+      goneIds.add(id);
+      drop();
+    });
+  }
+  function listFailed(error) {
+    if (!loadedAt) loadFailed = true;
+    // One line per run of failures, not one per tick.
+    if (!listErrorShown) { listErrorShown = true; handle(error, "Could not list sessions"); }
+    renderSidebar();
+  }
+  function applySessions(list, atMs) {
+    const seen = new Set();
+    const next = list.filter((session) => (seen.has(session.id) ? false : (seen.add(session.id), true)));
+    // The open session stays while the list misses it; only the host saying it is gone closes it.
+    const open = view.kind === "session" ? view.id : null;
+    if (open && !seen.has(open) && byId.has(open) && !goneIds.has(open)) { next.push(byId.get(open)); checkGone(open); }
+    sessions = next;
+    byId = new Map(sessions.map((session) => [session.id, session]));
+    loadedAt = atMs || Date.now();
+    loadFailed = false;
+    listErrorShown = false;
+    renderSidebar();
+    if (refresh) refresh();
+  }
+  const moreCursor = () => (pages.length ? pages[pages.length - 1].next : null);
+  async function loadPage(own) {
+    const cursor = moreCursor();
+    const page = await readPage(listParams(), cursor);
+    if (own !== generation || page === SWITCHED) return false;
+    if (!page) { restartList(); return false; }
+    pages.push({ cursor, rows: page.sessions, next: page.nextCursor });
+    return true;
+  }
+  function restartList() { pages = []; rotation = 0; stale = []; watchSessions(); }
+  let loadingMore = false;
+  async function showMore() {
+    if (loadingMore) return;
+    loadingMore = true;
+    const own = generation;
+    try {
+      for (let n = 0; n < 2 && moreCursor(); n += 1) if (!(await loadPage(own))) return;
+      if (own === generation) applySessions(pages.flatMap((page) => page.rows), Date.now());
+    } catch (error) { handle(error, "Could not list more sessions"); }
+    finally { loadingMore = false; sideSig = ""; renderSidebar(); }
+  }
+  function watchSessions() {
+    if (stopSnapshot) stopSnapshot();
+    generation += 1;
+    const own = generation;
+    if (perWorkspace) { stopSnapshot = pollByWorkspace(own); return; }
+    const params = listParams();
+    stopSnapshot = every("sessions.snapshot", params, SNAPSHOT_MS, async (value, error) => {
+      if (own !== generation) return;
+      if (error) {
+        if (error.code === "response_too_large" && pageLimit > 5) { pageLimit = Math.max(5, Math.floor(pageLimit / 2)); restartList(); return; }
+        // A host with a row that does not validate fails the whole list; the hub then reads workspace by workspace,
+        // so one bad row costs that row and not every session.
+        if (error.code === "invalid_result") { perWorkspace = true; watchSessions(); return; }
+        listFailed(error);
+        return;
+      }
+      const fresh = !pages.length;
+      // Rows cross a page boundary only when the first page gained or lost a row, or its last row changed: then the
+      // later pages are marked stale and read one per tick in order; otherwise one page per tick in rotation.
+      if (!fresh) {
+        const before = pages[0].rows.map((one) => one.id), after = value.sessions.map((one) => one.id), had = new Set(before);
+        if (before.length !== after.length || before[before.length - 1] !== after[after.length - 1] || after.some((one) => !had.has(one))) stale = pages.slice(1).map((_, at) => at + 1);
+      }
+      pages[0] = { cursor: null, rows: value.sessions, next: value.nextCursor };
+      try {
+        if (fresh) { while (moreCursor() && pages.reduce((n, page) => n + page.rows.length, 0) < WANT) if (!(await loadPage(own))) return; }
+        else if (pages.length > 1) {
+          const at = stale.length ? stale.shift() : 1 + (rotation++ % (pages.length - 1));
+          if (at < pages.length) {
+            const page = await readPage(params, pages[at].cursor);
+            if (own !== generation || page === SWITCHED) return;
+            if (!page) { restartList(); return; }
+            pages[at] = { cursor: pages[at].cursor, rows: page.sessions, next: page.nextCursor };
+          }
+        }
+      } catch (loadError) { if (loadError.code !== "rate_limited") listFailed(loadError); }
+      if (own === generation) applySessions(pages.flatMap((page) => page.rows), value.generatedAtMs);
+    });
+  }
+  /** The fallback: one read per workspace, each workspace's last good rows kept, its share of the budget held near
+   *  40 calls a minute, empty workspaces read every fourth tick, and the single list tried again every twentieth. */
+  function pollByWorkspace(own) {
+    let timer = null, stopped = false, count = 0, delay = 0;
+    const rowsBy = new Map(), flat = new Set(), cut = new Set();
+    for (const session of sessions) { if (!rowsBy.has(session.workspaceId)) rowsBy.set(session.workspaceId, []); rowsBy.get(session.workspaceId).push(session); }
+    const gone = () => stopped || own !== generation;
+    const tick = async () => {
+      if (gone()) return;
+      count += 1;
+      let calls = 0, limited = false;
+      if (document.visibilityState !== "hidden") {
+        if (count % 20 === 0) {
+          calls += 1;
+          try {
+            const first = await readPage(listParams());
+            if (gone()) return;
+            if (first && first !== SWITCHED) { perWorkspace = false; pages = [{ cursor: null, rows: first.sessions, next: first.nextCursor }]; applySessions(first.sessions, first.generatedAtMs); watchSessions(); return; }
+          } catch (error) { if (error.code === "rate_limited") limited = true; }
+        }
+        if (!limited && count % 6 === 0) { calls += 1; await loadWorkspaces(true); }
+        for (const workspace of workspaces) {
+          if (limited || gone()) break;
+          const known = rowsBy.get(workspace.id);
+          if (known && !known.length && count % 4 !== 1) continue;
+          const scoped = listParams({ includeChildren: !flat.has(workspace.id), workspaceId: workspace.id });
+          try {
+            const all = [];
+            let cursor = null, read = 0;
+            do {
+              calls += 1;
+              const page = await readPage(scoped, cursor);
+              if (!page) { cursor = null; read = -1; break; }
+              all.push(...page.sessions);
+              cursor = page.nextCursor;
+              read += 1;
+            } while (cursor && read < 4);
+            if (read < 0) continue;
+            if (cursor) cut.add(workspace.id); else cut.delete(workspace.id);
+            rowsBy.set(workspace.id, all);
+          } catch (error) {
+            if (error.code === "rate_limited") limited = true;
+            else if (error.code === "invalid_result" && scoped.includeChildren) flat.add(workspace.id);
+            // Any other failure keeps that workspace's previous rows: a failed read never empties the list.
+          }
+        }
+        if (!gone() && !limited) {
+          for (const id of [...rowsBy.keys()]) if (!workspaces.some((workspace) => workspace.id === id)) rowsBy.delete(id);
+          capped = cut.size > 0;
+          applySessions([...rowsBy.values()].flat(), Date.now());
+        }
+      }
+      delay = limited ? Math.min(60000, Math.max(delay, 10000) * 2) : Math.max(SNAPSHOT_MS * 2, calls * 1500);
+      if (!gone()) timer = setTimeout(tick, delay);
+    };
+    tick();
+    return () => { stopped = true; clearTimeout(timer); };
+  }
+  // Every active session, for search: the sidebar holds the newest; while a query is typed the rest of the list is read
+  // page after page, one call every 1.5 s, until the host has no more. Sessions in the sidebar stay the fresher copy.
+  let activeAll = null, activeCursor = null, activeDone = false, activeRunning = false;
+  async function loadActive(isWanted, onProgress) {
+    if (activeRunning || activeDone) return;
+    // Nothing past the sidebar's pages, or the fallback (which lists each workspace itself): nothing more to read.
+    if (perWorkspace || !moreCursor()) return;
+    activeRunning = true;
+    if (!activeAll) activeAll = [];
+    try {
+      while (!activeDone && isWanted()) {
+        const page = await readPage(listParams(), activeCursor);
+        // The fallback took over (its rows are already in the list): stop. Null: the page halved, so ask again.
+        if (page === SWITCHED) return;
+        if (!page) continue;
+        for (const session of page.sessions) if (!activeAll.some((one) => one.id === session.id)) activeAll.push(session);
+        activeCursor = page.nextCursor;
+        activeDone = !activeCursor;
+        onProgress();
+        if (!activeDone) await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    } finally { activeRunning = false; }
+  }
+  // Archived sessions, read only for search: page after page, one call every 1.5 s while the search shows them.
+  // In the fallback they are read workspace by workspace, as the active list is. A failed read ends the pass: the
+  // reader's next look resumes where it stopped.
+  let archivedCursor = null, archivedDone = false, archivedRunning = false, archivedAt = -1;
+  async function loadArchived(isWanted, onProgress) {
+    if (archivedRunning || archivedDone) return;
+    archivedRunning = true;
+    if (!archived) archived = [];
+    try {
+      while (!archivedDone && isWanted()) {
+        if (perWorkspace && archivedAt < 0) { archivedAt = 0; archivedCursor = null; }
+        if (archivedAt >= workspaces.length) { archivedDone = true; break; }
+        const scope = archivedAt >= 0 ? { workspaceId: workspaces[archivedAt].id } : {};
+        let page;
+        try { page = await readPage({ includeArchived: true, includeChildren: false, ...scope }, archivedCursor); }
+        catch (error) { if (archivedAt >= 0 && error.code === "invalid_result") { archivedAt += 1; archivedCursor = null; continue; } throw error; }
+        if (page === SWITCHED || !page) continue;
+        for (const session of page.sessions) if (session.archived && !archived.some((one) => one.id === session.id)) archived.push(session);
+        archivedCursor = page.nextCursor;
+        if (!archivedCursor) { if (archivedAt >= 0) archivedAt += 1; else archivedDone = true; }
+        if (archivedAt >= workspaces.length) archivedDone = true;
+        onProgress();
+        if (!archivedDone) await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    } finally { archivedRunning = false; }
+  }
+  const lookup = (id) => byId.get(id) || (archived && archived.find((session) => session.id === id)) || null;
+  const childrenOf = (id) => sessions.filter((session) => session.parentSessionId === id).sort((a, b) => recency(b) - recency(a));
 
-  // --- Wiring --------------------------------------------------------------------
-  archivedEl.addEventListener("change", () => { prefs.archived = archivedEl.checked; savePrefs(); startWatch(); });
-  childrenEl.addEventListener("change", () => { prefs.children = childrenEl.checked; savePrefs(); startWatch(); });
-  refreshEl.addEventListener("click", async () => { await loadWorkspaces(); fillWorkspaces(); startWatch(); });
+  // ---- state glyphs, as the host draws them ----------------------------------------------------------------
+  /** One glyph for a row: waiting, then working, then failed, then unread; a collapsed parent shows its sub-agents' too. */
+  function glyphOf(session, withChildren) {
+    const all = [session];
+    if (withChildren) { const walk = (id) => { for (const child of childrenOf(id)) { all.push(child); walk(child.id); } }; walk(session.id); }
+    if (all.some((one) => one.state === "waiting")) return "waiting";
+    if (all.some((one) => one.state === "working")) return "working";
+    if (session.state === "failed") return "failed";
+    if (all.some((one) => one.unread)) return "unread";
+    return "";
+  }
+  function glyph(kind) {
+    const slot = h("span", { class: "slot " + kind });
+    if (kind === "working") { slot.append(icon("spin", null, "spin")); slot.title = "Working"; }
+    else if (kind === "waiting") { slot.append(icon("ask")); slot.title = "Waiting on you"; }
+    else if (kind === "failed") { slot.append(icon("fail")); slot.title = "Failed"; }
+    else if (kind === "unread") { slot.append(h("span", { class: "udot" })); slot.title = "Unread"; }
+    return slot;
+  }
 
-  if (!has("sessions.start")) form.hidden = true;
+  // ---- sidebar --------------------------------------------------------------------------------------
+  // While the pointer is over the list, rows keep their places, so a row does not move from under the reader.
+  let held = null;
+  const byOrder = (a, b) => {
+    const ha = held && held.has(a.id), hb = held && held.has(b.id);
+    if (ha && hb) return held.get(a.id) - held.get(b.id);
+    if (ha !== hb) return ha ? -1 : 1;
+    return recency(b) - recency(a);
+  };
+  listEl.addEventListener("pointerenter", () => { held = new Map([...listEl.querySelectorAll(".row")].map((node, at) => [node.dataset.id, at])); });
+  listEl.addEventListener("pointerleave", () => { held = null; sideSig = ""; renderSidebar(); });
+  function renderSidebar() {
+    const selected = view.kind === "session" ? view.id : "";
+    const sig = JSON.stringify([selected, prefs.groups, prefs.open, !!moreCursor(), capped, workspaces.map((w) => w.id + w.name), roster.size, loadedAt ? 1 : 0, loadFailed,
+      sessions.map((s) => [s.id, s.title, s.state, s.unread, s.parentSessionId, s.workspaceId, s.archived, Math.floor(recency(s) / 60000)])]);
+    if (sig === sideSig) return;
+    sideSig = sig;
+    $("[data-new]").classList.toggle("on", view.kind === "new");
+    const roots = sessions.filter((session) => !session.parentSessionId || !byId.has(session.parentSessionId));
+    const known = new Set(workspaces.map((workspace) => workspace.id));
+    const groups = workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name, list: [] }));
+    const other = { id: "~other", name: "Other", list: [] };
+    for (const session of roots) (known.has(session.workspaceId) ? groups.find((group) => group.id === session.workspaceId).list : other.list).push(session);
+    if (other.list.length) groups.push(other);
+    const fragment = document.createDocumentFragment();
+    for (const group of groups) {
+      if (!group.list.length && (group.id === "~other" || !loadedAt)) continue;
+      const open = !prefs.groups[group.id];
+      const header = h("div", { class: "group", role: "button", tabindex: "0", "aria-expanded": String(open), dataset: { group: group.id } },
+        h("span", { class: "gname", text: group.name }), h("span", { class: "gchev" }, icon(open ? "down" : "right", 12)));
+      // A collapsed group still shows what needs the reader, as a collapsed parent does.
+      if (!open) {
+        const kinds = group.list.map((session) => glyphOf(session, true));
+        const top = ["waiting", "working", "failed", "unread"].find((kind) => kinds.includes(kind));
+        if (top) header.append(h("span", { class: "gsp" }), glyph(top));
+      }
+      const toggle = () => { prefs.groups[group.id] = open ? true : undefined; if (!prefs.groups[group.id]) delete prefs.groups[group.id]; savePrefs(); renderSidebar(); };
+      header.addEventListener("click", toggle);
+      header.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } });
+      if (has("sessions.start") && known.has(group.id)) {
+        const add = button({ class: "ib gadd", "aria-label": "New session in " + group.name, "data-tip": "New session in " + group.name }, icon("plus"));
+        add.addEventListener("click", (event) => { event.stopPropagation(); prefs.compose.workspaceId = group.id; savePrefs(); go({ kind: "new" }); });
+        header.append(add);
+      }
+      fragment.append(header);
+      if (!open) continue;
+      if (!group.list.length) { fragment.append(h("p", { class: "none-side", text: moreCursor() ? "No recent sessions" : "No sessions" })); continue; }
+      for (const session of group.list.sort(byOrder)) appendRow(fragment, session, 0, selected);
+    }
+    if (!fragment.childNodes.length) fragment.append(h("p", { class: "empty-side", text: loadFailed ? "Could not list sessions." : loadedAt ? "No sessions yet." : "Loading…" }));
+    else if (!perWorkspace && moreCursor()) fragment.append(button({ class: "more-side", disabled: loadingMore, onclick: (event) => { event.currentTarget.disabled = true; event.currentTarget.textContent = "Loading…"; showMore(); } }, loadingMore ? "Loading…" : "Show more sessions"));
+    else if (perWorkspace && capped) fragment.append(h("p", { class: "empty-side", text: "Showing the newest 200 sessions of each workspace." }));
+    const focused = document.activeElement && listEl.contains(document.activeElement) ? document.activeElement : null;
+    const focusRow = focused && focused.closest(".row") ? focused.closest(".row").dataset.id : null;
+    const focusLabel = focused ? focused.getAttribute("aria-label") : null;
+    listEl.replaceChildren(fragment);
+    if (focusRow) {
+      const again = listEl.querySelector('.row[data-id="' + focusRow + '"]');
+      const target = again && (focusLabel ? again.querySelector('[aria-label="' + focusLabel + '"]') : again.querySelector(".t"));
+      if (target) target.focus();
+    }
+    if (menuAnchor && !menuAnchor.isConnected) dismiss();
+    dutiesChanged();
+  }
+  function appendRow(into, session, depth, selected) {
+    const kids = childrenOf(session.id);
+    const open = !!prefs.open[session.id];
+    const kind = glyphOf(session, kids.length && !open);
+    const words = { waiting: "waiting on you", working: "working", failed: "failed", unread: "unread" }[kind];
+    const row = h("div", { class: "row" + (session.id === selected ? " sel" : ""), dataset: { id: session.id } },
+      button({ class: "t", "aria-current": session.id === selected ? "page" : null }, titleOf(session), words ? h("span", { class: "sr", text: ", " + words }) : null));
+    if (depth) row.dataset.depth = String(Math.min(depth, 3));
+    if (kids.length) {
+      const twist = button({ class: "tw", "aria-label": (open ? "Hide" : "Show") + " sub-agents", "aria-expanded": String(open) }, icon(open ? "down" : "right", 12));
+      twist.addEventListener("click", (event) => { event.stopPropagation(); if (open) delete prefs.open[session.id]; else prefs.open[session.id] = true; savePrefs(); renderSidebar(); });
+      row.append(twist);
+    }
+    row.append(h("span", { class: "sp" }), glyph(kind));
+    const hover = h("span", { class: "hov" });
+    if (has("sessions.archive") && !session.archived) {
+      const archive = button({ class: "ib", "aria-label": "Archive", "data-tip": "Archive" }, icon("archive"));
+      archive.addEventListener("click", (event) => { event.stopPropagation(); archiveSession(session); });
+      hover.append(archive);
+    }
+    const more = button({ class: "ib", "aria-label": "Session actions", "aria-haspopup": "menu" }, icon("more"));
+    more.addEventListener("click", (event) => { event.stopPropagation(); sessionMenu(more, session); });
+    hover.append(more);
+    row.append(hover);
+    row.addEventListener("click", () => openSession(session.id));
+    into.append(row);
+    if (open) for (const kid of kids) appendRow(into, kid, depth + 1, selected);
+  }
+
+  /** The footer's duties: badges for drafts and permissions, which open their own views. 05 R-S12 */
+  function dutiesChanged() {
+    const draftButton = $("[data-drafts]"), permButton = $("[data-perms]");
+    for (const [node, count, label] of [[draftButton, drafts.length, "Unsent drafts"], [permButton, grants.length, "Page permissions"]]) {
+      const badge = node.querySelector(".bdg");
+      if (count && !badge) node.append(h("span", { class: "bdg" }));
+      if (!count && badge) badge.remove();
+      if (count) node.querySelector(".bdg").textContent = String(count);
+      node.setAttribute("data-tip", count ? label + " (" + count + ")" : label);
+      node.setAttribute("aria-label", count ? label + ", " + count : label);
+      node.classList.toggle("on", view.kind === (node === draftButton ? "drafts" : "permissions"));
+    }
+    if ((view.kind === "drafts" || view.kind === "permissions") && refresh) refresh();
+  }
+
+  // ---- session actions ------------------------------------------------------------------------------
+  async function archiveSession(session) {
+    try {
+      await call("sessions.archive", { sessionId: session.id }, true);
+      byId.delete(session.id);
+      sessions = sessions.filter((one) => one.id !== session.id);
+      if (archived) archived.unshift({ ...session, archived: true });
+      if (view.kind === "session" && view.id === session.id) go({ kind: "new" });
+      else renderSidebar();
+      toast("Archived “" + titleOf(session) + "”.");
+    } catch (error) { handle(error, "Could not archive"); }
+  }
+  /** The host's own view of the session; a host with nowhere to open it from here says so in a line. 03 R5.31b */
+  async function openInHost(session) {
+    try {
+      const result = await call("sessions.openHost", { sessionId: session.id }, true);
+      if (result && result.opened === false && result.notice) toast(result.notice);
+    } catch (error) { handle(error, "Could not open it in the host"); }
+  }
+  async function markRead(session, read) {
+    try {
+      const result = await call("sessions.markRead", { sessionId: session.id, read }, true);
+      session.unread = !!(result && result.unread);
+      sideSig = ""; renderSidebar();
+    } catch (error) { handle(error); }
+  }
+  async function stopSession(session) {
+    try { await call("sessions.stop", { sessionId: session.id }, true); toast("Stopped."); } catch (error) { handle(error, "Could not stop it"); }
+  }
+  /** The page on its own: in place, where the reader's Back returns to the hub. 03 R5.29 */
+  function openPageAlone(session) {
+    call("pages.open", { sessionId: session.id }, true).catch((error) => handle(error, "Could not open the page"));
+  }
+  function sessionMenu(anchor, session, alignRight) {
+    popup(anchor, (menu) => {
+      if (has("sessions.markRead")) menu.append(item(session.unread ? "Mark read" : "Mark unread", "dot", () => markRead(session, !!session.unread)));
+      if (session.page && session.page.available && has("pages.open")) menu.append(item("Open the page on its own", "expand", () => openPageAlone(session)));
+      if (has("sessions.openHost")) menu.append(item("Open in host", "host", () => openInHost(session)));
+      const own = grants.filter((grant) => grant.from === session.id).length;
+      const stop = session.state === "working" && has("sessions.stop");
+      if (own || stop) menu.append(sep());
+      if (own) menu.append(item("Page permissions", "lock", () => go({ kind: "permissions", from: session.id }), { hint: String(own) }));
+      if (stop) menu.append(item("Stop the turn", "stop", () => stopSession(session)));
+      if (has("sessions.archive") && !session.archived) menu.append(sep(), item("Archive", "archive", () => archiveSession(session)));
+      if (!menu.children.length) menu.append(h("div", { class: "mh", text: "Nothing to do here on this host." }));
+    }, { alignRight });
+  }
+
+  // ---- navigation -----------------------------------------------------------------------------------
+  function go(next, options) {
+    dismiss();
+    if (teardown) { teardown(); teardown = null; }
+    refresh = null;
+    view = next;
+    prefs.view = next.kind === "session" ? { kind: "session", id: next.id, atMs: Date.now() } : { kind: next.kind, atMs: Date.now() };
+    savePrefs();
+    appEl.classList.remove("drawer");
+    sideSig = "";
+    renderSidebar();
+    dutiesChanged();
+    if (next.kind === "session") renderSession(next.id, options);
+    else if (next.kind === "drafts") renderDrafts();
+    else if (next.kind === "permissions") renderPermissions();
+    else renderNew();
+  }
+  function openSession(id) {
+    if (view.kind === "session" && view.id === id) { appEl.classList.remove("drawer"); return; }
+    go({ kind: "session", id });
+  }
+  function drawerButton() {
+    const node = button({ class: "ib drawer-btn", "aria-label": "Sessions" }, icon("panel"));
+    node.addEventListener("click", (event) => { event.stopPropagation(); appEl.classList.toggle("drawer"); });
+    return node;
+  }
+
+  // ---- composer (new session and chat) --------------------------------------------------------------------
+  /** A text area outside any form, so the host's own Dictate appears on it (02 R4.55, R4.60); "+" carries native files. 03 R5.75 */
+  function composer(options) {
+    const files = [];
+    const chips = h("div", { class: "chips" });
+    const area = (options.drafted && document.getElementById(options.id)) || h("textarea", { id: options.id, rows: "1", placeholder: options.placeholder, "aria-label": options.label, autocomplete: options.drafted ? null : "off" });
+    const picker = h("input", { type: "file", multiple: true, hidden: true });
+    const send = button({ class: "send", "aria-label": "Send", "data-tip": "Send (Enter)" }, icon("enter"));
+    const tools = h("div", { class: "tools" });
+    if (options.files && !filesRefused) {
+      const attach = button({ class: "ib", "aria-label": "Attach files", "data-tip": "Attach files" }, icon("plus"));
+      attach.addEventListener("click", () => picker.click());
+      tools.append(attach);
+    }
+    const steer = options.steer ? button({ class: "gbtn steer", hidden: true, "data-tip": "Interrupt the turn with this message (⌥Enter)" }, "Steer") : null;
+    const box = h("div", { class: "compose" }, chips, h("div", { class: "edrow" }, area, h("div", { class: "sendcol" }, steer, send)), tools, picker);
+    const grow = () => { area.style.height = "auto"; area.style.height = Math.min(area.scrollHeight + 2, Math.round(window.innerHeight * 0.5)) + "px"; };
+    const drawChips = () => chips.replaceChildren(...files.map((file, index) => h("span", { class: "fchip" }, icon(file.type && file.type.startsWith("image/") ? "file" : "file", 14),
+      h("span", { text: file.name + " · " + size(file.size) }), button({ "aria-label": "Remove " + file.name, onclick: () => { files.splice(index, 1); drawChips(); } }, icon("x", 12)))));
+    picker.addEventListener("change", () => {
+      const chosen = [...picker.files], room = MAX_FILES - files.length;
+      files.push(...chosen.slice(0, Math.max(0, room)));
+      if (chosen.length > room) toast("At most " + MAX_FILES + " files at a time.");
+      picker.value = "";
+      drawChips();
+    });
+    const state = () => { send.disabled = options.canSend ? !options.canSend(area.value.trim().length > 0) : !area.value.trim(); };
+    area.addEventListener("input", () => { grow(); state(); if (options.onInput) options.onInput(area.value); });
+    // Enter sends typed text and nothing else: an empty field never presses Stop. ⌥Enter steers where it can.
+    area.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+      event.preventDefault();
+      if (!area.value.trim()) return;
+      if (event.altKey) { if (steer && !steer.hidden) deliver("steer"); return; }
+      if (!send.disabled) deliver();
+    });
+    async function deliver(mode) {
+      const prompt = area.value.trim();
+      if (!prompt) return;
+      send.disabled = true;
+      if (steer) steer.disabled = true;
+      try {
+        const ok = await options.submit(prompt, files.slice(), mode);
+        if (ok) { area.value = ""; files.length = 0; drawChips(); grow(); tp.setDirty(false); if (options.onInput) options.onInput(""); }
+      } finally { if (steer) steer.disabled = false; state(); if (options.onSent) options.onSent(); }
+    }
+    send.addEventListener("click", () => {
+      if (!area.value.trim()) { if (options.onEmpty) options.onEmpty(); return; }
+      deliver();
+    });
+    if (steer) steer.addEventListener("click", () => deliver("steer"));
+    return { box, area, send, steer, tools, grow, state, files, drawChips };
+  }
+
+  // ---- New session ----------------------------------------------------------------------------------
+  /** A host that cannot attach files says so; the hub stops offering "+" until the next load. 03 R5.80 */
+  let filesRefused = false;
+  function noFiles() {
+    filesRefused = true;
+    document.querySelectorAll('.compose [aria-label="Attach files"]').forEach((node) => node.remove());
+  }
+  function providerOf(id) { return providers.find((provider) => provider.id === id) || providers.find((provider) => provider.default) || providers[0] || null; }
+  function modelOf(provider, id) { if (!provider) return null; return provider.models.find((model) => model.id === id) || provider.models.find((model) => model.default) || provider.models[0] || null; }
+  function levelsOf(provider, model) { return (model && model.reasoningLevels && model.reasoningLevels.length ? model.reasoningLevels : provider && provider.reasoningLevels) || []; }
+  function modeOf(provider, id) { const modes = (provider && provider.permissionModes) || []; return modes.find((mode) => mode.id === id) || modes.find((mode) => mode.default) || modes[0] || null; }
+  // As the host draws it: a mode that lets the agent do anything is orange, default or not ("Auto" is not one).
+  const risky = (mode) => !!mode && /full|bypass|skip|danger|yolo/i.test(mode.id + " " + mode.displayName);
+
+  let newComposer = null;
+  function renderNew() {
+    const c = prefs.compose;
+    if (!c.workspaceId || !workspaces.some((workspace) => workspace.id === c.workspaceId)) {
+      const newest = sessions.filter((session) => workspaces.some((workspace) => workspace.id === session.workspaceId)).sort((a, b) => recency(b) - recency(a))[0];
+      c.workspaceId = newest ? newest.workspaceId : workspaces[0] ? workspaces[0].id : undefined;
+    }
+    const status = h("p", { class: "status", role: "status" });
+    const canStart = has("sessions.start");
+    if (!newComposer) {
+      newComposer = composer({ id: "hub-new-prompt", drafted: true, placeholder: "Ask anything.", label: "What should the new session do?", files: true,
+        canSend: (typed) => typed && !!prefs.compose.workspaceId,
+        submit: (prompt, files) => startSession(prompt, files, status) });
+    }
+    const comp = newComposer;
+    const modelButton = button({ class: "picker", "aria-haspopup": "menu" });
+    comp.tools.querySelectorAll(".picker").forEach((node) => node.remove());
+    const drawModel = () => {
+      const provider = providerOf(c.providerId), model = modelOf(provider, c.model);
+      const level = levelsOf(provider, model).find((one) => one.id === c.reasoningLevel);
+      const parts = [];
+      if (providers.length > 1 && provider) parts.push(provider.displayName);
+      if (model) parts.push(model.displayName);
+      parts.push(level ? level.displayName : levelsOf(provider, model).length ? "Default effort" : "");
+      modelButton.replaceChildren(h("span", { class: "pl", text: parts.filter(Boolean).join(" · ") || "Model" }), icon("down", 12));
+    };
+    if (providers.length) { drawModel(); comp.tools.append(modelButton); }
+    modelButton.addEventListener("click", () => popup(modelButton, (menu) => {
+      menu.classList.add("wide");
+      const draw = () => {
+        menu.replaceChildren();
+        const provider = providerOf(c.providerId), model = modelOf(provider, c.model);
+        if (providers.length > 1) menu.append(h("div", { class: "tabs" }, providers.map((one) => button({ "aria-pressed": String(one === provider), onclick: () => { c.providerId = one.id; c.model = undefined; c.reasoningLevel = undefined; c.permissionMode = undefined; savePrefs(); draw(); drawModel(); drawUnder(); } }, one.displayName))));
+        menu.append(h("div", { class: "mh", text: "Model" }));
+        for (const one of provider ? provider.models : []) menu.append(item(one.displayName, null, () => { c.providerId = provider.id; c.model = one.id; if (!levelsOf(provider, one).some((level) => level.id === c.reasoningLevel)) c.reasoningLevel = undefined; savePrefs(); drawModel(); }, { check: one === model }));
+        const levels = levelsOf(provider, model);
+        if (levels.length) {
+          menu.append(sep(), h("div", { class: "mh", text: "Reasoning" }), h("div", { class: "segrow" },
+            button({ "aria-pressed": String(!c.reasoningLevel), onclick: () => { c.reasoningLevel = undefined; savePrefs(); drawModel(); draw(); } }, "Default"),
+            levels.map((level) => button({ "aria-pressed": String(c.reasoningLevel === level.id), onclick: () => { c.reasoningLevel = level.id; savePrefs(); drawModel(); draw(); } }, level.displayName))));
+        }
+      };
+      draw();
+    }));
+    const under = h("div", { class: "under" });
+    const drawUnder = () => {
+      under.replaceChildren();
+      const ws = workspaces.find((workspace) => workspace.id === c.workspaceId);
+      const wsButton = button({ class: "picker", "aria-haspopup": "menu" }, icon("folder", 14), h("span", { class: "pl", text: ws ? ws.name : "Choose a workspace" }), icon("down", 12));
+      wsButton.addEventListener("click", () => workspaceMenu(wsButton, () => { drawUnder(); comp.state(); }));
+      under.append(wsButton);
+      const provider = providerOf(c.providerId);
+      const modes = (provider && provider.permissionModes) || [];
+      if (modes.length) {
+        const mode = modeOf(provider, c.permissionMode);
+        const permButton = button({ class: "picker perm" + (risky(mode) ? " warn" : ""), "aria-haspopup": "menu" }, h("span", { class: "pl", text: mode ? mode.displayName : "Permissions" }), icon("down", 12));
+        permButton.addEventListener("click", () => popup(permButton, (menu) => {
+          menu.append(h("div", { class: "mh", text: "Permission mode" }));
+          for (const one of modes) menu.append(item(one.displayName, null, () => { c.permissionMode = one.id; savePrefs(); drawUnder(); }, { check: one === mode, hint: one.default ? "default" : "" }));
+        }, { alignRight: true }));
+        under.append(permButton);
+      }
+    };
+    drawUnder();
+    const recentList = h("div", { class: "recent" });
+    const drawRecent = () => {
+      const needs = (session) => (session.state === "waiting" ? 3 : session.state === "working" ? 2 : session.unread ? 1 : 0);
+      const top = sessions.filter((session) => !session.parentSessionId).sort((a, b) => needs(b) - needs(a) || recency(b) - recency(a)).slice(0, 6);
+      recentList.replaceChildren();
+      if (!top.length) return;
+      recentList.append(h("h2", { text: "Recent" }));
+      for (const session of top) {
+        const row = button({ class: "rc", onclick: () => openSession(session.id) }, h("span", { class: "tile" }, icon(session.page && session.page.available ? "page" : "chat", 14)),
+          h("span", { class: "tx" }, h("b", { text: titleOf(session) }), h("span", { text: workspaceName(session.workspaceId) + " · " + ago(recency(session)) })), glyph(glyphOf(session, true)));
+        recentList.append(row);
+      }
+    };
+    drawRecent();
+    const body = h("div", { class: "newview" }, recentList);
+    if (canStart) body.append(comp.box, under, status);
+    else body.append(h("p", { class: "note-host", text: "This host does not start sessions from a page. Start one in the host; it appears here." }));
+    viewEl.replaceChildren(h("div", { class: "bar" }, drawerButton()), body);
+    comp.state(); comp.grow();
+    if (!isPhone() && canStart) comp.area.focus();
+    refresh = () => { drawRecent(); };
+  }
+  function workspaceMenu(anchor, done) {
+    popup(anchor, (menu) => {
+      const search = h("input", { type: "search", placeholder: "Search workspaces", "aria-label": "Search workspaces" });
+      const list = h("div");
+      const draw = () => {
+        const query = search.value.trim().toLowerCase();
+        list.replaceChildren(...workspaces.filter((workspace) => !query || workspace.name.toLowerCase().includes(query)).map((workspace) =>
+          item(workspace.name, "folder", () => { prefs.compose.workspaceId = workspace.id; savePrefs(); done(); }, { check: workspace.id === prefs.compose.workspaceId })));
+        if (!list.children.length) list.append(h("div", { class: "mh", text: "No workspace matches." }));
+      };
+      search.addEventListener("input", draw);
+      menu.append(search, h("div", { class: "mh", text: "Workspace" }));
+      menu.append(list);
+      draw();
+      if (has("workspaces.browse") && has("workspaces.create")) menu.append(sep(), item("Add a folder…", "folder-add", () => addWorkspace(done)));
+    });
+  }
+  /** The host's folder picker, then the workspace it names; the page never sees a path. 03 R5.35–R5.37 */
+  async function addWorkspace(done) {
+    try {
+      const picked = await call("workspaces.browse", undefined, true);
+      if (!picked || !picked.selection) return;
+      const created = await call("workspaces.create", { selectionToken: picked.selection.token }, true);
+      await loadWorkspaces();
+      prefs.compose.workspaceId = created.workspaceId;
+      savePrefs();
+      sideSig = ""; renderSidebar();
+      done();
+    } catch (error) { handle(error, "Could not add the folder"); }
+  }
+  async function startSession(prompt, files, status) {
+    const c = prefs.compose;
+    const params = { workspaceId: c.workspaceId, prompt };
+    if (providers.length) {
+      const provider = providerOf(c.providerId), model = modelOf(provider, c.model);
+      if (provider) params.providerId = provider.id;
+      if (model) params.model = model.id;
+      if (c.reasoningLevel && levelsOf(provider, model).some((level) => level.id === c.reasoningLevel)) params.reasoningLevel = c.reasoningLevel;
+      const mode = provider && provider.permissionModes && provider.permissionModes.length ? modeOf(provider, c.permissionMode) : null;
+      if (mode) params.permissionMode = mode.id;
+    }
+    if (files.length) params.files = files;
+    status.className = "status"; status.textContent = "Confirm in the dialog to start it…";
+    try {
+      const result = await call("sessions.start", params, true);
+      status.textContent = "";
+      watchSessions();
+      go({ kind: "session", id: result.sessionId }, { fresh: true });
+      return true;
+    } catch (error) {
+      if (error && error.code === "cancelled") { status.textContent = "Nothing started."; return false; }
+      if (files.length && error && error.code === "unavailable") noFiles();
+      status.className = "status err"; status.textContent = describe(error);
+      return false;
+    }
+  }
+
+  // ---- a session: page or chat ------------------------------------------------------------------------
+  function modeFor(session) {
+    const chosen = prefs.modes[session.id];
+    const pageOk = !!(session.page && session.page.available) && canEmbed;
+    if (chosen === "chat" || !pageOk) return "chat";
+    return "page";
+  }
+  function renderSession(id, options) {
+    let session = lookup(id);
+    let placeholder = !session;
+    const since = Date.now();
+    if (!session && loadedAt && !(options && (options.fresh || options.restore))) { renderGone(id); return; }
+    session = session || { id, title: options && options.restore ? "…" : "New session", state: "working", waiting: null, page: { available: false }, archived: false, workspaceId: prefs.compose.workspaceId };
+    let mode = modeFor(session);
+    const titleEl = h("span", { class: "title", text: titleOf(session) });
+    const more = button({ class: "ib", "aria-label": "Session actions", "aria-haspopup": "menu" }, icon("more"));
+    more.addEventListener("click", () => sessionMenu(more, lookup(id) || session));
+    const pageBtn = button({ "aria-pressed": "false" }, icon("page", 14), h("span", { class: "sl", text: "Page" }));
+    const chatBtn = button({ "aria-pressed": "false" }, icon("chat", 14), h("span", { class: "sl", text: "Chat" }));
+    const seg = h("span", { class: "seg", role: "group", "aria-label": "View" }, pageBtn, chatBtn);
+    const alone = button({ class: "ib tabbtn", "aria-label": "Open the page on its own", "data-tip": "Open the page on its own" }, icon("expand"));
+    alone.addEventListener("click", () => openPageAlone(lookup(id) || session));
+    const hostDot = h("span", { class: "hdot" });
+    const hostBtn = button({ class: "hostbtn", "aria-label": "Open in host" }, icon("host", 14), h("span", { class: "hl", text: "Open in host" }), hostDot);
+    hostBtn.addEventListener("click", () => openInHost(lookup(id) || session));
+    const archivedChip = h("span", { class: "chip", hidden: true, text: "Archived" });
+    const bar = h("div", { class: "bar" }, drawerButton(), titleEl, archivedChip, more, h("span", { class: "fill" }), seg, alone);
+    if (has("sessions.openHost")) bar.append(hostBtn);
+    // In page view a strip says what the page may not: the session waits on you, or is not running in its host.
+    const stripText = h("span"), stripAct = button({ class: "gbtn" });
+    const strip = h("div", { class: "strip", hidden: true }, icon("ask", 14), stripText, stripAct);
+    let stripRun = null;
+    stripAct.addEventListener("click", () => { if (stripRun) stripRun(); });
+    const body = h("div", { class: "view" });
+    viewEl.replaceChildren(bar, strip, body);
+    let stopBody = null;
+    const switchTo = (next, remember) => {
+      if (stopBody) { stopBody(); stopBody = null; }
+      mode = next;
+      if (remember) { prefs.modes[id] = next; savePrefs(); }
+      pageBtn.setAttribute("aria-pressed", String(mode === "page"));
+      chatBtn.setAttribute("aria-pressed", String(mode === "chat"));
+      bar.classList.toggle("line", mode === "chat");
+      if (mode === "chat") strip.hidden = true;
+      stopBody = mode === "page" ? mountPage(body, id, broken) : mountChat(body, id);
+      if (ready) update();
+    };
+    let ready = false;
+    pageBtn.addEventListener("click", () => {
+      const current = lookup(id) || session;
+      if (!canEmbed && current.page && current.page.available) { openPageAlone(current); return; }
+      if (mode !== "page") switchTo("page", true);
+    });
+    chatBtn.addEventListener("click", () => { if (mode !== "chat") switchTo("chat", true); });
+    const update = () => {
+      const current = lookup(id);
+      if (!current) {
+        if (!loadedAt) return;
+        if (options && options.restore) { go({ kind: "new" }); return; }
+        if (options && options.fresh && Date.now() - since < 30000) return;
+        renderGone(id);
+        return;
+      }
+      if (options) { options.fresh = false; options.restore = false; }
+      // Opened before the list had loaded: now the row says whether there is a page to show.
+      if (placeholder) { placeholder = false; const want = modeFor(current); if (!prefs.modes[id] && want !== mode) switchTo(want, false); }
+      session = current;
+      titleEl.textContent = titleOf(current);
+      archivedChip.hidden = !current.archived;
+      document.title = titleOf(current);
+      const hasPage = !!(current.page && current.page.available);
+      pageBtn.disabled = !hasPage || !(canEmbed || has("pages.open"));
+      pageBtn.setAttribute("data-tip", hasPage ? "The session's page" : "No page yet");
+      alone.hidden = !hasPage || !has("pages.open");
+      const live = current.state !== "stopped";
+      hostDot.className = "hdot" + (live ? "" : " off");
+      chatBtn.classList.toggle("attn", current.state === "waiting");
+      const waitWord = current.waiting && current.waiting.kind === "approval" ? "a decision" : current.waiting && current.waiting.kind === "question" ? "a question" : "something";
+      if (mode === "page" && current.state === "waiting") {
+        strip.hidden = false;
+        strip.querySelector("use").setAttribute("href", "#i-ask");
+        stripText.textContent = "Waiting on you: " + waitWord + ".";
+        stripAct.textContent = "Answer";
+        stripRun = () => switchTo("chat", false);
+      } else if (mode === "page" && !live && has("sessions.openHost")) {
+        strip.hidden = false;
+        strip.querySelector("use").setAttribute("href", "#i-host");
+        stripText.textContent = "Not running in its host: open it there to continue.";
+        stripAct.textContent = "Open in host";
+        stripRun = () => openInHost(lookup(id) || current);
+      } else strip.hidden = true;
+      hostBtn.setAttribute("data-tip", live ? "Open this session in its host" : "Not running in its host: open it there");
+      if (mode === "chat" && hasPage && canEmbed && !prefs.modes[id] && wasPageless.has(id)) { wasPageless.delete(id); switchTo("page", false); }
+      if (!hasPage) wasPageless.add(id);
+      // Opening a session marks it read, as the host's own list does. 03 R5.7a
+      if (current.unread && has("sessions.markRead") && document.visibilityState !== "hidden" && readMarked.get(id) !== (current.attentionAtMs || 1)) {
+        readMarked.set(id, current.attentionAtMs || 1);
+        markRead(current, true);
+      }
+      if (bodyRefresh) bodyRefresh(current);
+    };
+    let bodyRefresh = null;
+    // A page that cannot be shown opens the chat instead, without remembering it: Page stays there to try again.
+    const broken = (status) => setTimeout(() => {
+      if (mode !== "page" || view.kind !== "session" || view.id !== id) return;
+      switchTo("chat", false);
+      toast("The page can't be shown here (" + ({ too_large: "too large", not_found: "gone", unavailable: "unreachable", no_page: "not written yet" }[status] || status) + "): this is the chat.");
+    }, 0);
+    const mountChat = (into, sid) => { const chat = chatView(into, sid); bodyRefresh = chat.refresh; return () => { bodyRefresh = null; chat.stop(); }; };
+    switchTo(mode, false);
+    update();
+    ready = true;
+    refresh = update;
+    teardown = () => { if (stopBody) stopBody(); document.title = "Home"; };
+  }
+  const wasPageless = new Set();
+  /** The session's page in the whole main area, live, answering its own agent. 02 §Embedded pages */
+  function mountPage(into, id, onBroken) {
+    const wrap = h("div", { class: "pagewrap" });
+    into.replaceChildren(wrap);
+    // `unavailable` may pass (the kernel keeps checking): only one that lasts 10 s opens the chat.
+    let waiting = null;
+    const stop = tp.embed(wrap, { sessionId: id, onState: (info) => {
+      clearTimeout(waiting);
+      if (info.status === "unavailable") waiting = setTimeout(() => onBroken(info.status), 10000);
+      else if (["too_large", "not_found", "no_page"].includes(info.status)) onBroken(info.status);
+    } });
+    return () => { clearTimeout(waiting); stop(); wrap.remove(); };
+  }
+  function renderGone(id) {
+    if (teardown) { teardown(); teardown = null; }
+    refresh = null;
+    viewEl.replaceChildren(h("div", { class: "bar" }, drawerButton()), h("div", { class: "doc" }, h("div", { class: "col" },
+      h("h1", { text: "This session is not listed" }), h("p", { class: "lede", text: "It was archived, deleted, or belongs to no workspace the host shows." }),
+      h("div", { class: "act" }, button({ class: "gbtn", onclick: () => openSearch(true) }, icon("search", 14), "Search archived sessions"), button({ class: "gbtn", onclick: () => go({ kind: "new" }) }, icon("new", 14), "New session")))));
+    void id;
+  }
+
+  // ---- chat -------------------------------------------------------------------------------------------
+  /** The transcript, live: a watch of the newest rows reconciled by id, older rows on demand. 03 R-C1, R-C2 */
+  function chatView(into, id) {
+    const rows = new Map(), order = [];
+    let prev = null, exhausted = false, loadingOlder = false, sig = "", first = true;
+    const expanded = new Set(), toolsOpen = new Set();
+    const col = h("div", { class: "col" });
+    const older = h("div", { class: "older" });
+    const waitSlot = h("div", { class: "waitslot" });
+    const scroller = h("div", { class: "scroller" }, col, waitSlot);
+    const nudge = h("div", { class: "nudge", hidden: true }, icon("host", 14), h("span", { text: "Not running in its host: messages wait until it runs there again." }));
+    if (has("sessions.openHost")) nudge.append(button({ class: "gbtn", onclick: () => openInHost(lookup(id)) }, "Open in host"));
+    const status = h("p", { class: "status", role: "status" });
+    const readonly = h("div", { class: "readonly", hidden: true, text: "Archived: read-only." });
+    let current = lookup(id);
+    const comp = composer({ id: "hub-chat-prompt", placeholder: "Message this session…", label: "Message this session", files: true,
+      canSend: (typed) => typed || (current && current.state === "working" && has("sessions.stop")),
+      onInput: (text) => chatDrafts.set(id, text),
+      onEmpty: () => { if (current && current.state === "working" && has("sessions.stop")) stopSession(current); },
+      onSent: () => sendLook(),
+      steer: true,
+      submit: (prompt, files, mode) => sendTo(prompt, files, mode) });
+    comp.area.value = chatDrafts.get(id) || "";
+    const dock = h("div", { class: "dock" }, nudge, readonly);
+    if (has("sessions.send")) dock.append(comp.box, status);
+    into.replaceChildren(scroller, dock);
+    comp.grow();
+
+    async function sendTo(prompt, files, mode) {
+      const params = { sessionId: id, prompt };
+      if (mode === "steer") params.mode = "steer";
+      if (files.length) params.files = files;
+      status.className = "status"; status.textContent = "Confirm in the dialog to send it…";
+      try {
+        const result = await call("sessions.send", params, true);
+        chatDrafts.delete(id);
+        status.textContent = result.delivery === "steered" ? "Steered: it interrupted the turn." : result.delivery === "queued" ? (current && current.state === "stopped" ? "Queued: it reaches the agent when the session runs again." : "Queued: it reaches the agent after the current turn.") : "";
+        return true;
+      } catch (error) {
+        if (error && error.code === "cancelled") { status.textContent = "Nothing sent."; return false; }
+        if (files.length && error && error.code === "unavailable") noFiles();
+        status.className = "status err"; status.textContent = describe(error);
+        return false;
+      }
+    }
+    const sendLook = () => {
+      // While a turn runs, typed text can wait for it (Enter) or interrupt it (Steer); an empty field offers Stop.
+      if (comp.steer) comp.steer.hidden = !(current && current.state === "working" && comp.area.value.trim());
+      const working = current && current.state === "working" && has("sessions.stop") && !comp.area.value.trim();
+      comp.send.replaceChildren(icon(working ? "stop" : "enter"));
+      comp.send.setAttribute("aria-label", working ? "Stop the turn" : "Send");
+      comp.send.setAttribute("data-tip", working ? "Stop the turn" : "Send (Enter)");
+      comp.state();
+    };
+    comp.area.addEventListener("input", sendLook);
+
+    function merge(list, atStart) {
+      const fresh = [];
+      for (const message of list) {
+        if (rows.has(message.id)) rows.set(message.id, message);
+        else { rows.set(message.id, message); fresh.push(message.id); }
+      }
+      if (atStart) order.unshift(...fresh); else order.push(...fresh);
+    }
+    let filling = false;
+    const stopWatch = every("sessions.messages", { sessionId: id, limit: CHAT_ROWS }, CHAT_MS, async (value, error) => {
+      if (error) { if (error.code !== "rate_limited") { col.replaceChildren(h("p", { class: "sysline", text: "Could not read the transcript: " + describe(error) })); } return; }
+      if (filling) return;
+      const list = value.messages;
+      // Nothing shown yet: this read is the start, and history pages back from it.
+      if (!order.length) { prev = value.prevCursor; exhausted = value.prevCursor === null; first = false; merge(list, false); draw(); return; }
+      first = false;
+      if (list.length && !list.some((message) => rows.has(message.id))) {
+        // More rows arrived since the last read than one read holds: page back from the oldest new row until the pages
+        // meet. Too far behind, the view restarts from the newest rows and history scrolls back from there. 03 R-C2
+        filling = true;
+        let cursor = list[0].cursor, gap = [], met = false;
+        try {
+          for (let page = 0; page < 5 && cursor; page += 1) {
+            const older = await call("sessions.messages", { sessionId: id, limit: CHAT_ROWS, before: cursor });
+            const fresh = older.messages.filter((message) => !rows.has(message.id));
+            gap = fresh.concat(gap);
+            if (fresh.length < older.messages.length || older.prevCursor === null) { met = true; break; }
+            cursor = older.prevCursor;
+          }
+        } catch (fillError) { filling = false; if (fillError.code !== "rate_limited") handle(fillError, "Could not read the transcript"); return; }
+        filling = false;
+        if (!met) { rows.clear(); order.length = 0; prev = cursor; exhausted = !cursor; }
+        merge(gap, false);
+      }
+      merge(list, false);
+      draw();
+    });
+    async function loadOlder() {
+      if (loadingOlder || exhausted || !prev) return;
+      loadingOlder = true;
+      older.textContent = "Loading earlier messages…";
+      const height = scroller.scrollHeight;
+      try {
+        const page = await call("sessions.messages", { sessionId: id, limit: CHAT_ROWS, before: prev }, true);
+        prev = page.prevCursor; exhausted = page.prevCursor === null;
+        merge(page.messages, true);
+        draw(true);
+        scroller.scrollTop += scroller.scrollHeight - height;
+      } catch (error) { handle(error, "Could not read earlier messages"); }
+      finally { loadingOlder = false; }
+    }
+    scroller.addEventListener("scroll", () => { if (scroller.scrollTop < 80) loadOlder(); });
+
+    function draw(keep) {
+      const list = order.map((rowId) => rows.get(rowId));
+      const next = JSON.stringify([list.map((m) => [m.id, (m.text || "").length, (m.text || "").slice(-24), m.done, m.tool && m.tool.result !== undefined, m.question && m.question.answered]), [...expanded], [...toolsOpen], current && current.state, exhausted]);
+      if (next === sig) return;
+      sig = next;
+      const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 60;
+      const fragment = document.createDocumentFragment();
+      if (!exhausted && prev) { older.textContent = "Scroll up for earlier messages"; fragment.append(older); }
+      if (!list.length) fragment.append(h("p", { class: "sysline", text: first ? "Loading…" : "No messages yet." }));
+      // A turn: the reader's message, the work (tools and interim text) folded under "Worked for", then the reply.
+      const turns = [];
+      for (const message of list) {
+        if (message.kind === "user" || !turns.length) turns.push({ user: message.kind === "user" ? message : null, items: [] });
+        if (message.kind !== "user") turns[turns.length - 1].items.push(message);
+      }
+      turns.forEach((turn, index) => {
+        if (turn.user) fragment.append(userBubble(turn.user));
+        const items = turn.items;
+        let lastWork = -1;
+        items.forEach((message, at) => { if (message.kind === "tool") lastWork = at; });
+        const work = items.slice(0, lastWork + 1), tail = items.slice(lastWork + 1);
+        const live = index === turns.length - 1 && current && current.state === "working";
+        if (work.length || (live && !tail.length)) {
+          const key = turn.user ? turn.user.id : "~start";
+          const open = expanded.has(key);
+          const from = turn.user ? turn.user.atMs : work.length ? work[0].atMs : Date.now();
+          const until = live ? Date.now() : (tail.length ? tail[tail.length - 1].atMs : work.length ? work[work.length - 1].atMs : from);
+          const label = live ? "Working for " + span(until - from) : "Worked for " + span(until - from);
+          const toggle = button({ class: "worked" + (live ? " live" : ""), "aria-expanded": String(open), dataset: { from: String(from) } }, live ? icon("spin", 12, "spin") : null, h("span", { class: "wl", text: label }), work.length ? icon("right", 12, "chev") : null);
+          if (work.length) toggle.addEventListener("click", () => { if (open) expanded.delete(key); else expanded.add(key); sig = ""; draw(true); });
+          fragment.append(toggle);
+          if (open && work.length) fragment.append(h("div", { class: "tl" }, work.map(stepRow).filter(Boolean)));
+        }
+        for (const message of tail) { const node = stepRow(message); if (node) fragment.append(node); }
+      });
+      if (current && current.state === "failed") fragment.append(h("p", { class: "sysline" }, icon("fail", 14), h("span", { text: "The last turn failed." })));
+      col.replaceChildren(fragment);
+      if (!keep && (atBottom || !scrolledOnce)) { scroller.scrollTop = scroller.scrollHeight; scrolledOnce = list.length > 0; }
+    }
+    let scrolledOnce = false;
+    function userBubble(message) {
+      const bubble = h("div", { class: "ub" });
+      if (message.from && message.from.kind && message.from.kind !== "reader") {
+        const word = { page: "From ", session: "From ", plugin: "From a plugin", schedule: "Scheduled" }[message.from.kind] || "";
+        bubble.append(h("span", { class: "from", text: word + (message.from.label && /\s$/.test(word) ? "“" + message.from.label + "”" : "") }));
+      }
+      bubble.append(document.createTextNode((message.text || "") + (message.truncated ? " …" : "")));
+      if (message.files && message.files.length) bubble.append(h("span", { class: "files" }, message.files.map((file) => h("span", { class: "fchip" }, icon("file", 14), h("span", { text: file.name + " · " + size(file.sizeBytes) })))));
+      return bubble;
+    }
+    function stepRow(message) {
+      if (message.kind === "assistant") return markdown(message.text || "", message.truncated);
+      if (message.kind === "notice") return /^\s*[\w-]*\s*$/.test(message.text || "") ? null : h("p", { class: "sysline" }, icon("info", 14), h("span", { text: message.text || "" }));
+      if (message.kind === "question" && message.question && !message.question.answered && current && current.waiting && current.waiting.id === message.question.id) return null;
+      if (message.kind === "question") return h("p", { class: "sysline" }, icon("ask", 14), h("span", { text: (message.question && message.question.answered ? "Asked: " : "Asks: ") + (message.text || "a question") }));
+      if (message.kind === "tool" && message.tool) return toolRow(message);
+      return h("p", { class: "sysline", text: message.text || "" });
+    }
+    function toolRow(message) {
+      const tool = message.tool;
+      const open = toolsOpen.has(message.id);
+      const name = tool.name || "tool";
+      const kind = /bash|shell|command|exec|terminal/i.test(name) ? "terminal" : /read|edit|write|file|glob|grep|search/i.test(name) ? "file" : /web|fetch|browser|url/i.test(name) ? "globe" : "tool";
+      const head = button({ class: "trow", "aria-expanded": String(open) }, icon(message.done ? kind : "spin", 14, message.done ? "" : "spin"),
+        h("span", { class: "tn" }, verbOf(name, message.done) + " ", h("em", { text: summarize(tool.input) })), tool.isError ? h("span", { class: "errtag", text: "error" }) : null);
+      head.addEventListener("click", () => { if (open) toolsOpen.delete(message.id); else toolsOpen.add(message.id); sig = ""; draw(true); });
+      if (!open) return head;
+      const command = tool.input && typeof tool.input === "object" && typeof tool.input.command === "string" ? tool.input.command : null;
+      const box = command !== null ? h("div", { class: "tbox" }, document.createTextNode("$ " + command)) : h("div", { class: "tbox" }, h("span", { class: "lbl", text: "Input" }), pretty(tool.input));
+      if (tool.result !== undefined) {
+        if (command !== null) box.append(h("span", { class: "out" }, pretty(tool.result)));
+        else box.append(h("span", { class: "lbl", text: tool.isError ? "Error" : "Result", style: "margin-top:8px" }), pretty(tool.result));
+      }
+      if (message.truncated) box.append(h("span", { class: "lbl", text: "Cut to a bound; the host shows it whole.", style: "margin-top:8px" }));
+      return h("div", null, head, box);
+    }
+    const refreshChat = (session) => {
+      current = session;
+      nudge.hidden = !(session.state === "stopped" && has("sessions.openHost"));
+      readonly.hidden = !session.archived;
+      comp.box.hidden = !!session.archived;
+      status.hidden = !!session.archived;
+      sendLook();
+      drawWait(session);
+      if (session.state !== (draw.lastState || "")) { draw.lastState = session.state; sig = ""; draw(); }
+    };
+    let waitKey = "";
+    function drawWait(session) {
+      const wait = session.waiting;
+      const key = wait ? (wait.id || "") + wait.kind + (wait.text || "") : "";
+      if (key === waitKey) return;
+      waitKey = key;
+      waitSlot.replaceChildren(wait && session.state === "waiting" ? waitCard(session, wait) : "");
+    }
+    if (current) refreshChat(current);
+    // The running turn's clock moves on its own, between reads.
+    const clock = setInterval(() => { for (const node of col.querySelectorAll(".worked.live .wl")) node.textContent = "Working for " + span(Date.now() - Number(node.parentNode.dataset.from)); }, 1000);
+    return { stop: () => { stopWatch(); clearInterval(clock); }, refresh: refreshChat };
+  }
+  /** The host's wording for a step: "Ran", "Read", "Edited"… and the tool's own name otherwise. */
+  function verbOf(name, done) {
+    const pairs = [[/^(bash|shell|exec|command|terminal)/i, "Ran", "Running"], [/^read/i, "Read", "Reading"], [/^(edit|multiedit|str_replace)/i, "Edited", "Editing"], [/^write/i, "Wrote", "Writing"], [/^(grep|glob|search|find)/i, "Searched", "Searching"], [/^(webfetch|fetch)/i, "Fetched", "Fetching"], [/^websearch/i, "Searched the web", "Searching the web"], [/^(task|agent)/i, "Ran an agent", "Running an agent"]];
+    const found = pairs.find(([pattern]) => pattern.test(name));
+    return found ? (done ? found[1] : found[2]) : name;
+  }
+  function summarize(input) {
+    if (input === null || input === undefined) return "";
+    if (typeof input === "string") return input.replace(/\s+/g, " ").slice(0, 120);
+    if (typeof input === "object") {
+      for (const key of ["command", "file_path", "path", "pattern", "url", "query", "description", "prompt"]) if (typeof input[key] === "string") return input[key].replace(/\s+/g, " ").slice(0, 120);
+      const firstString = Object.values(input).find((value) => typeof value === "string");
+      if (firstString) return firstString.replace(/\s+/g, " ").slice(0, 120);
+    }
+    return "";
+  }
+  function pretty(value) {
+    if (typeof value === "string") return document.createTextNode(value);
+    try { return document.createTextNode(JSON.stringify(value, null, 2)); } catch (error) { return document.createTextNode(String(value)); }
+  }
+
+  /** A waiting question or approval, answered where the reader reads it. A decision is confirmed by the host every time. 03 R-C7 */
+  function waitCard(session, wait) {
+    const card = h("div", { class: "ask" });
+    const answerable = has("sessions.respond") && wait.id && !session.archived;
+    const hostLine = (text) => {
+      const act = h("div", { class: "act" }, h("span", { class: "hint", text }));
+      if (has("sessions.openHost")) act.prepend(button({ class: "gbtn", onclick: () => openInHost(session) }, icon("host", 14), "Open in host"));
+      return act;
+    };
+    if (wait.kind === "question" && wait.questions && wait.questions.length) {
+      const fields = wait.questions.map((question, index) => {
+        const set = h("fieldset", null, h("legend", null, h("span", { class: "q" }, index === 0 ? icon("ask") : null, h("span", { class: "qtext", text: question.text }))));
+        const name = "q-" + session.id + "-" + index;
+        for (const option of question.options || []) {
+          set.append(h("label", { class: "o" }, h("input", { type: question.multiSelect ? "checkbox" : "radio", name, value: option.id, autocomplete: "off" }), h("span", { text: option.label })));
+        }
+        let free = null;
+        if (question.allowFreeText) { free = h("input", { type: "text", placeholder: (question.options || []).length ? "Or type an answer…" : "Type an answer…", autocomplete: "off", "aria-label": "Your answer" }); set.append(free); }
+        return { question, set, name, free };
+      });
+      card.append(...fields.map((field) => field.set));
+      if (!answerable) { card.append(hostLine("Answer it in the host.")); return card; }
+      const status = h("span", { class: "hint", role: "status" });
+      const send = button({ class: "pbtn" }, "Answer");
+      send.addEventListener("click", async () => {
+        const answers = {};
+        for (const field of fields) {
+          const selected = [...field.set.querySelectorAll("input[name='" + field.name + "']:checked")].map((input) => input.value);
+          const text = field.free ? field.free.value.trim() : "";
+          if (!selected.length && !text) { status.textContent = "Choose or type an answer to every question."; return; }
+          answers[field.question.id] = text ? { selected, freeText: text } : { selected };
+        }
+        send.disabled = true; status.textContent = "Sending…";
+        try { await call("sessions.respond", { sessionId: session.id, id: wait.id, answers }, true); status.textContent = "Answered."; }
+        catch (error) { send.disabled = false; status.textContent = error && error.code === "cancelled" ? "Not sent." : error && error.code === "not_found" ? "That question is over." : describe(error); }
+      });
+      card.append(h("div", { class: "act" }, send, status));
+      return card;
+    }
+    if (wait.kind === "approval" && wait.approval) {
+      const subject = { tool: "Use a tool", command: "Run a command", file_change: "Change files", permission: "Change permissions", plan: "Go ahead with the plan", other: "Go ahead" }[wait.approval.subject] || "Go ahead";
+      card.append(h("p", { class: "q" }, icon("ask"), h("span", { class: "qtext", text: "Needs your decision: " + subject.toLowerCase() })));
+      if (wait.approval.summary) card.append(h("pre", { text: wait.approval.summary }));
+      if (wait.truncated || !answerable) { card.append(hostLine(wait.truncated ? "Too long to show whole here: decide in the host." : "Decide in the host.")); return card; }
+      const status = h("span", { class: "hint", role: "status" });
+      const act = h("div", { class: "act" });
+      const words = { allow_once: "Allow once", allow_for_session: "Allow for this session", deny: "Deny" };
+      for (const decision of wait.approval.decisions || []) {
+        const node = button({ class: decision === "allow_once" ? "pbtn" : decision === "deny" ? "gbtn red" : "gbtn" }, words[decision] || decision);
+        node.addEventListener("click", async () => {
+          act.querySelectorAll("button").forEach((one) => { one.disabled = true; });
+          status.textContent = "Confirm in the dialog…";
+          try { await call("sessions.respond", { sessionId: session.id, id: wait.id, decision }, true); status.textContent = "Decided."; }
+          catch (error) { act.querySelectorAll("button").forEach((one) => { one.disabled = false; }); status.textContent = error && error.code === "cancelled" ? "Not decided." : describe(error); }
+        });
+        act.append(node);
+      }
+      act.append(status);
+      card.append(act);
+      return card;
+    }
+    card.append(h("p", { class: "q" }, icon("ask"), h("span", { class: "qtext", text: wait.text || "It is waiting for you in the host." })));
+    card.append(hostLine(wait.kind === "question" ? "Answer it in the host." : "It waits on something only the host shows."));
+    return card;
+  }
+
+  /** A small, safe Markdown subset for the agent's text: paragraphs, lists, headings, code, bold, links. Built as nodes, never as HTML. */
+  function markdown(text, truncated) {
+    const root = h("div", { class: "md" });
+    const lines = (text + (truncated ? " …" : "")).replace(/\r\n?/g, "\n").split("\n");
+    let index = 0;
+    while (index < lines.length) {
+      const line = lines[index];
+      const fence = line.match(/^\s*```/);
+      if (fence) {
+        const body = [];
+        index += 1;
+        while (index < lines.length && !/^\s*```/.test(lines[index])) { body.push(lines[index]); index += 1; }
+        index += 1;
+        root.append(h("pre", { text: body.join("\n") }));
+        continue;
+      }
+      if (!line.trim()) { index += 1; continue; }
+      const heading = line.match(/^(#{1,4})\s+(.*)$/);
+      if (heading) { root.append(inline(h("h" + heading[1].length), heading[2])); index += 1; continue; }
+      if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) {
+        const ordered = /^\s*\d+[.)]/.test(line);
+        const list = h(ordered ? "ol" : "ul");
+        while (index < lines.length && /^\s*([-*+]|\d+[.)])\s+/.test(lines[index])) {
+          let content = lines[index].replace(/^\s*([-*+]|\d+[.)])\s+/, "");
+          index += 1;
+          while (index < lines.length && /^\s{2,}\S/.test(lines[index]) && !/^\s*([-*+]|\d+[.)])\s+/.test(lines[index])) { content += " " + lines[index].trim(); index += 1; }
+          list.append(inline(h("li"), content));
+        }
+        root.append(list);
+        continue;
+      }
+      const para = [];
+      while (index < lines.length && lines[index].trim() && !/^\s*```/.test(lines[index]) && !/^(#{1,4})\s/.test(lines[index]) && !/^\s*([-*+]|\d+[.)])\s+/.test(lines[index])) { para.push(lines[index]); index += 1; }
+      const p = h("p");
+      para.forEach((part, at) => { if (at) p.append(h("br")); inline(p, part); });
+      root.append(p);
+    }
+    return root;
+  }
+  /** The host's own addresses and loopback: `navigation.openExternal` refuses them, so they stay text. 03 R5.32a */
+  function ownHost(url) {
+    try {
+      const target = new URL(url), here = new URL(document.baseURI);
+      return target.host === here.host || /^(localhost|127\.|\[::1\]|0\.0\.0\.0)/.test(target.hostname);
+    } catch (error) { return false; }
+  }
+  function inline(into, text) {
+    const pattern = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\[[^\]]+\]\((https?:\/\/[^)\s]+)\))|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
+    let last = 0, match;
+    while ((match = pattern.exec(text))) {
+      if (match.index > last) into.append(document.createTextNode(text.slice(last, match.index)));
+      if (match[1]) into.append(h("code", { text: match[1].slice(1, -1) }));
+      else if (match[2]) into.append(h("strong", { text: match[2].slice(2, -2) }));
+      else if (match[3]) into.append(h("a", { href: match[4], target: "_blank", rel: "noopener", text: match[3].slice(1, match[3].indexOf("](")) }));
+      else if (ownHost(match[5])) into.append(document.createTextNode(match[5]));
+      else into.append(h("a", { href: match[5], target: "_blank", rel: "noopener", text: match[5] }));
+      last = pattern.lastIndex;
+    }
+    if (last < text.length) into.append(document.createTextNode(text.slice(last)));
+    return into;
+  }
+
+  // ---- search, with the archived sessions as the host keeps them ---------------------------------------------
+  function openSearch(startArchived) {
+    dismiss();
+    if ($(".scrim", layerEl)) return;
+    let showArchived = !!startArchived, cursor = 0, results = [];
+    const input = h("input", { type: "search", placeholder: "Search sessions", "aria-label": "Search sessions", autocomplete: "off" });
+    const filter = button({ class: "ib", "aria-label": "Filter", "data-tip": "Filter", "aria-haspopup": "menu" }, icon("filter"));
+    const res = h("div", { class: "res", role: "listbox" });
+    const palette = h("div", { class: "palette", role: "dialog", "aria-label": "Search sessions" }, h("div", { class: "ph" }, icon("search"), input, filter), res);
+    const scrim = h("div", { class: "scrim" }, palette);
+    const close = () => { scrim.remove(); document.removeEventListener("keydown", keys, true); };
+    scrim.addEventListener("pointerdown", (event) => { if (event.target === scrim) close(); });
+    const pick = (session) => { close(); openSession(session.id); };
+    const draw = () => {
+      const query = input.value.trim().toLowerCase();
+      const known = new Set(sessions.map((session) => session.id));
+      const pool = showArchived ? archived || [] : sessions.concat((activeAll || []).filter((session) => !known.has(session.id)));
+      results = pool.filter((session) => !query || titleOf(session).toLowerCase().includes(query) || workspaceName(session.workspaceId).toLowerCase().includes(query)).sort((a, b) => recency(b) - recency(a)).slice(0, 60);
+      cursor = Math.min(cursor, Math.max(0, results.length - 1));
+      res.replaceChildren(h("p", { class: "sec", text: showArchived ? "Archived" : "Active" }), ...results.map((session, at) => {
+        const row = button({ class: "pr" + (at === cursor ? " cur" : ""), role: "option" }, h("span", { class: "pt" }, h("b", { text: titleOf(session) }), h("span", null, icon("folder", 12), " " + workspaceName(session.workspaceId) + " · " + ago(recency(session)))), session.archived ? h("span", { class: "slot" }, icon("archive")) : glyph(glyphOf(session, false)));
+        row.addEventListener("click", () => pick(session));
+        row.addEventListener("pointermove", () => { if (cursor !== at) { cursor = at; draw(); } });
+        return row;
+      }));
+      if (!results.length && !(showArchived && !archivedDone)) res.append(h("p", { class: "none", text: showArchived ? "No archived session matches." : "No session matches." }));
+      if (showArchived && !archivedDone) res.append(h("p", { class: "none", text: "Looking through archived sessions… " + (archived ? archived.length : 0) + " found so far." }));
+      if (!showArchived && query && activeRunning) res.append(h("p", { class: "none", text: "Looking through every session… " + pool.length + " searched so far." }));
+      input.placeholder = showArchived ? "Search archived sessions by title or workspace…" : "Search sessions by title or workspace…";
+    };
+    const setArchived = async (on) => {
+      showArchived = on; cursor = 0; draw();
+      if (on && !archivedDone) {
+        try { await loadArchived(() => showArchived && scrim.isConnected, draw); } catch (error) { handle(error, "Could not list archived sessions"); }
+        draw();
+      }
+    };
+    filter.addEventListener("click", () => popup(filter, (menu) => {
+      menu.append(h("div", { class: "mh", text: "Show" }), item("Active", null, () => setArchived(false), { check: !showArchived }), item("Archived", null, () => setArchived(true), { check: showArchived }));
+    }, { alignRight: true, noFocus: false }));
+    const keys = (event) => {
+      if (closeMenu) return;
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }
+      else if (event.key === "ArrowDown") { event.preventDefault(); cursor = Math.min(results.length - 1, cursor + 1); draw(); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); cursor = Math.max(0, cursor - 1); draw(); }
+      else if (event.key === "Enter" && results[cursor]) { event.preventDefault(); pick(results[cursor]); }
+    };
+    document.addEventListener("keydown", keys, true);
+    input.addEventListener("input", () => {
+      cursor = 0;
+      draw();
+      if (!showArchived && input.value.trim() && !activeDone) loadActive(() => !showArchived && !!input.value.trim() && scrim.isConnected, draw).catch((error) => handle(error, "Could not search every session")).then(draw);
+    });
+    layerEl.append(scrim);
+    input.focus();
+    if (showArchived) setArchived(true); else draw();
+  }
+
+  // ---- the home's duties: unsent drafts, page permissions. 05 R-S12; 02 R-K7; 03 R5.65 -------------------------
+  function docView(title, lede, build) {
+    const col = h("div", { class: "col" });
+    viewEl.replaceChildren(h("div", { class: "bar" }, drawerButton()), h("div", { class: "doc" }, col));
+    const draw = () => { col.replaceChildren(h("h1", { text: title }), h("p", { class: "lede", text: lede })); build(col); };
+    draw();
+    refresh = draw;
+  }
+  function renderDrafts() {
+    docView("Unsent drafts", "Text you typed into a page that could not be put back where it was: the form changed, or the page filled the field itself. Copy it where you need it, or discard it.", (col) => {
+      if (!drafts.length) { col.append(h("p", { class: "muted", text: "No unsent drafts." })); return; }
+      for (const draft of drafts) {
+        const session = lookup(draft.session);
+        const text = h("textarea", { readonly: true, "aria-label": "Draft text", autocomplete: "off" });
+        text.value = draft.value;
+        const copy = button({ class: "gbtn" }, "Copy");
+        copy.addEventListener("click", async () => {
+          text.focus(); text.select();
+          try { await navigator.clipboard.writeText(draft.value); toast("Copied."); } catch (error) { let copied = false; try { copied = document.execCommand("copy"); } catch (again) { copied = false; } toast(copied ? "Copied." : "Selected: copy it with your keyboard."); }
+        });
+        const discard = button({ class: "gbtn" }, "Discard");
+        discard.addEventListener("click", () => document.dispatchEvent(new CustomEvent("thread-page:draft-discard", { detail: { session: draft.session, documentPath: draft.documentPath, key: draft.key, field: draft.field } })));
+        col.append(h("div", { class: "card", dataset: { session: draft.session } },
+          h("p", { class: "where", text: (session ? titleOf(session) : draft.session) + " · " + draft.documentPath + " · " + draft.label + " · " + draft.field + " — " + (draft.reason === "field-filled" ? "the page filled this field" : "not on the current version") + ", " + ago(draft.atMs) }),
+          text, h("div", { class: "act" }, copy, discard)));
+      }
+    });
+  }
+  function renderPermissions() {
+    docView("Page permissions", "Pages that may send your answers into another session, each granted once by you. Revoke one and that page asks again next time.", (col) => {
+      if (!grants.length) { col.append(h("p", { class: "muted", text: "No page holds a permission." })); return; }
+      const only = view.from && grants.some((grant) => grant.from === view.from) ? view.from : null;
+      if (only) col.append(button({ class: "gbtn", style: "align-self:flex-start", onclick: () => go({ kind: "permissions" }) }, "Show every page's permissions"));
+      const byFrom = new Map();
+      for (const grant of grants.filter((one) => !only || one.from === only)) { const key = grant.from || "?"; if (!byFrom.has(key)) byFrom.set(key, []); byFrom.get(key).push(grant); }
+      for (const [from, list] of byFrom) {
+        const source = from === "~home" ? "This home page" : "The page of “" + (list[0].fromTitle || titleOf(lookup(from)) || from) + "”";
+        const card = h("div", { class: "card", dataset: { from } }, h("p", { class: "where", text: source + " may answer:" }));
+        for (const grant of list) {
+          const revoke = button({ class: "gbtn" }, "Revoke");
+          revoke.addEventListener("click", () => document.dispatchEvent(new CustomEvent("thread-page:grant-revoke", { detail: { from: grant.from, to: grant.sessionId } })));
+          const when = (ms) => (ms ? new Date(ms).toLocaleString() : "never");
+          card.append(h("div", { class: "pair" }, h("div", { class: "pt" }, h("b", { text: grant.title || grant.sessionId }),
+            h("span", { text: "Granted " + when(grant.grantedAtMs) + " · last answered " + when(grant.lastAnsweredAtMs) + " · " + grant.count + (grant.count === 1 ? " answer" : " answers") })), revoke));
+        }
+        col.append(card);
+      }
+    });
+  }
+
+  // ---- start ----------------------------------------------------------------------------------------
   await loadWorkspaces();
-  fillWorkspaces();
   await loadProviders();
-  startWatch();
+  // The view's time moves while the reader stays on it, so a reload after a long read still comes back there.
+  const touchView = () => { if (prefs.view) { prefs.view.atMs = Date.now(); savePrefs(); } };
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") touchView(); });
+  setInterval(() => { if (document.visibilityState !== "hidden") touchView(); }, 180000);
+  // A reload comes back to where the reader was; opening the hub later, or elsewhere, starts at home, as the host does.
+  const recent = prefs.view && prefs.view.kind && (!prefs.view.atMs || Date.now() - prefs.view.atMs < 10 * 60e3);
+  const start = recent ? prefs.view : { kind: "new" };
+  go(start.kind === "session" && start.id ? { kind: "session", id: start.id } : { kind: ["drafts", "permissions"].includes(start.kind) ? start.kind : "new" }, { restore: true });
+  watchSessions();
 })();
 </script>
 </body>

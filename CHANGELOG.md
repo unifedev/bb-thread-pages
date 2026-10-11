@@ -1,10 +1,51 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 5137b61): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` c7bce47): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.10.2 (bb plugin) — 2026-10-11
+
+The bb plugin's release of the 0.2.2 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.10.2`; the marketplace entry's range `^1.3.1` reaches
+it). What changes for bb is the built-in home (the hub) and the shell's grants refresh, both from pages-core; no bb
+host code changed. Root `pnpm check` on the release commit passes.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.10.2.
+
+## 0.2.2 — 2026-10-11
+
+The built-in home becomes a hub in the host's look. No protocol change, no host code change; reviewed in two design
+and three code rounds (findings fixed with tests that fail before each fix).
+
+### Changed
+
+- **The built-in home page is a hub in the host's look** (`packages/pages-core/src/home/builtin-home.html`, still one
+  file, only `window.threadPage`). A sidebar of sessions by workspace with state glyphs, unread marks and sub-agents
+  folded under their parent; a session opens as its page embedded in the main area or as a chat (transcript, question
+  and approval cards, composer with files, Stop); New session is a composer with workspace (Add a folder…), model,
+  effort and permission mode; search with an Archived filter; Unsent drafts and Page permissions from the footer;
+  phone layout with a drawer; light and dark. Every control is feature-detected from the roster. "Open the page on
+  its own" uses `pages.open` in place: a tab opened from the sandboxed home has no reader credential (measured).
+  When a host's session list fails validation (`invalid_result`, seen on the Claude daemon: a row with an empty
+  workspace id), the hub reads workspace by workspace, keeping each workspace's last good rows and holding its share
+  of the budget near 40 calls a minute. The list loads in pages of 50 that halve on `response_too_large` (a page of
+  200 real rows is over the 64 KiB bound), with "Show more sessions". In page view a strip says when the session waits
+  on you or is not running in its host; a running turn can be steered (`sessions.send` `mode: "steer"`).
+  Search reaches every session (it pages through the rest of the host's list while a query is typed). Every call the
+  hub makes goes through one budget guard: at most 60 a minute and 4 at once, the reader's own actions first, polls
+  paused while the tab is hidden; tests assert the bound over five simulated minutes of the worst cases.
+  Tests: `test/agent/home.test.ts`.
+
+### Fixed
+
+- **pages-core shell:** after the reader grants a page the right to answer, the next poll goes without
+  `If-None-Match`, so the home's Page permissions list shows the new pair without a reload
+  (`src/runtime/shell/poll.ts`, `install.ts`; test in `test/runtime/shell/poll.test.ts`).
 
 ## 1.10.1 (bb plugin) — 2026-10-10
 
