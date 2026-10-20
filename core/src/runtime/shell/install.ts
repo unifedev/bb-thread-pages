@@ -66,6 +66,10 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   /** The never-drafted fields the old document reported non-empty, by key, for the next restore of the same path. 02 R-K4a */
   const cleared = new Map<string, string[]>();
   let generation = 0;
+  /** The document the shell is heading to: `config`'s once shown, the newest requested one while its exchange or flush runs (B-0105). */
+  let heading = { path: config.documentPath, query: config.documentQuery };
+  /** The newest document exchange; an older one's late answer is dropped. */
+  let exchange = 0;
   /** Storage is the one source of leftovers; the per-session bound counts the drafts too. DESIGN §D.3 */
   const leftoverBound: LeftoverBound = { retentionMs: config.drafts.retentionMs, perSessionBytes: config.drafts.perSessionBytes };
 
@@ -529,7 +533,8 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
         void ownFiles.fetchFor((reply) => void postTo(frame, reply), message);
         return;
       case "thread-page:fragment":
-        if (frame === shown) onFragment(documentFragment(message.fragment), message.step === true);
+        // While another document is on its way, the one being left no longer writes the address. B-0105
+        if (frame === shown && frame.target.path === heading.path && frame.target.query === heading.query) onFragment(documentFragment(message.fragment), message.step === true);
         return;
       case "thread-page:record":
         relay.record(frameContext(frame), message);
@@ -685,7 +690,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
         return;
       }
       state = "RELOAD";
-      const target = await documentSession(config.documentPath, config.documentQuery);
+      const target = await documentSession(heading.path, heading.query);
       if (typeof target === "string") {
         win.location.reload();
         return;
@@ -705,16 +710,17 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     return `${url.pathname}${url.search}${fragment}`;
   }
 
-  function historyState(): Record<string, string> {
-    return { [HISTORY_KEY]: config.documentPath, [HISTORY_FRAGMENT]: fragment, [HISTORY_QUERY]: config.documentQuery };
+  /** The entry for a document: named by the caller, since a document still loading is not yet `config`'s (B-0105). */
+  function historyState(path = heading.path, query = heading.query): Record<string, string> {
+    return { [HISTORY_KEY]: path, [HISTORY_FRAGMENT]: fragment, [HISTORY_QUERY]: query };
   }
 
   function onFragment(next: string, step: boolean): void {
     if (!config.navigable || next === fragment) return;
     fragment = next;
     try {
-      if (step) win.history.pushState(historyState(), "", shellAddress(config.documentPath, config.documentQuery));
-      else win.history.replaceState(historyState(), "", shellAddress(config.documentPath, config.documentQuery));
+      if (step) win.history.pushState(historyState(), "", shellAddress(heading.path, heading.query));
+      else win.history.replaceState(historyState(), "", shellAddress(heading.path, heading.query));
     } catch {
       // The address is a courtesy.
     }
@@ -723,31 +729,34 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   /** EXCHANGE: a link to another document of the page, or history. DESIGN §D.1 */
   async function openDocument(path: string, push = true, nextFragment = "", nextQuery = ""): Promise<boolean> {
     if (!config.navigable || !isDocumentPath(path)) return false;
-    if (path === config.documentPath && nextQuery === config.documentQuery) {
+    const turn = ++exchange;
+    if (path === heading.path && nextQuery === heading.query) {
       if (nextFragment !== fragment) {
         // The same document at another place: the frame moves there itself; the shell only follows. 01 R1.12f
         const target = await documentSession(path, nextQuery);
-        if (typeof target === "string") return false;
+        if (turn !== exchange || typeof target === "string") return false;
         target.fragment = nextFragment;
         fragment = nextFragment;
         startIncoming(target, "document");
-        if (push) win.history.pushState(historyState(), "", shellAddress(path, nextQuery));
+        if (push) win.history.pushState(historyState(path, nextQuery), "", shellAddress(path, nextQuery));
         return true;
       }
       return false;
     }
     const target = await documentSession(path, nextQuery);
+    if (turn !== exchange) return false;
     if (typeof target === "string") {
       notice.notice(target);
       return false;
     }
     target.fragment = nextFragment;
     fragment = nextFragment;
+    heading = { path, query: nextQuery };
     latest = null;
     startIncoming(target, push ? "document" : "history");
     if (push) {
       try {
-        win.history.pushState(historyState(), "", shellAddress(path, nextQuery));
+        win.history.pushState(historyState(path, nextQuery), "", shellAddress(path, nextQuery));
       } catch {
         // ignore
       }

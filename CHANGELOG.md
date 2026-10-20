@@ -1,10 +1,51 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` c7bce47): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 56d101e): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.10.3 (bb plugin) — 2026-10-14
+
+The bb plugin's release of the 0.2.4 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.10.3`). What changes for bb is the shell's Back and
+Forward fix, from pages-core; no bb host code changed.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.10.3.
+
+## 0.2.4 — 2026-10-14
+
+A shell fix in pages-core (B-0105), so both hosts carry it: `@unifedev/pages-core` 0.2.3, `@unifedev/claude-pages`
+0.2.4, the bb plugin `@unifedev/thread-pages` 1.10.3. No protocol change: spec 01 R1.12f, R1.12g and 08 A149 already
+say what Back and Forward do; the shell now does it.
+
+### Fixed
+
+- **Back and Forward show the document of the entry they land on.** Opening another document of the page by a link
+  pushed a history entry that named the document being left, not the one opened: the shell wrote the entry before the
+  new document became its current one. So after a → b → c, Back showed a under the address of b, and Forward showed
+  each entry's predecessor (claude-pages 0.2.3 and thread-pages 1.10.2, Chromium and WebKit). Each entry now names
+  its own document, query and fragment. Steps faster than the host answers land right too: Back then Forward before
+  the host has answered for the middle document used to show that document under the last one's address; the shell
+  now compares against the document it is heading to, the newest step wins and a late answer is dropped, and a
+  fragment move from the document being left no longer rewrites the new entry. Tests: `packages/pages-core/test/runtime/shell/install.test.ts` (the entries
+  a link pushes; fails on 0.2.3's shell) and `pnpm --filter @unifedev/pages-core test:history`, a browser test on the
+  reference server that clicks a → b → c?scope=x and steps Back, Back, Forward, Forward and `history.back()` in
+  Chromium and WebKit, then the same with a host slow to answer for one document (on 0.2.3's shell 8 of the first
+  16 steps fail; all pass now).
+
+### Versions
+
+- `@unifedev/pages-core` 0.2.3; `@unifedev/claude-pages` (`package.json`, `plugin.json`) 0.2.4;
+  `@unifedev/thread-pages` 1.10.3.
+
+## 0.2.3 — 2026-10-13
+
+A Claude Code host fix (B-0001). No protocol change, no pages-core change (`@unifedev/pages-core` stays 0.2.2), no
+bb host change (no bb release from this tag).
 
 ## 1.10.2 (bb plugin) — 2026-10-11
 
