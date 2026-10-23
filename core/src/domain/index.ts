@@ -6,7 +6,7 @@ export { revisionOf, sha256Hex, EMPTY_REVISION, etagFor, ifNoneMatchMatches } fr
 export { validateJson, parseStrictJson, utf8Bytes, boundIssue, isJsonObject, type JsonValue, type JsonObject, type Validation, type Issue } from "./json/strict-json.ts";
 export { canonicalJson, fingerprint } from "./json/canonical.ts";
 export { escapeHtml, escapeAttribute, jsonForScript } from "./html/escape.ts";
-export { injectKernel, wrapFragment, parseDocument, serialize, KERNEL_ATTRIBUTE, type InjectionOptions } from "./html/document.ts";
+export { injectKernel, wrapFragment, parseDocument, serialize, KERNEL_ATTRIBUTE, CONTRIBUTOR_SCRIPT_ATTRIBUTE, type InjectionOptions, type ContributorScript } from "./html/document.ts";
 export { captureForms, firstHeading, MANUAL_ATTRIBUTE, TITLE_ATTRIBUTE } from "./html/forms.ts";
 export { matchForm, formKey, controlKey, normalizeTitle, type FormIdentity, type WantedForm } from "./forms/identity.ts";
 export { ENTRY_DOCUMENT, UPLOAD_DIR, isDocumentPath, isPartPath, directoryOf, documentKey, documentFragment, checkDocumentQuery, splitDocumentUrl, RESERVED_QUERY_NAMES } from "./document-path.ts";

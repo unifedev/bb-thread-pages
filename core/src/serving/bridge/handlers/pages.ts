@@ -1,12 +1,14 @@
 // `pages.read` and `pages.answer`: the one conditional read other pages embed, with its answer token, and the answer path bound to that token under the pair grant (03 R5.56–R5.67; DESIGN §E.8).
 import type { PagesAnswerParams, PagesReadParams } from "../../../domain/capabilities/specs.ts";
-import { ENTRY_DOCUMENT, documentKey } from "../../../domain/document-path.ts";
+import { ENTRY_DOCUMENT, directoryOf, documentKey } from "../../../domain/document-path.ts";
 import { PageError, PUBLIC_MESSAGES, errorText } from "../../../domain/errors.ts";
-import { injectKernel } from "../../../domain/html/document.ts";
+import { injectKernel, type ContributorScript } from "../../../domain/html/document.ts";
 import { utf8Bytes, type JsonValue } from "../../../domain/json/strict-json.ts";
 import { LIMITS } from "../../../domain/limits.ts";
 import { mintAnswerToken, verifyAnswerToken, type AnswerToken } from "../../../domain/tokens/answer-token.ts";
 import { KERNEL_RUNTIME } from "../../../generated/kernel-runtime.ts";
+import { pageFileIo } from "../../../pages/assemble.ts";
+import { versionOwnFiles } from "../../../pages/inline.ts";
 import type { SessionRecord } from "../../../host/provider.ts";
 import type { KernelConfig } from "../../../runtime/shared/protocol.ts";
 import type { LoadedPage } from "../../stores.d.ts";
@@ -34,57 +36,91 @@ async function readableOwner(context: BridgeContext, sessionId: string): Promise
   return record;
 }
 
+/** An entry that carries text, its contributors' scripts already asked for. */
+interface Pending {
+  shared: ReadEntry;
+  page: LoadedPage;
+  config: KernelConfig;
+  baseHref: string | null;
+  scripts: Promise<ContributorScript[]>;
+}
+
+/** A failed entry as the reading page sees it; an unexpected error is logged. */
+function failure(context: BridgeContext, sessionId: string, path: string, error: unknown): ReadEntry {
+  if (!PageError.is(error)) context.serving.log.warn(`pages.read ${sessionId}: ${errorText(error)}`);
+  const code = PageError.is(error) ? error.code : "unavailable";
+  if (code === "page_too_large") return failed(sessionId, path, "response_too_large", "too_large", PUBLIC_MESSAGES.pageTooLarge);
+  if (code === "not_found" || code === "ineligible") return failed(sessionId, path, "not_found", "no_session", "That session is not available");
+  if (code === "no_page") return failed(sessionId, path, "not_found", "no_page", PUBLIC_MESSAGES.noPage);
+  return failed(sessionId, path, "unavailable", "unreachable", PUBLIC_MESSAGES.unreachable);
+}
+
+/** One wanted page loaded: a finished entry, or one whose text waits on its contributors' scripts, asked now. */
+async function resolveEntry(context: BridgeContext, wanted: PagesReadParams["pages"][number]): Promise<{ entry: ReadEntry } | Pending> {
+  const { serving } = context;
+  const sessionId = wanted.sessionId;
+  const key = documentKey(wanted.path);
+  const path = key ?? ENTRY_DOCUMENT;
+  try {
+    const owner = await readableOwner(context, sessionId);
+    let page: LoadedPage;
+    try {
+      page = await serving.pages.load(sessionId, key);
+    } catch (error) {
+      if (PageError.is(error) && error.code === "no_page") return { entry: failed(sessionId, path, "not_found", "no_page", PUBLIC_MESSAGES.noPage) };
+      if (PageError.is(error) && error.code === "not_found") return { entry: failed(sessionId, path, "not_found", "no_page", "That page has no such document") };
+      throw error;
+    }
+    const archived = page.archived || owner.archived;
+    const shared = {
+      sessionId,
+      path,
+      title: boundTitle(owner.title),
+      workspaceId: owner.workspaceId,
+      working: owner.state === "working",
+      readOnly: page.stale || archived,
+      // Renewed with every read, so a page that keeps polling never holds an expired one. 03 R5.60a
+      answerToken: mintAnswerToken({ issuedTo: context.session.id, target: sessionId, path: key, revision: page.revision, now: serving.now() }, serving.signingKey).token,
+    };
+    if (wanted.ifNoneMatch === page.revision) return { entry: { ...shared, unchanged: true } };
+    const baseHref = serving.strategy.siteRoot(sessionId, key);
+    const config: KernelConfig = { pageRevision: page.revision, stale: page.stale, archived, siteRoot: baseHref, embedded: true, uploads: false, documentPath: path, ownFilesByFrame: false, embedAvailable: false, deferredFiles: page.site.deferred.map((file) => file.path), swapIdleMs: LIMITS.swapIdleMs };
+    // The embedded page's own contributors' scripts, asked for its session and document: the same pipeline. 07 R5.88
+    return { shared, page, config, baseHref, scripts: serving.pageScripts.scriptsFor(sessionId, path) };
+  } catch (error) {
+    return { entry: failure(context, sessionId, path, error) };
+  }
+}
+
 export const pagesRead = handler<PagesReadParams, unknown>({
   method: "pages.read",
   async execute(params, context) {
-    const { serving } = context;
     let room = LIMITS.pagesReadBytes - READ_ENVELOPE_BYTES;
     const pages: ReadEntry[] = [];
     const add = (entry: ReadEntry): void => {
       room -= utf8Bytes(JSON.stringify(entry));
       pages.push(entry);
     };
-    for (const [index, wanted] of params.pages.entries()) {
-      const sessionId = wanted.sessionId;
-      const key = documentKey(wanted.path);
-      const path = key ?? ENTRY_DOCUMENT;
+    // Every entry's scripts are asked before any is awaited, so one read waits at most one pageScriptMs however many entries carry text. 07 R5.91
+    const resolved: ({ entry: ReadEntry } | Pending)[] = [];
+    for (const wanted of params.pages) resolved.push(await resolveEntry(context, wanted));
+    for (const [index, outcome] of resolved.entries()) {
+      const sessionId = params.pages[index]!.sessionId;
+      const path = documentKey(params.pages[index]!.path) ?? ENTRY_DOCUMENT;
       if (index > 0 && room < READ_ENVELOPE_BYTES) {
         add({ sessionId, path, deferred: true });
         continue;
       }
+      if ("entry" in outcome) {
+        add(outcome.entry);
+        continue;
+      }
       try {
-        const owner = await readableOwner(context, sessionId);
-        let page: LoadedPage;
-        try {
-          page = await serving.pages.load(sessionId, key);
-        } catch (error) {
-          if (PageError.is(error) && error.code === "no_page") {
-            add(failed(sessionId, path, "not_found", "no_page", PUBLIC_MESSAGES.noPage));
-            continue;
-          }
-          if (PageError.is(error) && error.code === "not_found") {
-            add(failed(sessionId, path, "not_found", "no_page", "That page has no such document"));
-            continue;
-          }
-          throw error;
-        }
-        const archived = page.archived || owner.archived;
-        const shared = {
-          sessionId,
-          path,
-          title: boundTitle(owner.title),
-          workspaceId: owner.workspaceId,
-          working: owner.state === "working",
-          readOnly: page.stale || archived,
-          // Renewed with every read, so a page that keeps polling never holds an expired one. 03 R5.60a
-          answerToken: mintAnswerToken({ issuedTo: context.session.id, target: sessionId, path: key, revision: page.revision, now: serving.now() }, serving.signingKey).token,
-        };
-        if (wanted.ifNoneMatch === page.revision) {
-          add({ ...shared, unchanged: true });
-          continue;
-        }
-        const config: KernelConfig = { pageRevision: page.revision, stale: page.stale, archived, siteRoot: serving.strategy.siteRoot(sessionId, key), embedded: true, uploads: false, documentPath: path, ownFilesByFrame: false, embedAvailable: false, deferredFiles: page.site.deferred.map((file) => file.path), swapIdleMs: LIMITS.swapIdleMs };
-        const html = injectKernel(page.html, { kernel: KERNEL_RUNTIME, config, baseHref: serving.strategy.siteRoot(sessionId, key) });
+        const { shared, page, config, baseHref } = outcome;
+        const contributorScripts = await outcome.scripts;
+        // By URL, an embedded document may be handed this html and stay: its own files carry their versions. 02 R4.66; 05 R2.18
+        const served = context.serving.strategy.kind === "by-url" ? await versionOwnFiles(page.html, pageFileIo(context.serving.provider, sessionId), directoryOf(documentKey(params.pages[index]!.path))) : page.html;
+        const html = injectKernel(served, { kernel: KERNEL_RUNTIME, config, baseHref, contributorScripts });
         const entry = { ...shared, revision: page.revision, html };
         const bytes = utf8Bytes(JSON.stringify(entry));
         if (bytes > LIMITS.pagesReadBytes - READ_ENVELOPE_BYTES) {
@@ -97,12 +133,7 @@ export const pagesRead = handler<PagesReadParams, unknown>({
         }
         add(entry);
       } catch (error) {
-        if (!PageError.is(error)) serving.log.warn(`pages.read ${sessionId}: ${errorText(error)}`);
-        const code = PageError.is(error) ? error.code : "unavailable";
-        if (code === "page_too_large") add(failed(sessionId, path, "response_too_large", "too_large", PUBLIC_MESSAGES.pageTooLarge));
-        else if (code === "not_found" || code === "ineligible") add(failed(sessionId, path, "not_found", "no_session", "That session is not available"));
-        else if (code === "no_page") add(failed(sessionId, path, "not_found", "no_page", PUBLIC_MESSAGES.noPage));
-        else add(failed(sessionId, path, "unavailable", "unreachable", PUBLIC_MESSAGES.unreachable));
+        add(failure(context, sessionId, path, error));
       }
     }
     return { result: { pages } };

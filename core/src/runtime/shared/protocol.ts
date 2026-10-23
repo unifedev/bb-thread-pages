@@ -82,6 +82,10 @@ export type KernelMessage =
   | { kind: "thread-page:embed-dirty"; dirty: boolean }
   /** Embedded kernel → embedding kernel only: a trusted click or keydown, opening the embed's navigation window. DR-32; DESIGN §C.2 */
   | { kind: "thread-page:gesture"; atMs: number }
+  /** The document registered `onPageUpdate` (`active: true`) or stopped its last one: a new revision of it is handed over, not swapped. 02 R4.66; 05 R2.18 */
+  | { kind: "thread-page:page-update-listen"; active: boolean }
+  /** The hand-over with this nonce was taken (`ok: true`), or no callback was registered any more and the document is swapped instead. 02 R4.66 */
+  | { kind: "thread-page:page-updated"; nonce: number; ok: boolean }
   | BridgeRequestMessage;
 
 // --- shell → kernel --------------------------------------------------------------
@@ -111,6 +115,8 @@ export type ShellMessage =
   | { kind: "thread-page:shown" }
   /** A newer version waits for the reader to pause (`available: true`), or no longer does. 05 R2.21 (U49) */
   | { kind: "thread-page:update"; available: boolean }
+  /** A new revision of the shown document, as served, for a document that registered `onPageUpdate`; the kernel leaves out the host's own scripts. 02 R4.66; 05 R2.18 */
+  | { kind: "thread-page:page-update"; nonce: number; revision: string; documentPath: string; html: string }
   /** The home shell's list of drafts no page could restore, after a discard or a change in another tab. 05 R-S12 */
   | { kind: "thread-page:drafts"; leftovers: LeftoverDraft[] }
   /** The home shell's list of every grant pair on this host. 03 R5.65 */
@@ -393,6 +399,10 @@ export function isKernelMessage(value: unknown): value is KernelMessage {
       return hasExactKeys(value, ["kind", "dirty"]) && typeof value.dirty === "boolean";
     case "thread-page:gesture":
       return hasExactKeys(value, ["kind", "atMs"]) && typeof value.atMs === "number" && Number.isFinite(value.atMs);
+    case "thread-page:page-update-listen":
+      return hasExactKeys(value, ["kind", "active"]) && typeof value.active === "boolean";
+    case "thread-page:page-updated":
+      return hasExactKeys(value, ["kind", "nonce", "ok"]) && isNonce(value.nonce) && typeof value.ok === "boolean";
     default:
       return false;
   }
@@ -411,6 +421,8 @@ export function isShellMessage(value: unknown): value is ShellMessage {
       return hasExactKeys(value, ["kind"]);
     case "thread-page:update":
       return hasExactKeys(value, ["kind", "available"]) && typeof value.available === "boolean";
+    case "thread-page:page-update":
+      return hasExactKeys(value, ["kind", "nonce", "revision", "documentPath", "html"]) && isNonce(value.nonce) && typeof value.revision === "string" && REVISION_PATTERN.test(value.revision) && isDocumentPath(value.documentPath) && typeof value.html === "string";
     case "thread-page:source-state":
       return hasExactKeys(value, ["kind", "stale", "archived", "reason"]) && typeof value.stale === "boolean" && typeof value.archived === "boolean" && (value.reason === null || isText(value.reason, LIMITS.errorMessageChars));
     case "thread-page:session-state":

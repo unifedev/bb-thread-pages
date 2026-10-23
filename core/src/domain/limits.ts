@@ -36,6 +36,10 @@ export const LIMITS = Object.freeze({
   contributedCallMs: 30_000,
   /** How long a contributor's declarations are reused before they are read again. 07 §Discovery per host */
   contributionsTtlMs: 10_000,
+  /** A contributor's page script, UTF-8; refused whole above, never cut. 07 R5.90 */
+  pageScriptBytes: 262_144,
+  /** One page-script ask, then the document is served without that contributor's script. 07 R5.91 */
+  pageScriptMs: 2_000,
   /** A contributor's instruction fragment; refused above. 07 §The declaration grammar, 04 R6.29 */
   contributorInstructionBytes: 2 * 1024,
   /** A contributor's guide text; refused above. 07 §The declaration grammar, 04 R6.29 */

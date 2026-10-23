@@ -1,4 +1,4 @@
-// `threadPage.embed`: frame creation, sandbox/allow set on every load, `pages.read` batching (16 per call), cadence, the deferred refresh (typing, a pending answer, `setDirty` — U49), session state forwarded, grant cooldown, per-embed budget, the message relay (R4.48 allow-list), `onState`, drafts forwarding (02 §Embedded pages).
+// `threadPage.embed`: frame creation, sandbox/allow set on every load, `pages.read` batching (16 per call), cadence, the deferred refresh (typing, a pending answer, `setDirty` — U49), the hand-over to an embedded `onPageUpdate` (R4.66), session state forwarded, grant cooldown, per-embed budget, the message relay (R4.48 allow-list), `onState`, drafts forwarding (02 §Embedded pages).
 import { ENTRY_DOCUMENT, isDocumentPath } from "../../domain/document-path.ts";
 import type { BridgeErrorCode } from "../../domain/errors.ts";
 import { isSessionId } from "../../domain/ids.ts";
@@ -90,6 +90,11 @@ interface Embed extends EmbedView {
   pending: number;
   updateAvailable: boolean;
   reload: boolean;
+  /** The embedded document registered `onPageUpdate`. 02 R4.66 */
+  pageUpdate: boolean;
+  /** The hand-over in flight: the entry it carries, taken once the embedded kernel answers. */
+  handing: { nonce: number; entry: Record<string, unknown>; timer: ReturnType<typeof setTimeout> } | null;
+  handNonce: number;
   port: MessagePort | null;
   scroll: ScrollState | null;
   /** The embedded document's drafts, by key, kept for its next load. 02 R4.46 */
@@ -152,6 +157,8 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
   function load(embed: Embed, html: string): void {
     embed.port?.close?.();
     embed.port = null;
+    embed.pageUpdate = false;
+    dropHandOver(embed);
     const frame = embed.frame;
     const parent = frame.parentNode;
     const next = frame.nextSibling;
@@ -234,7 +241,47 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       report(embed);
       return;
     }
+    if (embed.pageUpdate && embed.port && embed.status === "shown" && embed.revision !== null) {
+      handOver(embed, entry);
+      return;
+    }
     show(embed, entry);
+  }
+
+  /** The embedded document stays and is handed its new version, as `pages.read` served it; the version is taken once it answers. 02 R4.66 */
+  function handOver(embed: Embed, entry: Record<string, unknown>): void {
+    dropHandOver(embed);
+    const nonce = ++embed.handNonce;
+    embed.latest = entry.revision as string;
+    const timer = setTimeout(() => settleHandOver(embed, nonce, false), LIMITS.refreshSwapMs);
+    embed.handing = { nonce, entry, timer };
+    reply(embed, { kind: "thread-page:page-update", nonce, revision: entry.revision as string, documentPath: embed.path, html: entry.html as string });
+  }
+
+  function dropHandOver(embed: Embed): void {
+    if (!embed.handing) return;
+    clearTimeout(embed.handing.timer);
+    embed.handing = null;
+  }
+
+  function settleHandOver(embed: Embed, nonce: number, ok: boolean): void {
+    if (embed.stopped || !embed.handing || embed.handing.nonce !== nonce) return;
+    const entry = embed.handing.entry;
+    dropHandOver(embed);
+    if (!ok) {
+      // No callback any more, or no answer: the embed is loaded afresh, as before.
+      show(embed, entry);
+      return;
+    }
+    embed.revision = entry.revision as string;
+    embed.answerToken = typeof entry.answerToken === "string" ? entry.answerToken : null;
+    embed.reload = false;
+    if (embed.updateAvailable) {
+      embed.updateAvailable = false;
+      reply(embed, { kind: "thread-page:update", available: false });
+    }
+    syncDirty();
+    report(embed);
   }
 
   function active(): Embed[] {
@@ -460,6 +507,12 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       case "thread-page:submit":
         void submit(embed, data);
         return;
+      case "thread-page:page-update-listen":
+        embed.pageUpdate = data.active;
+        return;
+      case "thread-page:page-updated":
+        settleHandOver(embed, data.nonce, data.ok);
+        return;
       case "thread-page:record":
         void record(embed, data);
         return;
@@ -528,6 +581,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
   function stop(embed: Embed): void {
     if (embed.stopped) return;
     embed.stopped = true;
+    dropHandOver(embed);
     embed.port?.close?.();
     embed.port = null;
     embeds.splice(embeds.indexOf(embed), 1);
@@ -575,6 +629,9 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
         pending: 0,
         updateAvailable: false,
         reload: false,
+        pageUpdate: false,
+        handing: null,
+        handNonce: 0,
         port: null,
         scroll: null,
         drafts: new Map(),

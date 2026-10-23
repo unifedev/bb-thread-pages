@@ -34,6 +34,11 @@ export const PAST_INSTRUCTION_DEFAULTS: ReadonlySet<string> = new Set([
   "733cfbea19e110e909ab0ee4e910b0dbd280060b005b8045f8dd970587357a24",
   // The standing instruction of 1.3.0–1.9.0 (named `bb thread-page`).
   "9dac5ab7d484d0d41bf94b0959f24761649fe8719cfd9c8510469077a7c8f557",
+  // The built-in text of 1.10.0–1.10.3 ("The page is the conversation"), as the spec writes it and as `bb pages status`
+  // printed it with `bb pages` filled. 1.10 stores "" by default, so these are an operator's verbatim copy of the then
+  // built-in text; it reads as the built-in text, so the copy moves to the short one (U54) as an untouched default would.
+  "6758d43f21421e68d656b5c403bc3a6717ff208cd65888f2d01bc0eb6c2ee786",
+  "b8a834fd921f346b7c36a266331f3589d87e8bc127063bfc729ff4d5f9e79b70",
 ]);
 
 /** The page seed of 1.0.3, and of 1.1.0–1.2.0 (templates with `{{TITLE}}`/`{{DATE}}`); 1.3.0 onwards shipped no seed. */

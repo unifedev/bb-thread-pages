@@ -88,6 +88,9 @@ export function baseName(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1) || "download";
 }
 
+/** The query name that carries an own file's version in a handed-over document's addresses (by-url); the file routes answer on the path alone. 05 R2.18 */
+export const FILE_VERSION_QUERY = "pages-v";
+
 /** A path within the page root as a URL path below the files address. 05 §Own files by URL */
 export function encodeFilePath(path: string): string {
   return path.split("/").map(encodeURIComponent).join("/");

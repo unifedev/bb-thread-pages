@@ -210,12 +210,12 @@ export const sessionsSend = handler<SessionsSendParams, unknown>({
 export const sessionsStop = handler<{ sessionId: string }, unknown>({
   method: "sessions.stop",
   async refuse(params, context) {
-    if (params.sessionId === context.session.id) throw new PageError("invalid_params", "A page cannot stop its own session: that would kill the turn about to read its answer");
     await targetSession(context, params.sessionId);
   },
+  // The page's own session is confirmed like any other, the dialog naming it as this page's: the reader stopping their own agent from its page is the expected case, and the dialog keeps a page alone from stopping the turn that reads it. 03 R5.28, U52 (B-0113)
   async summarize(params, context) {
     const target = await targetSession(context, params.sessionId);
-    return `Stop ${quoted(target.title, 60)} (${target.id})?`;
+    return `${target.id === context.session.id ? "Stop this page's own session, " : "Stop "}${quoted(target.title, 60)} (${target.id})?`;
   },
   async execute(params, context) {
     try {

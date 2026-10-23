@@ -1,6 +1,7 @@
-// parse5 helpers: `parseDocument`, `serialize`, `injectKernel` (two nodes at the front of `<head>`: optional `<base>`, the kernel script), `wrapFragment` for non-documents (02 R4.4).
+// parse5 helpers: `parseDocument`, `serialize`, `injectKernel` (at the front of `<head>`: optional `<base>`, the kernel script, then the contributors' page scripts), `wrapFragment` for non-documents (02 R4.4, 07 R5.92).
 import { defaultTreeAdapter, parse as parseHtml, serialize as serializeHtml, type DefaultTreeAdapterTypes } from "parse5";
 import { escapeAttribute } from "./escape.ts";
+import { CONTRIBUTOR_SCRIPT_ATTRIBUTE, KERNEL_ATTRIBUTE } from "./markers.ts";
 
 export type HtmlDocument = DefaultTreeAdapterTypes.Document;
 export type HtmlElement = DefaultTreeAdapterTypes.Element;
@@ -8,8 +9,13 @@ type HtmlParent = HtmlDocument | HtmlElement;
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 
-/** The attribute that marks the kernel's script element; a page never carries it itself. 02 R4.1 */
-export const KERNEL_ATTRIBUTE = "data-thread-page-kernel";
+export { CONTRIBUTOR_SCRIPT_ATTRIBUTE, KERNEL_ATTRIBUTE };
+
+/** One contributor's page script, already checked: no `</script`, no `<!--`, within `pageScriptBytes`. 07 R5.90 */
+export interface ContributorScript {
+  readonly contributor: string;
+  readonly script: string;
+}
 
 export interface InjectionOptions {
   /** The kernel runtime source (an IIFE). */
@@ -18,6 +24,8 @@ export interface InjectionOptions {
   readonly config: unknown;
   /** A base URL to inject, or null (only for carried documents and embeds; DR-13). */
   readonly baseHref: string | null;
+  /** Contributors' page scripts, in the host's order, put in right after the kernel. 07 R5.92 */
+  readonly contributorScripts?: readonly ContributorScript[];
 }
 
 /** Parses the way a browser parses, with a leading BOM dropped. */
@@ -65,12 +73,19 @@ function kernelElement(namespace: HtmlElement["namespaceURI"], options: Injectio
   return script;
 }
 
+function contributorElement(namespace: HtmlElement["namespaceURI"], entry: ContributorScript): HtmlElement {
+  const script = defaultTreeAdapter.createElement("script", namespace, [{ name: CONTRIBUTOR_SCRIPT_ATTRIBUTE, value: entry.contributor }]);
+  defaultTreeAdapter.insertText(script, entry.script);
+  return script;
+}
+
 /**
  * Kernel injection: the authored document is parsed the way a browser parses
- * it, and at most two nodes are inserted at the very front of `<head>` (or
- * the first element that can hold them): an optional `<base>`, then the
- * kernel script with its configuration in a data attribute. Nothing else
- * changes. A source that is not a document is wrapped. 02 R4.1–R4.4
+ * it, and nodes are inserted at the very front of `<head>` (or the first
+ * element that can hold them): an optional `<base>`, the kernel script with
+ * its configuration in a data attribute, then each contributor's page script.
+ * Nothing else changes. A source that is not a document is wrapped.
+ * 02 R4.1–R4.4, 07 R5.92
  */
 export function injectKernel(source: string, options: InjectionOptions): string {
   const authored = parseAuthored(source);
@@ -79,6 +94,7 @@ export function injectKernel(source: string, options: InjectionOptions): string 
   const nodes: HtmlElement[] = [];
   if (options.baseHref) nodes.push(defaultTreeAdapter.createElement("base", namespace, [{ name: "href", value: options.baseHref }]));
   nodes.push(kernelElement(namespace, options));
+  for (const entry of options.contributorScripts ?? []) nodes.push(contributorElement(namespace, entry));
   const anchor = defaultTreeAdapter.getFirstChild(authored.target);
   for (const node of nodes) {
     if (anchor) defaultTreeAdapter.insertBefore(authored.target, node, anchor);
@@ -91,6 +107,7 @@ export function injectKernel(source: string, options: InjectionOptions): string 
 export function wrapFragment(source: string, options: InjectionOptions): string {
   const base = options.baseHref ? `<base href="${escapeAttribute(options.baseHref)}">\n` : "";
   const config = escapeAttribute(JSON.stringify(options.config));
+  const contributed = (options.contributorScripts ?? []).map((entry) => `\n<script ${CONTRIBUTOR_SCRIPT_ATTRIBUTE}="${escapeAttribute(entry.contributor)}">${entry.script}</script>`).join("");
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -98,7 +115,7 @@ export function wrapFragment(source: string, options: InjectionOptions): string 
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Thread Page</title>
-${base}<script ${KERNEL_ATTRIBUTE} data-config="${config}">${options.kernel}</script>
+${base}<script ${KERNEL_ATTRIBUTE} data-config="${config}">${options.kernel}</script>${contributed}
 <style>body{max-width:44rem;margin:2rem auto;padding:0 1rem;font:16px/1.55 system-ui,sans-serif;color:CanvasText;background:Canvas}</style>
 </head>
 <body>

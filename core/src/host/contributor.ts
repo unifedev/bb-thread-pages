@@ -8,7 +8,19 @@ export interface ContributorHost {
   invoke(contributorId: string, call: ContributorCall): Promise<ContributorAnswer>;
   /** The session's workspace as a contributor needs it: the folder the session works in, on which machine. null when the host has no folder for it. Rejects only when the host cannot say. spec 07 §The call (U44) */
   workspaceOf(sessionId: string): Promise<ContributorWorkspace | null>;
+  /** One page-script ask to a contributor that declares `pageScript`; resolves to its answer as it came, checked by the server. Rejects only when the contributor cannot be reached. Absent: no contributor is asked. spec 07 §A page script */
+  pageScript?(contributorId: string, ask: PageScriptAsk): Promise<unknown>;
 }
+
+/** One page-script ask: the session whose document is served (null on the built-in home), its path in the page, and the version the server holds. spec 07 R5.88 */
+export interface PageScriptAsk {
+  caller: { sessionId: string | null; workspace: ContributorWorkspace | null };
+  documentPath: string;
+  have: string | null;
+}
+
+/** What a contributor answers to a page-script ask: none for this document, or its script's version with the text (left out when `version` equals `have`). spec 07 R5.88, R5.89 */
+export type PageScriptAnswer = null | { version: string; script?: string };
 
 /** Who is calling, as far as a contributor is concerned: the session's workspace id (as the host reports it everywhere else), its folder, and the machine the folder is on. spec 07 §The call (U44) */
 export interface ContributorWorkspace {

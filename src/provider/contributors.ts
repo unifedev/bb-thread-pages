@@ -1,4 +1,4 @@
-// plugins.list + plugins.callRpc: `threadPagesContributions` / `threadPagesInvoke` (DESIGN §B.8, 07 §Discovery).
+// plugins.list + plugins.callRpc: `threadPagesContributions` / `threadPagesInvoke` / `threadPagesPageScript` (DESIGN §B.8, 07 §Discovery, §A page script).
 // The wire shape is byte-identical to 1.9.0's (R-X1); the namespace is the plugin id (R8.32).
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { ContributorAnswer, ContributorHost, ContributorWorkspace } from "../../core/src/host/index.ts";
@@ -6,6 +6,7 @@ import { asRecord, errorText, httpStatus, providerError, sdkCall } from "./error
 
 export const CONTRIBUTIONS_RPC = "threadPagesContributions";
 export const INVOKE_RPC = "threadPagesInvoke";
+export const PAGE_SCRIPT_RPC = "threadPagesPageScript";
 const DECLARATION_TIMEOUT_MS = 5_000;
 
 // callRpc only calls `parse` on the schema; the declaration is checked by the core.
@@ -56,6 +57,18 @@ export function createBbContributors(bb: BbPluginApi, deps: ContributorsDeps): C
         }),
       );
       return contributorResultOf(answer);
+    },
+
+    // The ask as 07 §A page script states it; the answer goes back as it came, for the core to check (R5.88–R5.91).
+    async pageScript(contributorId, ask) {
+      return sdkCall("contributors.pageScript", () =>
+        bb.sdk.plugins.callRpc({
+          pluginId: contributorId,
+          method: PAGE_SCRIPT_RPC,
+          input: { caller: ask.caller, documentPath: ask.documentPath, have: ask.have } as never,
+          outputSchema: passThrough,
+        }),
+      );
     },
 
     // The thread's own working folder (its environment: a worktree or the checkout) on its enrolled machine, and its

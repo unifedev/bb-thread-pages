@@ -1,7 +1,7 @@
-// Strategy `carried`: own stylesheets, scripts, images, fonts carried as `data:`; CSS `url()` to depth 3; limits; large media marked `data-thread-page-file="<path>@<version>"` (02 R4.25a, 05 R-S7).
+// Strategy `carried`: own stylesheets, scripts, images, fonts carried as `data:`; CSS `url()` to depth 3; limits; large media marked `data-thread-page-file="<path>@<version>"` (02 R4.25a, 05 R-S7); strategy `by-url`, a handed-over document's own files versioned in their addresses (05 R2.18).
 import { defaultTreeAdapter, parse as parseHtml, serialize as serializeHtml, type DefaultTreeAdapterTypes } from "parse5";
 import { LIMITS } from "../domain/limits.ts";
-import { ownFileReference, shellFetchLimit } from "../domain/own-files.ts";
+import { FILE_VERSION_QUERY, ownFileReference, shellFetchLimit } from "../domain/own-files.ts";
 import { sha256Hex } from "../domain/revision.ts";
 import type { PageFileIo } from "./include.ts";
 
@@ -121,6 +121,21 @@ const CARRIERS: ReadonlyArray<{ tag: string; attr: string; defer: boolean; test?
   { tag: "track", attr: "src", defer: true },
 ];
 
+/** Every element of a parsed document, `<template>` contents too, in document order. */
+function elementsOf(document: DefaultTreeAdapterTypes.Document): HtmlElement[] {
+  const elements: HtmlElement[] = [];
+  const walk = (node: { childNodes?: HtmlNode[] }): void => {
+    for (const child of node.childNodes ?? []) {
+      if (!defaultTreeAdapter.isElementNode(child)) continue;
+      elements.push(child);
+      walk(child);
+      if (child.tagName === "template") walk(defaultTreeAdapter.getTemplateContent(child as DefaultTreeAdapterTypes.Template));
+    }
+  };
+  walk(document);
+  return elements;
+}
+
 const CSS_URL = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
 
 function dataUrl(bytes: Uint8Array, mimeType: string): string {
@@ -208,19 +223,8 @@ export async function carryOwnFiles(html: string, io: PageFileIo, documentDir = 
     });
   }
 
-  const elements: HtmlElement[] = [];
-  const walk = (node: { childNodes?: HtmlNode[] }): void => {
-    for (const child of node.childNodes ?? []) {
-      if (!defaultTreeAdapter.isElementNode(child)) continue;
-      elements.push(child);
-      walk(child);
-      if (child.tagName === "template") walk(defaultTreeAdapter.getTemplateContent(child as DefaultTreeAdapterTypes.Template));
-    }
-  };
-  walk(document);
-
   let changed = false;
-  for (const element of elements) {
+  for (const element of elementsOf(document)) {
     for (const carrier of CARRIERS) {
       if (element.tagName !== carrier.tag || (carrier.test && !carrier.test(element))) continue;
       const reference = attributeOf(element, carrier.attr);
@@ -277,4 +281,72 @@ export async function carryOwnFiles(html: string, io: PageFileIo, documentDir = 
     if (undeferred.has(path) || !deferredPaths.has(path)) skipped.push({ path, reason: large.reason });
   }
   return { html: changed ? serializeHtml(document) : html, resolved, skipped, deferred };
+}
+
+/** The reference with the file's version in its query, its own query and fragment kept. 05 R2.18 */
+function withVersion(reference: string, version: string): string {
+  const hash = reference.indexOf("#");
+  const address = hash < 0 ? reference : reference.slice(0, hash);
+  const fragment = hash < 0 ? "" : reference.slice(hash);
+  return `${address}${address.includes("?") ? "&" : "?"}${FILE_VERSION_QUERY}=${version}${fragment}`;
+}
+
+/**
+ * Strategy `by-url`, a document handed to its own `onPageUpdate`: each own
+ * file it names (the elements and `srcset` candidates the carried strategy
+ * carries) gets the file's version in its address, so a file changed under
+ * the same name is a new address and the document that stays loads it anew,
+ * as a fresh load of the document would. A missing file stays as written.
+ * 02 R4.66; 05 R2.18
+ */
+export async function versionOwnFiles(html: string, io: Pick<PageFileIo, "stat">, documentDir = ""): Promise<string> {
+  const document = parseHtml(html);
+  const versions = new Map<string, string | null>();
+  async function versionOf(path: string): Promise<string | null> {
+    let version = versions.get(path);
+    if (version === undefined) {
+      const stat = await io.stat(path);
+      version = stat && stat.kind === "file" ? fileVersion(stat).slice(0, 16) : null;
+      versions.set(path, version);
+    }
+    return version;
+  }
+  async function versioned(reference: string): Promise<string | null> {
+    const path = ownFileReference(reference, documentDir);
+    const version = path === null ? null : await versionOf(path);
+    return version === null ? null : withVersion(reference.trim(), version);
+  }
+
+  let changed = false;
+  for (const element of elementsOf(document)) {
+    for (const carrier of CARRIERS) {
+      if (element.tagName !== carrier.tag || (carrier.test && !carrier.test(element))) continue;
+      const reference = attributeOf(element, carrier.attr);
+      const url = reference === null ? null : await versioned(reference);
+      if (url === null) continue;
+      setAttribute(element, carrier.attr, url);
+      changed = true;
+    }
+    if (element.tagName === "img" || element.tagName === "source") {
+      const srcset = attributeOf(element, "srcset");
+      if (srcset === null) continue;
+      let changedSet = false;
+      const out: string[] = [];
+      for (const candidate of srcset.split(",").map((entry) => entry.trim()).filter(Boolean)) {
+        const [reference, ...descriptor] = candidate.split(/\s+/);
+        const url = reference ? await versioned(reference) : null;
+        if (url === null) {
+          out.push(candidate);
+          continue;
+        }
+        changedSet = true;
+        out.push([url, ...descriptor].join(" "));
+      }
+      if (changedSet) {
+        setAttribute(element, "srcset", out.join(", "));
+        changed = true;
+      }
+    }
+  }
+  return changed ? serializeHtml(document) : html;
 }

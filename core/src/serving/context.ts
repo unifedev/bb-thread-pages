@@ -1,9 +1,11 @@
 // The one shared server type (DESIGN §B.9, §H.1): `ServingContext`, `SessionAccess`, `PagesSettings`, the dispatcher's and handlers' contracts (§E.3). Types only; slice 2 builds the context, slice 4 the dispatcher.
+import type { CommandSpellings } from "../agent/instruction.ts";
 import type { CapabilityRegistry } from "../domain/capabilities/registry.ts";
 import type { NavigationDirective } from "../domain/capabilities/protocol.ts";
 import type { SiteStrategy } from "../domain/site-strategy.ts";
 import type { Logger, ProviderHost, SessionRecord } from "../host/provider.ts";
 import type { PagesRequest, PagesResponse, ServingHost } from "../host/serving.ts";
+import type { PageScripts } from "./page-scripts.ts";
 import type { AttachGrantStore, Contributions, Cooldowns, GrantStore, HomeDesignation, IdempotencyStore, LedgerStore, PageBudget, PageStore, RedeemedStore, SelectionStore, StorageStore } from "./stores.d.ts";
 
 /** Live settings the host supplies; read on every use, never cached. 04 R6.15; DESIGN §B.1 */
@@ -29,11 +31,13 @@ export interface ServingContext {
   provider: ProviderHost;
   serving: ServingHost;
   settings(): PagesSettings;
-  /** The host's spelling of the five command roles. 04 §Command roles */
-  commands: { init: string; guide: string; status: string; home: string; grants: string };
+  /** The host's spelling of the five command roles and its words for the page's folder. 04 §Command roles, §The text */
+  commands: CommandSpellings;
   strategy: SiteStrategy;
   registry: CapabilityRegistry;
   contributions: Contributions;
+  /** The contributors' page scripts for a served document. 07 §A page script */
+  pageScripts: PageScripts;
   pages: PageStore;
   storage: StorageStore;
   grants: GrantStore;

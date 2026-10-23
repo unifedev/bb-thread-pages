@@ -57,6 +57,7 @@ const perMinute = (intervalMs: number): string => `${Math.round((60_000 / interv
 export function buildGuide(input: GuideInput): string {
   const sections = [
     intro(input),
+    purpose(),
     forms(input),
     textAreas(input),
     uploads(input),
@@ -128,6 +129,29 @@ notices appear in the form's status line, which you may style but must not
 remove. A \`contenteditable\` element cannot be drafted: once edited it holds
 the swap while it keeps focus, as \`setDirty(true)\` does; prefer a
 \`<textarea>\`, whose text survives the swap.`;
+}
+
+/** What the short standing instruction leaves to the guide (04 R6.24, U54): writing the page, and what belongs on it. */
+function purpose(): string {
+  return `## What the page is for
+
+The first time there is no file: you write the whole document. Read an
+existing page before editing it; saving publishes it at once, and an open page
+reloads itself.
+
+Work out what this reader needs to see and do right now, and build exactly
+that. If the page would suit a different task just as well, it is not
+finished. How the reader answers follows from the content as much as what you
+show does: let them respond at the point they are reading, in whatever form
+suits that piece (a control can sit anywhere on the page; see Forms). Let
+them decide with as little effort as the decision allows.
+
+Tell what you did at the level they could explain to someone else. Besides
+that, the decisions that are theirs and what only they can supply, put on the
+page anything a wrong assumption of yours would make costly. Report failures,
+skipped steps and your own mistakes plainly: the reader decides from the page,
+so a failure left out is a decision taken for them. The reader reads only what
+they need to answer, and what the page shows does the explaining.`;
 }
 
 function forms(input: GuideInput): string {
@@ -602,6 +626,7 @@ The complete page-facing API; it is frozen and cannot be replaced.
     const stop = window.threadPage.watch(method, params, (value, error) => {…}, { intervalMs })
     window.threadPage.setDirty(true | false)
     ${hasEmbed ? "const stopEmbed = window.threadPage.embed(target, { sessionId, path, onState })" : "window.threadPage.embed                 // absent on this host"}
+    const stopUpdates = window.threadPage.onPageUpdate(({ html, revision, documentPath }) => {…})
     window.threadPage.setScope("clients/vela")   // or null; see *Capabilities from contributors*
     window.threadPage.scope                 // the scope set, or null
 
@@ -615,6 +640,10 @@ The complete page-facing API; it is frozen and cannot be replaced.
   never calls \`watch\` causes no polling. \`watch\` refuses a method that
   writes.
 - \`setDirty\` marks state the host cannot see (see *Keeping a page current*).
+- \`onPageUpdate\` is only for a page that shows its own new version, such as
+  an app around your page: while a callback is registered, a save is handed to
+  it (the new page as served, without the host's scripts) instead of swapped
+  in, when the swap would have come. Check \`typeof threadPage.onPageUpdate\`.
 - \`setScope\` scopes the document's later calls to a folder inside your
   session's folder; \`storage\` keys are then that folder's own.
 - \`stale_page\` means the page changed under the call: the shell swaps in the
@@ -1116,6 +1145,9 @@ function accessibility(): string {
   machine and theirs.`;
 }
 
+/** Printed under a contributor that declares `pageScript`. 07 §A page script, R6.28 */
+const PAGE_SCRIPT_LINE = "Gives this host's documents a script of its own, run ahead of theirs.";
+
 function contributed(input: GuideInput): string {
   const L = input.limits;
   const registered =
@@ -1127,7 +1159,7 @@ function contributed(input: GuideInput): string {
               const reasons = [...(spec.reasons?.keys() ?? [])];
               return `- \`${spec.method}\` — ${spec.effect}. ${spec.description} Request up to ${kibibytes(spec.maxRequestBytes ?? L.capabilityPayloadBytes)}, response up to ${kibibytes(spec.maxResponseBytes ?? L.capabilityPayloadBytes)}.${reasons.length > 0 ? ` Reasons: ${reasons.join(", ")}.` : ""}`;
             });
-            return [`### ${contributor.id} ${contributor.version}`, "", ...(methods.length > 0 ? methods : ["- (no methods)"]), ...(contributor.guide ? ["", contributor.guide] : [])].join("\n");
+            return [`### ${contributor.id} ${contributor.version}`, "", ...(methods.length > 0 ? methods : ["- (no methods)"]), ...(contributor.pageScript ? ["", PAGE_SCRIPT_LINE] : []), ...(contributor.guide ? ["", contributor.guide] : [])].join("\n");
           })
           .join("\n\n");
   return `## Capabilities from contributors

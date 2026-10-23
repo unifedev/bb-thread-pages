@@ -550,7 +550,7 @@ export const sessionsStop = spec({
   implemented: true,
   validateParams: params(sessionTarget),
   validateResult: result(s.object({ stopped: s.boolean() })),
-  doc: { params: "`{ sessionId }`.", result: "`{ stopped }`.", notes: "Confirmed. Refuses this page's own session outright, before any dialog." },
+  doc: { params: "`{ sessionId }`.", result: "`{ stopped }`.", notes: "Confirmed, on this page's own session too: a Stop button on your page stops your running turn once the reader confirms; the session stays and takes the next message." },
 });
 
 export const pagesOpen = spec({

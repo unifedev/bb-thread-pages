@@ -8,8 +8,8 @@ import { createBbProvider, type BbProvider } from "./provider/index.ts";
 import { createBbServingHost } from "./serving/index.ts";
 import { defineSettings, type LiveSettings } from "./settings.ts";
 
-/** The host's spelling of the five command roles (04 §Command roles; DESIGN §B.6, DR-23): `bb pages <role>`. */
-export const COMMANDS = { init: "bb pages init", guide: "bb pages guide", status: "bb pages status", home: "bb pages home", grants: "bb pages grants" } as const;
+/** The host's spelling of the five command roles (04 §Command roles; DESIGN §B.6, DR-23): `bb pages <role>`; and `{root}`, the page's folder, which on bb is the thread's storage (04 §The text, U54). */
+export const COMMANDS = { init: "bb pages init", guide: "bb pages guide", status: "bb pages status", home: "bb pages home", grants: "bb pages grants", root: "your thread storage, `$BB_THREAD_STORAGE`" } as const;
 
 export interface PluginOptions {
   /** The core's `mountPages` (tests inject a fake). */

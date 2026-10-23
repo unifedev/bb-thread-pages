@@ -7,6 +7,8 @@ export type { BridgeRequest, BridgeResponse, BridgeTransport, NavigationDirectiv
 
 /** The shell's conditional poll rides the document route with this header. 05 R2.17, R2.25 */
 export const POLL_HEADER = "X-Pages-Poll";
+/** The shell's fetch of a new revision for the shown document's `onPageUpdate`: under by-url its own files carry their versions. 05 R2.18 */
+export const HAND_OVER_HEADER = "X-Pages-Hand-Over";
 export const WORKING_HEADER = "X-Pages-Working";
 export const SOURCE_HEADER = "X-Pages-Source";
 export const SESSION_HEADER = "X-Pages-Session";

@@ -1,4 +1,4 @@
-// The declaration grammar of 07 §The declaration grammar: `parseContributor(id, declaration)` → `Contributor`, `ContributedSpec`, problems list; reserved namespaces incl. `workspaces`.
+// The declaration grammar of 07 §The declaration grammar: `parseContributor(id, declaration)` → `Contributor` (with `pageScript`, 07 §A page script), `ContributedSpec`, problems list; reserved namespaces incl. `workspaces`.
 import { invalid, isJsonObject, pathForKey, utf8Bytes, valid, validateJson, type JsonValue, type Validation } from "../json/strict-json.ts";
 import { LIMITS } from "../limits.ts";
 import type { CapabilitySpec, ContributorRef, EffectClass } from "./contract.ts";
@@ -28,6 +28,8 @@ export interface Contributor {
   readonly instruction: string | null;
   /** Printed in the guide's section for this contributor. 04 R6.29 */
   readonly guide: string | null;
+  /** Asked for a script on every document the host serves. 07 R5.87 */
+  readonly pageScript: boolean;
 }
 
 export interface ParsedContributor {
@@ -62,10 +64,12 @@ export function parseContributor(id: string, input: unknown): ParsedContributor 
   if (!checked.ok) return refuse(`contributor "${id}": the declaration is not strict JSON within ${LIMITS.declarationBytes} bytes, depth ${LIMITS.declarationDepth} and ${LIMITS.declarationNodes} nodes`);
   if (!isJsonObject(checked.value)) return refuse(`contributor "${id}": the declaration is not an object`);
   const declaration = checked.value;
-  const unknown = Object.keys(declaration).filter((key) => !["version", "methods", "instruction", "guide"].includes(key));
+  const unknown = Object.keys(declaration).filter((key) => !["version", "methods", "instruction", "guide", "pageScript"].includes(key));
   if (unknown.length > 0) return refuse(`contributor "${id}": unknown keys ${unknown.join(", ")}`);
   if (typeof declaration.version !== "string" || !VERSION.test(declaration.version)) return refuse(`contributor "${id}": a version is required`);
   const ref: ContributorRef = Object.freeze({ id, version: declaration.version });
+  if (declaration.pageScript !== undefined && declaration.pageScript !== true) return refuse(`contributor "${id}": pageScript, when present, must be true`);
+  const pageScript = declaration.pageScript === true;
 
   const instruction = boundedText(declaration.instruction, LIMITS.contributorInstructionBytes);
   if (instruction === false) return refuse(`contributor "${id}": the instruction must be text of at most ${LIMITS.contributorInstructionBytes} bytes`);
@@ -91,7 +95,7 @@ export function parseContributor(id: string, input: unknown): ParsedContributor 
     seen.add(parsed.method);
     methods.push(parsed);
   }
-  return { contributor: Object.freeze({ id, version: ref.version, methods: Object.freeze(methods), instruction, guide }), problems };
+  return { contributor: Object.freeze({ id, version: ref.version, methods: Object.freeze(methods), instruction, guide, pageScript }), problems };
 }
 
 function boundedText(value: JsonValue | undefined, maxBytes: number): string | null | false {

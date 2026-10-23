@@ -20,6 +20,7 @@ import { createMemoryAttachGrants, createMemoryCooldowns, createMemoryLedger, cr
 import { createDispatcher } from "./bridge/dispatcher.ts";
 import type { PagesSettings, ServingContext } from "./context.ts";
 import { createContributions } from "./contributions.ts";
+import { createPageScripts } from "./page-scripts.ts";
 import { createGrantStore } from "./grants.ts";
 import { createRedeemedStore } from "./redeemed-store.ts";
 import { createStorageStore } from "./storage-store.ts";
@@ -101,6 +102,7 @@ export async function mountPages(serving: ServingHost, provider: ProviderHost, o
   const storage = createStorageStore(provider.kv, { log: provider.log, now });
   const grants = createGrantStore(provider.kv, now, provider.log, { sessionExists: async (id) => (await provider.sessions.get(id)) !== null });
   const contributions = createContributions(provider.contributors, { log: provider.log, now });
+  const pageScripts = createPageScripts(provider.contributors, contributions, { log: provider.log });
   const ledger = createMemoryLedger();
   const selections = createMemorySelections(signingKey, random);
   const sessionFor = createSessionAccess(provider);
@@ -113,6 +115,7 @@ export async function mountPages(serving: ServingHost, provider: ProviderHost, o
     strategy,
     registry,
     contributions,
+    pageScripts,
     pages,
     storage,
     grants,

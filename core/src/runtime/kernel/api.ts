@@ -1,4 +1,4 @@
-// `window.threadPage` frozen object: `invoke`, `watch`, `setDirty`, `embed?`, `setScope`, `scope`, `version: 1` (02 R4.3, R4.28–R4.33, R4.63–R4.65, R-K2).
+// `window.threadPage` frozen object: `invoke`, `watch`, `setDirty`, `embed?`, `onPageUpdate?`, `setScope`, `scope`, `version: 1` (02 R4.3, R4.28–R4.33, R4.63–R4.66, R-K2).
 
 export interface ThreadPageApi {
   readonly version: 1;
@@ -7,6 +7,8 @@ export interface ThreadPageApi {
   setDirty(dirty: boolean): void;
   /** Absent on a host without the composition tier. 02 R-K2 */
   embed?(target: unknown, options: unknown): () => void;
+  /** The document shows its own new version: called with it instead of being swapped. 02 R4.66 */
+  onPageUpdate?(callback: unknown): () => void;
   setScope(folder: unknown): string | null;
   readonly scope: string | null;
 }
@@ -15,6 +17,7 @@ export interface ThreadPageApi {
 export function installApi(target: Window, api: ThreadPageApi): void {
   const surface: Record<string, unknown> = { version: 1, invoke: api.invoke, watch: api.watch, setDirty: api.setDirty, setScope: api.setScope };
   if (typeof api.embed === "function") surface.embed = api.embed;
+  if (typeof api.onPageUpdate === "function") surface.onPageUpdate = api.onPageUpdate;
   Object.defineProperty(surface, "scope", { get: () => api.scope, enumerable: true, configurable: false });
   Object.defineProperty(target, "threadPage", { value: Object.freeze(surface), writable: false, configurable: false, enumerable: true });
 }

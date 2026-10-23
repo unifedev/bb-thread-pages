@@ -1,5 +1,5 @@
 // `GET /page/<id>/<document>` or `GET /document`: render token check, assembled document with kernel injected, ETag; the poll variant (`X-Pages-Poll`) and the carried strategy's file variant (05 R2.11–R2.13, R2.17, R2.25, R-S7a, R-S10; DESIGN §C.3, §F.3, P3).
-import { checkDocumentQuery, documentKey, ENTRY_DOCUMENT, isDocumentPath, RESERVED_QUERY_NAMES, splitDocumentUrl } from "../domain/document-path.ts";
+import { checkDocumentQuery, directoryOf, documentKey, ENTRY_DOCUMENT, isDocumentPath, RESERVED_QUERY_NAMES, splitDocumentUrl } from "../domain/document-path.ts";
 import { PageError, PUBLIC_MESSAGES } from "../domain/errors.ts";
 import { injectKernel } from "../domain/html/document.ts";
 import { escapeHtml } from "../domain/html/escape.ts";
@@ -12,8 +12,9 @@ import { mintRenderToken, verifyRenderToken } from "../domain/tokens/render-toke
 import { KERNEL_RUNTIME } from "../generated/kernel-runtime.ts";
 import type { ProviderHost } from "../host/provider.ts";
 import type { PagesRequest, PagesResponse } from "../host/serving.ts";
-import { contentTypeFor } from "../pages/inline.ts";
-import { POLL_HEADER, SESSION_HEADER, SOURCE_HEADER, WORKING_HEADER, type PollBody } from "../runtime/shared/envelopes.ts";
+import { pageFileIo } from "../pages/assemble.ts";
+import { contentTypeFor, versionOwnFiles } from "../pages/inline.ts";
+import { HAND_OVER_HEADER, POLL_HEADER, SESSION_HEADER, SOURCE_HEADER, WORKING_HEADER, type PollBody } from "../runtime/shared/envelopes.ts";
 import type { GrantSummary, KernelConfig } from "../runtime/shared/protocol.ts";
 import type { ServingContext, SessionAccess } from "./context.ts";
 import { EMPTY_DOCUMENT } from "./empty-page.ts";
@@ -157,8 +158,13 @@ export async function serveDocument(ctx: ServingContext, request: PagesRequest, 
     deferredFiles: view.deferredFiles,
     swapIdleMs: LIMITS.swapIdleMs,
   };
+  // The contributors' page scripts follow the kernel, asked for this document. 07 R5.88, R5.92
+  const contributorScripts = await ctx.pageScripts.scriptsFor(access.kind === "home" ? null : session, path ?? ENTRY_DOCUMENT);
+  let page = view.page?.html ?? EMPTY_DOCUMENT;
+  // The shell's fetch for `onPageUpdate`, by-url: the document stays, so a file changed under the same name needs a new address. 02 R4.66; 05 R2.18
+  if (view.page && access.kind !== "home" && ctx.strategy.kind === "by-url" && request.headers.get(HAND_OVER_HEADER) === "1") page = await versionOwnFiles(page, pageFileIo(ctx.provider, session), directoryOf(path));
   // No `<base>` on a top-level load in either strategy: the document is served at its own path, or carries its files. 02 R4.2; DR-13
-  const html = injectKernel(withNotice(view.page?.html ?? EMPTY_DOCUMENT, args.notice ?? null), { kernel: KERNEL_RUNTIME, config, baseHref: null });
+  const html = injectKernel(withNotice(page, args.notice ?? null), { kernel: KERNEL_RUNTIME, config, baseHref: null, contributorScripts });
   return { status: 200, headers: documentHeaders(view.revision), body: new TextEncoder().encode(html) };
 }
 

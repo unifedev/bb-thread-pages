@@ -38,6 +38,10 @@ export interface Frame {
   pending: number;
   /** The kernel was told a newer version waits. */
   toldUpdate: boolean;
+  /** The document registered `onPageUpdate`: a new revision of it is handed over instead of swapped. 02 R4.66; 05 R2.18 */
+  pageUpdate: boolean;
+  /** The nonce of the hand-over in flight, or 0. */
+  handing: number;
   scroll: ScrollState | null;
   /** Work waiting for the show; dropped with the frame. DESIGN §D.1 pre-show relay */
   queue: (() => void)[];
@@ -87,7 +91,7 @@ export function show(element: HTMLIFrameElement): void {
 }
 
 export function createFrame(doc: Document, target: FrameTarget, hidden: boolean): Frame {
-  return { element: createFrameElement(doc, target, hidden), target, port: null, connected: false, restored: false, shown: false, dirty: false, embedDirty: false, typing: false, pending: 0, toldUpdate: false, scroll: null, queue: [], handed: new Map(), nonce: 0, answered: 0, pinged: 0, loadStartedAt: Date.now(), timers: [], cancelled: false };
+  return { element: createFrameElement(doc, target, hidden), target, port: null, connected: false, restored: false, shown: false, dirty: false, embedDirty: false, typing: false, pending: 0, toldUpdate: false, pageUpdate: false, handing: 0, scroll: null, queue: [], handed: new Map(), nonce: 0, answered: 0, pinged: 0, loadStartedAt: Date.now(), timers: [], cancelled: false };
 }
 
 export function postTo(frame: Frame, message: ShellMessage): boolean {

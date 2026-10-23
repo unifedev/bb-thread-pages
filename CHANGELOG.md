@@ -1,10 +1,86 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 56d101e): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 870792b): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.11.0 (bb plugin) — 2026-10-23
+
+The bb plugin's release of the 0.3.0 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.11.0`): contributors' page scripts, asked over the
+plugin RPC `threadPagesPageScript`; `threadPage.onPageUpdate`, a page stopping its own session once the reader
+confirms, and the shorter standing instruction, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- An operator who kept a verbatim copy of the old built-in text (as the spec writes it, or as `bb pages status`
+  printed it) gets the new one, as one who never set the text does; any other text is kept.
+- `package.json` version 1.11.0.
+
+## 0.3.0 — 2026-10-23
+
+Four contract changes in pages-core, so both hosts carry them:
+- contributors' page scripts (B-0111): spec 07 §A page script (R5.87–R5.94), 02 R4.1, 06 `contributors.pageScript`,
+  08 `pageScriptBytes`, `pageScriptMs` and A192–A196;
+- a page that shows its own new version (B-0112): spec 02 R4.66 and R4.33, 05 R2.18, R2.18c and R2.10's port note,
+  04's guide listing, 08 A197–A199 and fixture 14;
+- a page may stop its own session once the reader confirms (B-0113): spec 03 R5.28, 08 A49, decision U52;
+- a shorter standing instruction (B-0114): spec 04 §The text, §It MUST convey, R6.17, R6.24 and A56, decision U54.
+
+`@unifedev/pages-core` 0.3.0, `@unifedev/claude-pages` 0.3.0, the bb plugin `@unifedev/thread-pages` 1.11.0.
+
+### Added
+
+- **A contributor can give the documents a host serves a script of its own.** A contributor that declares
+  `pageScript: true` is asked, each time a document is served (the page at its own address, and a page another page
+  reads with `pages.read`), with the served session and its workspace (`null` on the built-in home), the document's
+  path and the version the host already holds: `{ caller, documentPath, have } → null | { version, script? }`. Its
+  script goes in right after the kernel, as `<script data-thread-page-contributor="<id>">`, ahead of the page's own
+  scripts, in the host's contributor order. The text is held per contributor and version, so it crosses once per
+  version; a script over 256 KiB, or one containing `</script` or `<!--`, is refused whole and logged; a contributor
+  that does not answer within 2 s, throws or answers a wrong shape is left out of that serve and logged once. A
+  contributor that does not declare the key is never asked: with none, every document is served exactly as before.
+  bb: the plugin RPC `threadPagesPageScript`. Claude Code: a process gets `{ namespace, kind: "pageScript", … }` at
+  its registered endpoint; a mod passes a third argument to `$.pages.contribute(declaration, handler, pageScript)`.
+  The guide names a contributor that gives documents a script. Tests:
+  `packages/pages-core/test/serving/page-scripts.test.ts` (who is asked, the order, home and embeds, the cache, the
+  refusals, the time bound), the injection in `test/domain/document.test.ts`, each host's glue.
+- **`threadPage.onPageUpdate(callback)`: a page that shows its own new version is handed it instead of being
+  swapped.** While a callback is registered, a save of the shown document no longer loads a new frame: when the swap
+  would have come (after the reader pauses typing, a sending form finishes, a dialog closes, or the page clears
+  `setDirty`), the shell fetches the new page and the callback gets `{ html, revision, documentPath }`, `html` being
+  the page as served without the host's own scripts (the kernel, the contributors' page scripts, an injected
+  `<base>`). The document keeps its state, and its calls and answers are from then on written against the new
+  revision, under the renewed action token. It returns a stop function; a callback that throws is logged and called
+  again on the next save; a hand-over the document does not take within 4 s, or a page the shell cannot fetch, is a
+  swap as before. Another document, Back and Forward and reloads load as before. An embedded page that calls it is
+  kept current in its embed the same way. A page that never calls it is swapped exactly as before. The guide lists it.
+  Where own files are served by URL (Claude Code), the handed page names each of its own files with the file's
+  version in the address (`big.png?pages-v=…`), so an image, stylesheet or script the agent changed under the same
+  name shows its new version in the page that stays; `pages.read` does the same there, for embeds.
+  Tests: `packages/pages-core/test/runtime/kernel/page-update.test.ts`, `test/runtime/shell/page-update.test.ts`,
+  the embed cases in `test/runtime/kernel/embed.test.ts`, `test/pages/inline.test.ts`'s versioned own files;
+  fixture 14 in the browser runner; `test/browser/page-update-files.mjs` (`pnpm test:page-update-files`).
+
+### Changed
+
+- **A page may stop its own session, once the reader confirms** (spec 03 R5.28, 08 A49, decision U52).
+  `sessions.stop` on the page's own session used to be refused before any dialog (`invalid_params`), so a chat on a
+  page could not offer Stop while its agent worked. It now shows the host's usual dialog, naming it as this page's
+  session ("Stop this page's own session, “‹title›” (‹id›)?"); Confirm stops the running turn (bb `threads.stop`;
+  Claude Code aborts the live turn, and the session takes the next message), Cancel rejects with `cancelled` and
+  stops nothing. A page alone still cannot stop the turn that reads it: unconfirmed, forged or replayed, the call
+  stops nothing. `sessions.send`, `sessions.archive` and `sessions.respond` still refuse the own session. Tests:
+  `packages/pages-core/test/serving/bridge.test.ts` (11a) and `hostile-page.test.ts` ("Forge or replay a
+  confirmation"), both failing on 0.2.4. Fixture 06 A49 is now a manual button, as A46 is (a confirmed call cannot
+  run headless).
+
+### Versions
+
+- `@unifedev/pages-core` 0.3.0; `@unifedev/claude-pages` (`package.json`, `plugin.json`) 0.3.0;
+  `@unifedev/thread-pages` 1.11.0.
 
 ## 1.10.3 (bb plugin) — 2026-10-14
 

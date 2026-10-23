@@ -31,9 +31,11 @@ export function createLargeMedia(win: Window & typeof globalThis, deps: LargeMed
   const files = new Map<string, Promise<Outcome>>();
   const waiting = new Map<string, (outcome: Outcome) => void>();
 
-  function request(path: string): Promise<Outcome> {
-    const known = files.get(path);
+  /** Cached by the whole marker: a file changed under the same name has a new `@<version>` and is fetched again, as a page handed over keeps this kernel (02 R4.66). */
+  function request(value: string): Promise<Outcome> {
+    const known = files.get(value);
     if (known) return known;
+    const path = markedPath(value);
     const answer = deps.embedded
       ? Promise.resolve<Outcome>({ ok: false, error: EMBEDDED_MEDIA_REFUSAL })
       : new Promise<Outcome>((settle) => {
@@ -41,9 +43,9 @@ export function createLargeMedia(win: Window & typeof globalThis, deps: LargeMed
           waiting.set(id, settle);
           deps.send({ kind: "thread-page:file-request", id, path, purpose: "media" });
         });
-    files.set(path, answer);
+    files.set(value, answer);
     void answer.then((outcome) => {
-      if (!outcome.ok && files.get(path) === answer) files.delete(path);
+      if (!outcome.ok && files.get(value) === answer) files.delete(value);
     });
     return answer;
   }
@@ -81,7 +83,7 @@ export function createLargeMedia(win: Window & typeof globalThis, deps: LargeMed
         for (const [marker, attribute] of [[FILE_ATTRIBUTE, "src"], [POSTER_ATTRIBUTE, "poster"]] as const) {
           const value = element.getAttribute(marker);
           if (!value) continue;
-          void request(markedPath(value)).then((outcome) => apply(element, marker, attribute, value, outcome));
+          void request(value).then((outcome) => apply(element, marker, attribute, value, outcome));
         }
       }
     },

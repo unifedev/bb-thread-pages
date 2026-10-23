@@ -1,6 +1,6 @@
 // Wires everything: forms, dirty, typing, drafts, scroll, anchors, text areas, embeds, read-only, session state, the waiting-update mark, pong, fragment, restore handling; the home page's drafts and grants events (02 §The kernel; 05 R2.3a, R2.18d, R2.21, R2.24, R-S12; U49).
 import { directoryOf, RESERVED_QUERY_NAMES } from "../../domain/document-path.ts";
-import { FORM_GONE_STATUS, HANDSHAKE_VERSION, isRecord, sentMessage, UPDATE_DEFERRED_STATUS, type KernelConfig, type KernelMessage, type ShellMessage } from "../shared/protocol.ts";
+import { FORM_GONE_STATUS, HANDSHAKE_VERSION, isRecord, sentMessage, UPDATE_DEFERRED_STATUS, type BridgeRequestMessage, type KernelConfig, type KernelMessage, type ShellMessage } from "../shared/protocol.ts";
 import { installAnchorInterception } from "./anchors.ts";
 import { installApi } from "./api.ts";
 import { installAudioInputs } from "./audio-input.ts";
@@ -11,6 +11,7 @@ import { createDrafts } from "./drafts.ts";
 import { createEmbedManager, EMBEDDED_FILES_REFUSAL } from "./embed.ts";
 import { buildIntent, capturedForms, clearStatusOverride, fileLimitProblem, formsReachedFrom, isManualForm, lockForm, newSubmissionId, ownerForm, prepareForm, setDeliveryStatus, setStatus, setUpdateStatus, tagOf, unlockForm, type FormControl } from "./forms.ts";
 import { createLargeMedia } from "./large-media.ts";
+import { createPageUpdates } from "./page-update.ts";
 import { installOwnFetch } from "./own-fetch.ts";
 import { capturePrimitives, type KernelPrimitives } from "./primitives.ts";
 import { createReadOnlyController, type ReadOnlyCause } from "./readonly.ts";
@@ -69,14 +70,33 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   const dirty = createDirtyTracker(doc, prim, (isDirty, custom) => send(isDirty ? { kind: "thread-page:dirty", custom } : { kind: "thread-page:clean" }));
   const typing = createTypingTracker(doc, prim, config.swapIdleMs, send);
   const session = createSessionState(doc);
-  const bridge = createBridgeClient({ pageRevision: config.pageRevision, send: (request) => send(request), nextId: () => channel.nextId("b"), document: doc });
+  const bridgeDeps = { pageRevision: config.pageRevision, send: (request: BridgeRequestMessage) => send(request), nextId: () => channel.nextId("b"), document: doc };
+  const bridge = createBridgeClient(bridgeDeps);
   const initialCause: ReadOnlyCause = config.archived ? "archived" : config.stale ? "offline" : null;
   const readOnly = createReadOnlyController(doc, initialCause);
   const recorder = createRecordClient((message) => send(message), () => channel.nextId("r"));
-  const drafts = createDrafts(win, { revision: config.pageRevision, send, prim, notice: (form, text) => notice(form, text) });
+  const draftsDeps = { revision: config.pageRevision, send, prim, notice: (form: HTMLFormElement | null, text: string) => notice(form, text) };
+  const drafts = createDrafts(win, draftsDeps);
   const scroll = installScroll(win, prim, (state) => send({ kind: "thread-page:scroll", state }));
   const restorer = createRestorer(win, { drafts, scroll, send });
   const largeMedia = createLargeMedia(win, { send, nextId: () => channel.nextId("f"), embedded });
+  const pageUpdates = createPageUpdates(win, {
+    send,
+    // The document stays, its authority moves on: answers, calls and drafts are written against the version handed over. 02 R4.66
+    take: (revision) => {
+      config.pageRevision = revision;
+      bridgeDeps.pageRevision = revision;
+      draftsDeps.revision = revision;
+      if (updateAvailable) markUpdate(false);
+    },
+    log: (error) => {
+      try {
+        win.console.error("threadPage.onPageUpdate callback threw", error);
+      } catch {
+        // Nowhere to log.
+      }
+    },
+  });
 
   const embeds = config.embedAvailable
     ? createEmbedManager(win, {
@@ -130,6 +150,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     watch: (method, params, listener, options) => bridge.watch(method, params, listener, options),
     setDirty: (value) => dirty.setCustom(value !== false),
     ...(embeds ? { embed: (target: unknown, options: unknown) => embeds.embed(target, options) } : {}),
+    onPageUpdate: (callback) => pageUpdates.register(callback),
     setScope: (folder) => bridge.setScope(folder),
     get scope() {
       return bridge.scope();
@@ -349,6 +370,9 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       }
       case "thread-page:update":
         if (message.available !== updateAvailable) markUpdate(message.available);
+        return;
+      case "thread-page:page-update":
+        pageUpdates.receive(message);
         return;
       case "thread-page:drafts":
         announce(DRAFTS_EVENT, { drafts: message.leftovers });

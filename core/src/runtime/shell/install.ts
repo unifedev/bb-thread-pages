@@ -1,6 +1,6 @@
 // The shell state machine (DESIGN §D.1): frames, handshake acceptance (05 R2.3a), ping/pong liveness (R2.18d), open-document, history; the deferred swap (R2.21, U49); session state to the kernel (R2.24–R2.26); drafts in and out of the store and the leftovers for the home; the home's grants and drafts duties (R-S12).
 import { checkDocumentQuery, documentFragment, ENTRY_DOCUMENT, isDocumentPath } from "../../domain/document-path.ts";
-import type { ChromeActionBody, DocumentSessionBody, PageSource, PollBody } from "../shared/envelopes.ts";
+import { HAND_OVER_HEADER, type ChromeActionBody, type DocumentSessionBody, type PageSource, type PollBody } from "../shared/envelopes.ts";
 import type { DraftRecord } from "../shared/drafts.ts";
 import { isKernelMessage, isReadyMessage, isRecord, type GrantSummary, type KernelMessage, type LeftoverDraft, type ShellConfig, type ShellMessage } from "../shared/protocol.ts";
 import { createConfirmer, type Confirmer } from "./confirm.ts";
@@ -36,6 +36,8 @@ export interface ShellHandle {
   voice: Voice | null;
   /** For tests: open another document as a link would. */
   openDocument(path: string, push?: boolean, fragment?: string, query?: string): Promise<boolean>;
+  /** For tests: hand-overs still waiting for the kernel's answer. */
+  handOversWaiting(): number;
 }
 
 export interface ShellOptions {
@@ -245,11 +247,82 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       defer();
       return;
     }
-    if (incoming) return;
+    if (incoming || shown.handing) return;
+    if (shown.pageUpdate && shown.connected && shown.target.path === config.documentPath) {
+      void handOver(shown, latest);
+      return;
+    }
     startIncoming(targetOf(latest), "revision");
   }
 
+  // --- the hand-over to `onPageUpdate` -------------------------------------------------
+
+  const handWaiters = new Map<Frame, { nonce: number; settle: (ok: boolean) => void }>();
+
+  /**
+   * The document stays: the new revision, as served, goes to its
+   * `onPageUpdate` when the swap would have come, and the shown frame takes
+   * the revision and its token. A hand-over that cannot be made swaps as
+   * before; a newer revision meanwhile is handed over afresh. 02 R4.66; 05 R2.18, R2.7
+   */
+  async function handOver(frame: Frame, body: PollBody): Promise<void> {
+    const nonce = ++frame.nonce;
+    frame.handing = nonce;
+    const current = () => !frame.cancelled && shown === frame && frame.handing === nonce;
+    let html: string | null = null;
+    try {
+      const response = await fetchImpl(body.documentUrl, { method: "GET", credentials: "same-origin", cache: "no-store", headers: { [HAND_OVER_HEADER]: "1" } });
+      if (response.ok) html = await response.text();
+    } catch {
+      html = null;
+    }
+    if (!current()) return;
+    if (latest?.revision !== body.revision || held(frame)) {
+      // A newer revision came, or a hold began while the page was fetched: decided again as any revision is.
+      frame.handing = 0;
+      reconsider();
+      return;
+    }
+    const ok = html !== null && (await new Promise<boolean>((resolve) => {
+      let done = false;
+      const settle = (value: boolean) => {
+        if (done) return;
+        done = true;
+        handWaiters.delete(frame);
+        resolve(value);
+      };
+      handWaiters.set(frame, { nonce, settle });
+      schedule(frame, config.refreshSwapMs, () => settle(false));
+      if (!postTo(frame, { kind: "thread-page:page-update", nonce, revision: body.revision, documentPath: frame.target.path, html: html! })) settle(false);
+    }));
+    if (!current()) return;
+    frame.handing = 0;
+    if (!ok) {
+      // No callback any more, no answer, or the page could not be fetched: the document is swapped as before.
+      if (latest && latest.revision === body.revision && !incoming) startIncoming(targetOf(body), "revision");
+      else reconsider();
+      return;
+    }
+    // The newest poll body renewed the token for this revision; a newer revision would have stopped the hand-over above. 05 R2.7
+    frame.target = { ...targetOf(body), token: config.actionToken, expiresAt: config.expiresAt };
+    applyTarget(frame.target);
+    if (latest && latest.revision === body.revision) latest = null;
+    if (state === "DEFERRED") state = "SHOWN";
+    if (frame.toldUpdate) {
+      frame.toldUpdate = false;
+      postTo(frame, { kind: "thread-page:update", available: false });
+    }
+    poller.retarget();
+    reconsider();
+  }
+
   // --- frames -----------------------------------------------------------------
+
+  /** A frame gone: a hand-over waiting on it ends with it, so the frame and the page's html are not kept. */
+  function drop(frame: Frame): void {
+    handWaiters.get(frame)?.settle(false);
+    discard(frame);
+  }
 
   function frameContext(frame: Frame): FrameContext {
     return {
@@ -403,7 +476,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     const frame = incoming;
     if (!frame) return;
     incoming = null;
-    discard(frame);
+    drop(frame);
     if (state === "INCOMING") state = shown ? "SHOWN" : "LOADING";
   }
 
@@ -427,7 +500,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     clearTimers(frame);
     const previous = shown;
     show(frame.element);
-    if (previous) discard(previous);
+    if (previous) drop(previous);
     shown = frame;
     applyTarget(frame.target);
     if (latest && latest.revision === frame.target.revision) latest = null;
@@ -502,6 +575,14 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
         frame.embedDirty = message.dirty;
         if (frame === shown) reconsider();
         return;
+      case "thread-page:page-update-listen":
+        frame.pageUpdate = message.active;
+        return;
+      case "thread-page:page-updated": {
+        const waiter = handWaiters.get(frame);
+        if (waiter && waiter.nonce === message.nonce) waiter.settle(message.ok);
+        return;
+      }
       case "thread-page:submit":
         frameContext(frame).whenShown(() => {
           frame.pending += 1;
@@ -804,6 +885,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   return {
     state: () => state,
     shownFrame: () => shown?.element ?? null,
+    handOversWaiting: () => handWaiters.size,
     incomingFrame: () => incoming?.element ?? null,
     poller,
     notice,

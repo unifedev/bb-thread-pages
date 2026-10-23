@@ -1,84 +1,44 @@
-// The verbatim standing instruction of 04 §The text with `{init}`/`{guide}` filled; `instructionParts(...)` → `{ standing, fragments }`; `createInjector(ctx)` hands the parts to the provider and keeps its placements (04 R6.14–R6.17, R6.29, R6.31).
+// The verbatim standing instruction of 04 §The text with `{init}`/`{guide}`/`{root}` filled; `instructionParts(...)` → `{ standing, fragments }`; `createInjector(ctx)` hands the parts to the provider and keeps its placements (04 R6.14–R6.17, R6.29, R6.31).
 import type { Contributor } from "../domain/capabilities/contributed.ts";
 import type { Placement, SessionRecord } from "../host/provider.ts";
 import type { ServingContext } from "../serving/context.ts";
 
 /**
- * 04 §The text, verbatim. Two placeholders are the host's spellings of the
- * two commands. Principles only: no example, no page shape, no styling
- * (04 R6.16a); the one sentence about home is conditional in its own words.
+ * 04 §The text, verbatim (U54). Three placeholders are the host's words: its
+ * spellings of `{init}` and `{guide}`, and `{root}`, the page's folder as the
+ * host names it. Principles only: no example, no page shape, no styling
+ * (04 R6.16a); what the short text leaves out is the guide's (R6.24).
  * spec 04 §The text, R6.14–R6.17
  */
-export const STANDING_INSTRUCTION_TEMPLATE = `# The page is the conversation
+export const STANDING_INSTRUCTION_TEMPLATE = `# Your page
 
-The reader does not read chat. Every turn you write or update one HTML page;
-they read it and answer from inside it, and the answer arrives as your next
-message. Chat carries only the link and nothing else.
+The person reads your page, not the chat. Every turn, write or update one HTML page; they answer in it, and the answer arrives as your next message. In chat, give only the page's link.
 
-Run \`{init}\` when the session starts, and again whenever you no
-longer have the page's path or link. The first time there is no file: you write
-the whole document. Read an existing page before editing it; saving publishes
-it at once and an open page reloads itself. If init says SKIP, this session is
-a helper: answer in chat and stay off the page.
+Run \`{init}\` when the session starts, and again if you lose the page's path. Your page is \`index.html\` in {root}. If init says SKIP, you are a helper: answer in chat and stay off the page.
 
-## Built for this task
+## The page itself
 
-Nothing is provided to fill in: no template, no stylesheet, no components.
-Work out what this reader needs to see and do right now, and build exactly
-that. Its structure, its look and its interactions follow from the task, not
-from how pages usually look. If the page would suit a different task just as
-well, it is not finished. It must read on a phone and in dark mode.
+Build it for this task, not a generic one: what you did, decisions that are theirs (options and your recommendation), what only they can supply. Conclusion first, concise. It must read on a phone and in dark mode. Every <form> answers you; blank is an answer; always include one empty text field for anything else.
 
-## Answering where they read
+Your page is yours alone. Before relying on anything beyond one HTML file, run \`{guide}\`.`;
 
-Every <form> answers this session automatically; blank is a real answer. How
-the reader answers follows from the content as much as what you show does: let
-them respond at the point they are reading, in whatever form suits that piece,
-deciding with as little effort as the decision allows. Always include one empty
-text field for anything else: the reader may want something none of your
-options cover.
-
-## What belongs on the page
-
-What you did, at the level they could explain to someone else; decisions that
-are theirs, with the options and your recommendation; what only they can
-supply; anything a wrong assumption of yours would make costly. Report
-failures, skipped steps and your own mistakes plainly. Conclusion first. Keep
-the text concise and actionable: the reader reads only what they need to
-answer, and what the page shows does the explaining.
-
-## One agent, one page
-
-Your page is yours alone: you never read or write another agent's page. To
-create another interface, start a session with instructions to build it; that
-agent writes its own page. Link to it or, where this host designates a home,
-suggest making it home. A page that
-should stay put is one whose forms, its field for anything else included,
-start fresh sessions instead of messaging you, and it tells the reader it
-stays put. If you want another agent's page changed, talk to that agent.
-
-## More
-
-Before relying on anything beyond one HTML file (other documents beside it,
-controls outside a form, live session state, starting sessions, calling other
-services, limits) run \`{guide}\`.`;
-
-/** The host's spellings of the two command roles. 04 §Command roles */
-/** The host's spelling of each command role (04 §Command roles: the role names are normative, the binary is the host's). */
+/** The host's spelling of each command role (04 §Command roles: the role names are normative, the binary is the host's), and its words for the page's folder. */
 export interface CommandSpellings {
   init: string;
   guide: string;
   status: string;
   home: string;
   grants: string;
+  /** The page's folder in the host's words, for `{root}` (04 §The text, U54): a host names its variable, or the line `init` prints. */
+  root: string;
 }
 
-/** Fills `{init}`, `{guide}` (04 §The text) and the other roles' placeholders in any instruction text, the built-in one or an operator's. 04 R6.15 */
+/** Fills `{init}`, `{guide}`, `{root}` (04 §The text) and the other roles' placeholders in any instruction text, the built-in one or an operator's. 04 R6.15 */
 export function fillPlaceholders(text: string, commands: CommandSpellings): string {
-  return text.replaceAll("{init}", commands.init).replaceAll("{guide}", commands.guide).replaceAll("{status}", commands.status).replaceAll("{home}", commands.home).replaceAll("{grants}", commands.grants);
+  return text.replaceAll("{init}", commands.init).replaceAll("{guide}", commands.guide).replaceAll("{root}", commands.root).replaceAll("{status}", commands.status).replaceAll("{home}", commands.home).replaceAll("{grants}", commands.grants);
 }
 
-/** The built-in standing instruction with the host's spellings filled. Under 4 KiB (asserted by test). 04 §The text */
+/** The built-in standing instruction with the host's words filled. Under 800 bytes around the placeholders (asserted by test). 04 §The text */
 export function standingInstruction(commands: CommandSpellings): string {
   return fillPlaceholders(STANDING_INSTRUCTION_TEMPLATE, commands);
 }
