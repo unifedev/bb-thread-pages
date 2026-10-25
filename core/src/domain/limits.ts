@@ -188,6 +188,8 @@ export const LIMITS = Object.freeze({
   embedPollAfterAnswerMs: 60_000,
   /** Calls one embedded page may make per minute, then `rate_limited`. 02 R4.49 */
   embedCallsPerMinute: 30,
+  /** The same inside the built-in home, whose main view is the one page the reader opened there. 02 R4.49 (U59) */
+  homeEmbedCallsPerMinute: 60,
   /** Answer token life; every read renews it. 03 R5.60a, R5.62 */
   answerTokenMs: 2 * 60 * 60 * 1000,
   /** Grants one page may hold. 03 R5.67 */

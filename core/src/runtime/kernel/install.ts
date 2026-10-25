@@ -101,6 +101,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   const embeds = config.embedAvailable
     ? createEmbedManager(win, {
         invoke: (method, params) => bridge.invoke(method, params),
+        relay: (method, params, as) => bridge.relay(method, params, as),
         setDirty: (value) => {
           dirty.setEmbedded(value);
           // Reported once per transition, like the page's own dirt. 02 R4.47

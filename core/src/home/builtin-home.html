@@ -596,7 +596,9 @@
   // A page starts at 50 rows and halves whenever the host answers `response_too_large`. The first 200 sessions load
   // at once; "Show more sessions" loads the next; the watch refreshes the first page and one further page per tick.
   let pageLimit = 50, pages = [], rotation = 0, stale = [], listErrorShown = false, capped = false;
-  let stopSnapshot = null, perWorkspace = false, generation = 0;
+  let stopSnapshot = null, perWorkspace = false, generation = 0, nudgeWorkspace = null;
+  /** Per workspace: the cursor past its newest page, for search. */
+  const moreBy = new Map();
   const WANT = 200;
   const listParams = (extra) => ({ limit: pageLimit, includeArchived: false, includeChildren: true, ...extra });
   /** One page of a list; a page too large for the bound is asked again at half the size. Returns null when the size changed (the caller restarts). */
@@ -696,6 +698,10 @@
     if (stopSnapshot) stopSnapshot();
     generation += 1;
     const own = generation;
+    // A host's one list promises no order across workspaces (one host's comes workspace after workspace): with more than one,
+    // the hub reads each workspace, so every one shows its newest sessions. 03 R5.12a; U57
+    if (workspaces.length > 1) perWorkspace = true;
+    nudgeWorkspace = null;
     if (perWorkspace) { stopSnapshot = pollByWorkspace(own); return; }
     const params = listParams();
     stopSnapshot = every("sessions.snapshot", params, SNAPSHOT_MS, async (value, error) => {
@@ -731,71 +737,113 @@
       if (own === generation) applySessions(pages.flatMap((page) => page.rows), value.generatedAtMs);
     });
   }
-  /** The fallback: one read per workspace, each workspace's last good rows kept, its share of the budget held near
-   *  40 calls a minute, empty workspaces read every fourth tick, and the single list tried again every twentieth. */
+  /** One read per workspace, the newest page of each: hot workspaces (a session working, waiting, unread or active in
+   *  the last 15 minutes, the open session's, one a session was just started into) every tick, the others in turn,
+   *  eight reads a tick at most, so the hub's share stays near 40 calls a minute. The first pass reads every workspace,
+   *  showing each as it arrives. A host with one workspace comes here only for a row that does not validate, and tries
+   *  the single list again every twentieth tick. 03 R5.12a; U57 */
   function pollByWorkspace(own) {
-    let timer = null, stopped = false, count = 0, delay = 0;
-    const rowsBy = new Map(), flat = new Set(), cut = new Set();
+    let timer = null, stopped = false, running = false, count = 0, delay = 0, turn = 0, prefer = null;
+    const rowsBy = new Map(), flat = new Set();
     for (const session of sessions) { if (!rowsBy.has(session.workspaceId)) rowsBy.set(session.workspaceId, []); rowsBy.get(session.workspaceId).push(session); }
     const gone = () => stopped || own !== generation;
+    const PER_TICK = 8, HOT_MS = 15 * 60e3;
+    /** Pages per workspace and visit: up to four (200 rows) while the workspaces are few, one each once they are many. */
+    const pagesEach = () => Math.max(1, Math.min(4, Math.floor(PER_TICK / Math.max(1, workspaces.length))));
+    const isHot = (id) => {
+      if (id === prefer) return true;
+      const open = view.kind === "session" ? byId.get(view.id) : null;
+      if (open && open.workspaceId === id) return true;
+      return (rowsBy.get(id) || []).some((one) => one.state === "working" || one.state === "waiting" || one.unread || Date.now() - recency(one) < HOT_MS);
+    };
+    /** This tick's workspaces: every one on the first pass; then the hot ones and the rest in turn. */
+    const chosen = () => {
+      const first = (list) => (prefer ? list.slice().sort((a, b) => (b.id === prefer) - (a.id === prefer)) : list);
+      if (count === 1) return first(workspaces);
+      const hot = first(workspaces.filter((workspace) => isHot(workspace.id))).slice(0, PER_TICK - 2);
+      const cold = workspaces.filter((workspace) => !hot.includes(workspace));
+      const room = Math.min(cold.length, PER_TICK - hot.length);
+      const picked = [];
+      for (let n = 0; n < room; n += 1) picked.push(cold[(turn + n) % cold.length]);
+      turn = cold.length ? (turn + room) % cold.length : 0;
+      return hot.concat(picked);
+    };
+    const show = () => {
+      for (const id of [...rowsBy.keys()]) if (!workspaces.some((workspace) => workspace.id === id)) { rowsBy.delete(id); moreBy.delete(id); }
+      capped = moreBy.size > 0;
+      applySessions([...rowsBy.values()].flat(), Date.now());
+    };
     const tick = async () => {
-      if (gone()) return;
+      timer = null;
+      if (gone() || running) return;
+      running = true;
       count += 1;
       let calls = 0, limited = false;
-      if (document.visibilityState !== "hidden") {
-        if (count % 20 === 0) {
-          calls += 1;
-          try {
-            const first = await readPage(listParams());
-            if (gone()) return;
-            if (first && first !== SWITCHED) { perWorkspace = false; pages = [{ cursor: null, rows: first.sessions, next: first.nextCursor }]; applySessions(first.sessions, first.generatedAtMs); watchSessions(); return; }
-          } catch (error) { if (error.code === "rate_limited") limited = true; }
-        }
-        if (!limited && count % 6 === 0) { calls += 1; await loadWorkspaces(true); }
-        for (const workspace of workspaces) {
-          if (limited || gone()) break;
-          const known = rowsBy.get(workspace.id);
-          if (known && !known.length && count % 4 !== 1) continue;
-          const scoped = listParams({ includeChildren: !flat.has(workspace.id), workspaceId: workspace.id });
-          try {
-            const all = [];
-            let cursor = null, read = 0;
-            do {
-              calls += 1;
-              const page = await readPage(scoped, cursor);
-              if (!page) { cursor = null; read = -1; break; }
-              all.push(...page.sessions);
-              cursor = page.nextCursor;
-              read += 1;
-            } while (cursor && read < 4);
-            if (read < 0) continue;
-            if (cursor) cut.add(workspace.id); else cut.delete(workspace.id);
-            rowsBy.set(workspace.id, all);
-          } catch (error) {
-            if (error.code === "rate_limited") limited = true;
-            else if (error.code === "invalid_result" && scoped.includeChildren) flat.add(workspace.id);
-            // Any other failure keeps that workspace's previous rows: a failed read never empties the list.
+      try {
+        if (document.visibilityState !== "hidden") {
+          if (count % 20 === 0 && workspaces.length <= 1) {
+            calls += 1;
+            try {
+              const first = await readPage(listParams());
+              if (gone()) return;
+              if (first && first !== SWITCHED) { perWorkspace = false; pages = [{ cursor: null, rows: first.sessions, next: first.nextCursor }]; applySessions(first.sessions, first.generatedAtMs); watchSessions(); return; }
+            } catch (error) { if (error.code === "rate_limited") limited = true; }
           }
+          if (!limited && count % 6 === 0) { calls += 1; await loadWorkspaces(true); }
+          const wanted = prefer;
+          for (const workspace of chosen()) {
+            if (limited || gone()) break;
+            const scoped = listParams({ includeChildren: !flat.has(workspace.id), workspaceId: workspace.id });
+            try {
+              const rows = [];
+              let cursor = null, read = 0;
+              do {
+                calls += 1;
+                const page = await readPage(scoped, cursor);
+                if (!page) { read = -1; break; }
+                rows.push(...page.sessions);
+                cursor = page.nextCursor;
+                read += 1;
+              } while (cursor && read < pagesEach() && !gone());
+              if (read > 0) {
+                rowsBy.set(workspace.id, rows);
+                if (cursor) moreBy.set(workspace.id, cursor); else moreBy.delete(workspace.id);
+              }
+              if ((count === 1 || workspace.id === wanted) && !gone()) show();
+            } catch (error) {
+              if (error.code === "rate_limited") limited = true;
+              else if (error.code === "invalid_result" && scoped.includeChildren) flat.add(workspace.id);
+              // Any other failure keeps that workspace's previous rows: a failed read never empties the list.
+            }
+          }
+          // Asked for once, read or not (a workspace the list does not name is never read); a session started there is
+          // then hot by its own start time.
+          if (prefer === wanted) prefer = null;
+          if (!gone() && !limited) show();
         }
-        if (!gone() && !limited) {
-          for (const id of [...rowsBy.keys()]) if (!workspaces.some((workspace) => workspace.id === id)) rowsBy.delete(id);
-          capped = cut.size > 0;
-          applySessions([...rowsBy.values()].flat(), Date.now());
-        }
-      }
-      delay = limited ? Math.min(60000, Math.max(delay, 10000) * 2) : Math.max(SNAPSHOT_MS * 2, calls * 1500);
-      if (!gone()) timer = setTimeout(tick, delay);
+      } finally { running = false; }
+      delay = limited ? Math.min(60000, Math.max(delay, 10000) * 2) : Math.max(SNAPSHOT_MS * 2, Math.min(calls, PER_TICK) * 1500);
+      if (!gone()) timer = setTimeout(tick, prefer && !limited ? 0 : delay);
+    };
+    // A session just started: its workspace is read first, now. U57
+    nudgeWorkspace = (id) => {
+      prefer = id;
+      if (running || gone()) return;
+      clearTimeout(timer);
+      tick();
     };
     tick();
     return () => { stopped = true; clearTimeout(timer); };
   }
   // Every active session, for search: the sidebar holds the newest; while a query is typed the rest of the list is read
   // page after page, one call every 1.5 s, until the host has no more. Sessions in the sidebar stay the fresher copy.
-  let activeAll = null, activeCursor = null, activeDone = false, activeRunning = false;
+  // Where the hub reads each workspace, each one's older pages are read in turn from past its newest page. U57
+  let activeAll = null, activeCursor = null, activeDone = false, activeRunning = false, activeQueue = null;
   async function loadActive(isWanted, onProgress) {
     if (activeRunning || activeDone) return;
-    // Nothing past the sidebar's pages, or the fallback (which lists each workspace itself): nothing more to read.
-    if (perWorkspace || !moreCursor()) return;
+    if (perWorkspace) return loadActiveByWorkspace(isWanted, onProgress);
+    // Nothing past the sidebar's pages: nothing more to read.
+    if (!moreCursor()) return;
     activeRunning = true;
     if (!activeAll) activeAll = [];
     try {
@@ -810,6 +858,25 @@
         onProgress();
         if (!activeDone) await new Promise((resolve) => setTimeout(resolve, 1500));
       }
+    } finally { activeRunning = false; }
+  }
+  async function loadActiveByWorkspace(isWanted, onProgress) {
+    activeRunning = true;
+    if (!activeAll) activeAll = [];
+    if (!activeQueue) activeQueue = [...moreBy.entries()].map(([workspaceId, cursor]) => ({ workspaceId, cursor }));
+    try {
+      while (activeQueue.length && isWanted()) {
+        const next = activeQueue[0];
+        let page;
+        try { page = await readPage(listParams({ workspaceId: next.workspaceId }), next.cursor); }
+        catch (error) { if (error.code === "invalid_result" || error.code === "not_found") { activeQueue.shift(); continue; } throw error; }
+        if (!page || page === SWITCHED) continue;
+        for (const session of page.sessions) if (!activeAll.some((one) => one.id === session.id)) activeAll.push(session);
+        if (page.nextCursor) next.cursor = page.nextCursor; else activeQueue.shift();
+        onProgress();
+        if (activeQueue.length) await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      activeDone = !activeQueue.length;
     } finally { activeRunning = false; }
   }
   // Archived sessions, read only for search: page after page, one call every 1.5 s while the search shows them.
@@ -912,7 +979,7 @@
     }
     if (!fragment.childNodes.length) fragment.append(h("p", { class: "empty-side", text: loadFailed ? "Could not list sessions." : loadedAt ? "No sessions yet." : "Loading…" }));
     else if (!perWorkspace && moreCursor()) fragment.append(button({ class: "more-side", disabled: loadingMore, onclick: (event) => { event.currentTarget.disabled = true; event.currentTarget.textContent = "Loading…"; showMore(); } }, loadingMore ? "Loading…" : "Show more sessions"));
-    else if (perWorkspace && capped) fragment.append(h("p", { class: "empty-side", text: "Showing the newest 200 sessions of each workspace." }));
+    else if (perWorkspace && capped) fragment.append(h("p", { class: "empty-side", text: "Showing the newest sessions of each workspace; search finds the rest." }));
     const focused = document.activeElement && listEl.contains(document.activeElement) ? document.activeElement : null;
     const focusRow = focused && focused.closest(".row") ? focused.closest(".row").dataset.id : null;
     const focusLabel = focused ? focused.getAttribute("aria-label") : null;
@@ -1244,7 +1311,8 @@
     try {
       const result = await call("sessions.start", params, true);
       status.textContent = "";
-      watchSessions();
+      // Its workspace is read now: the whole list again where there is one, that workspace first where the hub reads each. U57
+      if (perWorkspace && nudgeWorkspace && params.workspaceId) nudgeWorkspace(params.workspaceId); else watchSessions();
       go({ kind: "session", id: result.sessionId }, { fresh: true });
       return true;
     } catch (error) {
@@ -1265,7 +1333,6 @@
   function renderSession(id, options) {
     let session = lookup(id);
     let placeholder = !session;
-    const since = Date.now();
     if (!session && loadedAt && !(options && (options.fresh || options.restore))) { renderGone(id); return; }
     session = session || { id, title: options && options.restore ? "…" : "New session", state: "working", waiting: null, page: { available: false }, archived: false, workspaceId: prefs.compose.workspaceId };
     let mode = modeFor(session);
@@ -1314,7 +1381,8 @@
       if (!current) {
         if (!loadedAt) return;
         if (options && options.restore) { go({ kind: "new" }); return; }
-        if (options && options.fresh && Date.now() - since < 30000) return;
+        // Started from here: it stays open while the host still finds it; only `not_found` makes it "not listed". U57
+        if (options && options.fresh && !goneIds.has(id)) { checkGone(id); return; }
         renderGone(id);
         return;
       }

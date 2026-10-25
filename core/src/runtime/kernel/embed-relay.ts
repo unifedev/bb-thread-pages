@@ -1,4 +1,5 @@
-// The embedding kernel as the embedded kernel's shell: method allow-list and rewrites (`session.activity`→`sessions.snapshot`, `session.messages`→`sessions.messages`, `session.respond{answers}`→`pages.answer{respond}`), `unavailable` for the rest (02 R4.48; DESIGN §E.8).
+// The embedding kernel as the embedded kernel's shell: method allow-list and rewrites (`session.activity`→`sessions.snapshot`, `session.messages`→`sessions.messages`, `session.respond{answers}`→`pages.answer{respond}`), `storage.*` and contributed calls relayed as the embedded document's under the embed's answer token (U56), `unavailable` for the rest (02 R4.48; DESIGN §E.8).
+import { RESERVED_NAMESPACES } from "../../domain/capabilities/contributed.ts";
 import type { BridgeErrorCode } from "../../domain/errors.ts";
 import { LIMITS } from "../../domain/limits.ts";
 import { isRecord } from "../shared/protocol.ts";
@@ -22,6 +23,10 @@ export interface RelayDeps {
   now(): number;
   /** Answers through `pages.answer` under the embed's token; the manager keeps the cooldowns. */
   answer(embed: EmbedView, body: Record<string, unknown>): Promise<unknown>;
+  /** A `storage.*` or contributed call made as the embedded document, under the embed's answer token, in the document's scope. 02 R4.48 (U56) */
+  asEmbedded(embed: EmbedView, method: string, params: unknown, scope: string | null): Promise<unknown>;
+  /** Whether the embedded document has its whole reach here: this page is the built-in home or of the embedded session. 02 R4.48 (U56) */
+  whole(embed: EmbedView): Promise<boolean>;
 }
 
 export class RelayRefusal extends Error {
@@ -45,23 +50,39 @@ export class RelayRefusal extends Error {
 const FORWARDED: ReadonlySet<string> = new Set(["sessions.snapshot", "workspaces.list", "projects.list", "providers.list"]);
 /** Forwarded only within the gesture window. DR-32 */
 const NAVIGATIONS: ReadonlySet<string> = new Set(["pages.open", "sessions.openHost", "navigation.openExternal"]);
-/** Kept from the embedding roster. */
-const KEPT: ReadonlySet<string> = new Set(["context.get", "sessions.snapshot", "sessions.openHost", "providers.list", "workspaces.list", "pages.open", "navigation.openExternal", "session.activity", "session.messages", "session.respond", "session.reply", "voice.captureAndTranscribe"]);
+/** Answered for the embedded session, as its own document's calls. 02 R4.48 (U56) */
+const AS_EMBEDDED: ReadonlySet<string> = new Set(["storage.get", "storage.set", "storage.setMany"]);
+/** Kept from the embedding roster, beside every contributed entry. */
+const KEPT: ReadonlySet<string> = new Set(["context.get", "sessions.snapshot", "sessions.openHost", "providers.list", "workspaces.list", "pages.open", "navigation.openExternal", "session.activity", "session.messages", "session.respond", "session.reply", "voice.captureAndTranscribe", ...AS_EMBEDDED]);
 export const GESTURE_WINDOW_MS = 5_000;
 
-export function embeddedRoster(roster: Record<string, unknown>[]): Record<string, unknown>[] {
-  return roster.filter((entry) => typeof entry.method === "string" && KEPT.has(entry.method) && entry.contributor === undefined);
+/** What an embed lists: inside another session's page, its contributors' reads and no storage. 02 R4.48 (U56) */
+export function embeddedRoster(roster: Record<string, unknown>[], whole = true): Record<string, unknown>[] {
+  return roster.filter((entry) => {
+    if (typeof entry.method !== "string") return false;
+    if (entry.contributor !== undefined) return isContributed(entry.method) && (whole || entry.effect === "read");
+    return KEPT.has(entry.method) && (whole || !AS_EMBEDDED.has(entry.method));
+  });
+}
+
+const READS_ONLY = "Shown inside another session's page, this page can only read through its plugins; open it on its own or in the home to change anything.";
+
+/** A name outside the built-in namespaces is a contributed capability's, whether or not one is installed: the host answers `unknown_method` for one nobody declares. 07 R5.52 */
+function isContributed(method: string): boolean {
+  const dot = method.indexOf(".");
+  return dot > 0 && !RESERVED_NAMESPACES.has(method.slice(0, dot));
 }
 
 function unavailable(message: string): never {
   throw new RelayRefusal("unavailable", message);
 }
 
-/** The relay table, one call. Throws `RelayRefusal` or the embedding bridge's own error. */
-export async function relayCall(embed: EmbedView, method: string, params: unknown, deps: RelayDeps): Promise<unknown> {
+/** The relay table, one call; `scope` is the embedded document's (07 R5.81). Throws `RelayRefusal` or the embedding bridge's own error. */
+export async function relayCall(embed: EmbedView, method: string, params: unknown, deps: RelayDeps, scope: string | null = null): Promise<unknown> {
   if (method === "context.get") {
-    if (params !== null && params !== undefined) throw new RelayRefusal("invalid_params", "context.get takes no parameters");
-    return { protocolVersion: 1, session: { id: embed.sessionId, title: embed.title ?? "", workspaceId: embed.workspaceId ?? "" }, page: { revision: embed.revision, readOnly: embed.readOnly }, capabilities: embeddedRoster(await deps.roster()) };
+    // As on its own URL: nothing, null or an empty object (03 §context.get).
+    if (params !== null && params !== undefined && !(isRecord(params) && Object.keys(params).length === 0)) throw new RelayRefusal("invalid_params", "context.get takes no parameters");
+    return { protocolVersion: 1, session: { id: embed.sessionId, title: embed.title ?? "", workspaceId: embed.workspaceId ?? "" }, page: { revision: embed.revision, readOnly: embed.readOnly }, capabilities: embeddedRoster(await deps.roster(), await deps.whole(embed)) };
   }
   if (method === "session.activity") return activityOf(embed, deps);
   if (method === "session.messages") return deps.invoke("sessions.messages", { ...(isRecord(params) ? params : {}), sessionId: embed.sessionId });
@@ -85,6 +106,17 @@ export async function relayCall(embed: EmbedView, method: string, params: unknow
     return deps.invoke(method, params);
   }
   if (FORWARDED.has(method)) return deps.invoke(method, params);
+  // Its own storage and its contributors' calls, for the embedded session: the host takes the caller from the embed's answer token. 02 R4.48; 07 R5.49 (U56)
+  if (AS_EMBEDDED.has(method) || isContributed(method)) {
+    // Inside another session's page, only its contributors' reads; the host refuses the rest too. 02 R4.48 (U56)
+    if (!(await deps.whole(embed))) {
+      if (AS_EMBEDDED.has(method)) unavailable(READS_ONLY);
+      const entry = (await deps.roster()).find((one) => one.method === method);
+      if (entry && entry.effect !== "read") unavailable(READS_ONLY);
+    }
+    if (!embed.answerToken) unavailable("This page is still loading; try again in a moment.");
+    return deps.asEmbedded(embed, method, params, scope);
+  }
   if (method === "voice.captureAndTranscribe") unavailable("voice.captureAndTranscribe is not available inside an embedded page; the text-area Dictate control is.");
   return unavailable(`${method} is not available to a page shown inside another page.`);
 }

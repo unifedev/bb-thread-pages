@@ -12,6 +12,7 @@ import { boundIssue, isJsonObject, parseStrictJson, type JsonValue, type Validat
 import { LIMITS } from "../../domain/limits.ts";
 import { EMPTY_REVISION } from "../../domain/revision.ts";
 import { verifyActionToken } from "../../domain/tokens/action-token.ts";
+import { verifyAnswerToken } from "../../domain/tokens/answer-token.ts";
 import { challengeId, challengeMatches, mintChallenge, openChallenge, paramsFingerprint, type ChallengeKind, type ConfirmationBinding } from "../../domain/tokens/confirmation.ts";
 import { isRecord, openToken } from "../../domain/tokens/mac.ts";
 import type { AttachmentRef, SessionRecord } from "../../host/provider.ts";
@@ -90,6 +91,14 @@ async function eligibleRecord(ctx: ServingContext, session: string): Promise<Ses
   const { record } = access;
   if (!record.visible || record.forkOfId !== null || record.parentSessionId !== null) throw new PageError("not_found", PUBLIC_MESSAGES.ineligible);
   return record;
+}
+
+/** What an embedding kernel relays for an embedded document, as that document's own call. 02 R4.48 (U56) */
+const EMBED_RELAYED: ReadonlySet<string> = new Set(["storage.get", "storage.set", "storage.setMany"]);
+
+/** Who a contributed write was for, as the log names it: the session, and the page that embeds it when the call came through an embed. 07 R5.55 */
+function writer(caller: string, page: string): string {
+  return caller === page ? caller : `${caller} (embedded in ${page === HOME_IDENTITY ? "the home" : page})`;
 }
 
 /** Step 12: what writes into the page's own session. 02 R-K8; DESIGN §E.1 step 12 (DR-9) */
@@ -248,10 +257,26 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
       // 5. The budget: charged from here on; a call refused by the budget charges nothing. 05 R2.38a; DR-30
       release = ctx.budget.acquire({ session: token.session, document: token.path ?? ENTRY_DOCUMENT, scope }, ctx.now());
       if (!release) throw new PageError("rate_limited", PUBLIC_MESSAGES.rateLimited);
-      const home = token.session === HOME_IDENTITY;
+      // 5a. A call an embedding kernel relays for an embedded document is that document's: the caller, its storage and its document are the embed's answer token's target, which must have been issued to this page. 02 R4.48; 03 R5.62; 07 R5.49 (U56)
+      let caller = { session: token.session, path: token.path };
+      // Shown by the built-in home or by a page of its own session, the embedded document has its whole reach; shown by another session's page, only its contributors' reads: that page holds a token for any session it reads, and its own scripts can do what its embeds do (05 R3.26). 02 R4.48 (U56)
+      let whole = true;
+      if (bridgeRequest.embed !== undefined) {
+        const embed = verifyAnswerToken(bridgeRequest.embed, ctx.signingKey, ctx.now());
+        if (!embed || embed.issuedTo !== token.session) throw new PageError("confirmation_invalid", "This embed's token was not issued to this page; read the page again");
+        caller = { session: embed.target, path: embed.path };
+        whole = embed.issuedTo === embed.target || embed.issuedTo === HOME_IDENTITY;
+      }
+      session = caller.session;
+      const home = caller.session === HOME_IDENTITY;
       // 6–8. Lookup (aliases, the registry, then the contributions), the stale check, the bound and the parameters. 03 R5.2, R5.6; 05 R2.13
       const lookup = ctx.registry.get(canonicalMethod(bridgeRequest.method)) ? ctx.registry : combinedLookup(ctx.registry, await ctx.contributions.current());
-      const page = await loadPageState(ctx, token.session, token.path);
+      if (bridgeRequest.embed !== undefined) {
+        const relayed = lookup.get(canonicalMethod(bridgeRequest.method));
+        if (relayed && !relayed.contributor && !EMBED_RELAYED.has(relayed.method)) throw new PageError("invalid_request", `${relayed.method} is not relayed for an embedded page`);
+        if (relayed && !whole && !(relayed.contributor && relayed.effect === "read")) throw new PageError("unavailable", PUBLIC_MESSAGES.embedReadsOnly);
+      }
+      const page = await loadPageState(ctx, caller.session, caller.path);
       const invocation = resolveParams(bridgeRequest, lookup, page.revision);
       const spec = invocation.spec;
       const contributed = spec.contributor ? (spec as ContributedSpec) : null;
@@ -262,10 +287,10 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
       if (home && SESSIONLESS_CAPABILITIES.has(spec.method)) throw new PageError("unknown_method", PUBLIC_MESSAGES.homeNoSession);
       if (home && contributed && scope !== null) throw new PageError("invalid_params", "The built-in home page has no session folder to scope to");
       // 10. Eligibility; an archived session proceeds read-only. U21
-      const record = home ? null : await eligibleRecord(ctx, token.session);
+      const record = home ? null : await eligibleRecord(ctx, caller.session);
       if (record?.archived) page.archived = true;
       const context: BridgeContext = { serving: ctx, session: record ?? HOME_SESSION, page, requestId: bridgeRequest.id, requestOrigins: requestOrigins(request.headers), scope, request, attachments: null };
-      const binding: ConfirmationBinding = { session: token.session, revision: page.revision, requestId: bridgeRequest.id, method: spec.method, params };
+      const binding: ConfirmationBinding = { session: caller.session, revision: page.revision, requestId: bridgeRequest.id, method: spec.method, params };
       // 10a. A retry of a call this challenge already approved: the original answer, nothing done again. 05 R3.19a
       const replay = replayOf(checked.confirmation, binding);
       if (replay) return replay;
@@ -323,16 +348,15 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
       try {
         if (contributed) {
           contributedWrite = contributed.effect === "contributed-write" ? contributed : null;
-          const caller = { sessionId: home ? null : token.session, scope };
-          const result = await ctx.contributions.invoke(contributed, params, caller, bridgeRequest.id);
+          const result = await ctx.contributions.invoke(contributed, params, { sessionId: home ? null : caller.session, scope }, bridgeRequest.id);
           // Nothing else records a write no dialog saw. 07 R5.55
-          if (contributedWrite) ctx.log.info(`contributed write ${contributed.method} for ${token.session}: ok`);
+          if (contributedWrite) ctx.log.info(`contributed write ${contributed.method} for ${writer(caller.session, token.session)}: ok`);
           outcome = { result };
         } else {
           outcome = await entry!.execute(params, executeContext);
         }
       } catch (error) {
-        if (contributedWrite) ctx.log.info(`contributed write ${contributedWrite.method} for ${token.session}: ${PageError.is(error) ? error.code : "failed"}`);
+        if (contributedWrite) ctx.log.info(`contributed write ${contributedWrite.method} for ${writer(caller.session, token.session)}: ${PageError.is(error) ? error.code : "failed"}`);
         if (PageError.is(error)) throw error;
         throw mapProviderError(error, ctx.log, `bridge ${spec.method}`);
       }

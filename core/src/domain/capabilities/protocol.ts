@@ -20,6 +20,8 @@ export interface BridgeRequest {
   readonly pageRevision: string;
   /** The folder the document scoped its calls to; absent when none. 07 R5.81–R5.86 */
   readonly scope?: string;
+  /** An embedded document's `storage.*` or contributed call, relayed by the embedding kernel: that embed's answer token, from which the host takes the caller. 02 R4.48; 07 R5.49 (U56) */
+  readonly embed?: string;
 }
 
 export interface BridgeSuccess {
@@ -78,8 +80,9 @@ export function decodeBridgeRequest(input: unknown): BridgeRequest {
   const value = checked.value;
   if (!isJsonObject(value)) throw new PageError("invalid_request", "Bridge request must be an object");
   if ("files" in value) throw new PageError("invalid_request", "Files never travel in the bridge envelope");
-  const keys = Object.keys(value).sort().join(",");
-  if (keys !== "id,method,pageRevision,params,v" && keys !== "id,method,pageRevision,params,scope,v") throw new PageError("invalid_request", "Bridge request has the wrong shape");
+  const keys = Object.keys(value).filter((key) => key !== "embed" && key !== "scope").sort().join(",");
+  if (keys !== "id,method,pageRevision,params,v") throw new PageError("invalid_request", "Bridge request has the wrong shape");
+  if ("embed" in value && !(typeof value.embed === "string" && value.embed.length > 0 && value.embed.length <= LIMITS.tokenChars)) throw new PageError("invalid_request", "The bridge request's embed is not a token");
   if (value.v !== BRIDGE_PROTOCOL_VERSION) throw new PageError("unsupported_version", "Unsupported bridge protocol version");
   if (!isRequestId(value.id)) throw new PageError("invalid_request", "Invalid request id");
   if (!isMethodName(value.method)) throw new PageError("invalid_request", "Invalid method name");
@@ -88,7 +91,7 @@ export function decodeBridgeRequest(input: unknown): BridgeRequest {
   // A scope that could name anything outside the session's folder is refused before anything else. 07 R5.83
   if ("scope" in value && !isCanonicalScope(value.scope)) throw new PageError("invalid_params", `Invalid scope: ${scopeProblem(value.scope)}`);
   const base = { v: 1 as const, id: value.id, method: value.method, params: value.params as JsonValue, pageRevision: value.pageRevision };
-  return "scope" in value ? { ...base, scope: value.scope as string } : base;
+  return { ...base, ...("scope" in value ? { scope: value.scope as string } : {}), ...("embed" in value ? { embed: value.embed as string } : {}) };
 }
 
 export function safeRequestId(value: unknown): string {

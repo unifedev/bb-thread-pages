@@ -1,10 +1,70 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 870792b): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 24510e8): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.12.0 (bb plugin) — 2026-10-25
+
+The bb plugin's release of the 0.4.0 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.12.0`): contributed calls and page storage inside an
+embed, the built-in home listing every project's sessions, and `pages.open { home: true }`, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.12.0.
+
+## 0.4.0 — 2026-10-25
+
+Three changes in pages-core, so both hosts carry them:
+- inside an embed, contributed calls and page storage work for the embedded session (B-0124): spec 02 R4.48, 03
+  R5.18a, 04's guide listing, 05 R3.25 and its threat table, 07 R5.49, 08 A99 and A200, decision U56;
+- the built-in home lists every workspace's sessions (B-0123): spec 03 R5.12a, 08 A201, decision U57;
+- a page can send the reader to the host's home (B-0126): spec 03 R5.29a, 05 R2.15 and R-S12, 08 A173 and A202,
+  decision U58; and a page shown in the home may make 60 calls a minute (02 R4.49, 08 A203, decision U59).
+
+`@unifedev/pages-core` 0.4.0, `@unifedev/claude-pages` 0.4.0, the bb plugin `@unifedev/thread-pages` 1.12.0.
+
+### Changed
+
+- **Inside an embed, a page's contributed capabilities and its `storage` work for the embedded session.** Shown in
+  the built-in home's page view, or by a page of its own session, an embedded page calls its contributors'
+  capabilities (e.g. `syns.*`) and `storage.get`, `storage.set` and `storage.setMany` as it would on its own address:
+  the contributor is called with the embedded session, its workspace and the document's scope as caller, and storage
+  is the embedded session's own. Shown inside another session's page, it gets its contributors' reads only; its
+  storage and contributed writes answer `unavailable`, since that page could otherwise act as any session it reads. A
+  page whose contributor's page script shows something else in place of the page (a Syns repository's workspace)
+  therefore looks and works the same in the home and on its own address, and shows the same inside any page. The
+  embedding page's kernel relays each such call with the embed's answer token, which the host checks was issued to
+  that page; the calls count toward the embed's 30 a minute. `context.get` inside an embed lists what works there.
+  Until now all of them were refused inside an embed with `unavailable`. Tests:
+  `packages/pages-core/test/serving/contributed.test.ts` and `test/serving/storage.test.ts` (inside an embed),
+  `test/runtime/kernel/embed.test.ts` (the relay), `test/runtime/protocol.test.ts`.
+- **The built-in home lists the sessions of every workspace.** Where the host lists more than one workspace, the
+  home reads each workspace's newest sessions rather than the first rows of one list, since a host's one list
+  promises no order across workspaces (bb's comes project after project, so the home showed two or three projects).
+  Workspaces with a session working, waiting, unread or active in the last 15 minutes, the open one and one a
+  session was just started into are read every 12 s; the others in turn; near 40 calls a minute. Search reads each
+  workspace's older sessions while a query is typed. A host with one workspace keeps the single list.
+- **A session started from the home stays open.** It is no longer shown as "This session is not listed" after 30 s
+  when the list has not caught up: its workspace is read at once, and the home says it is not listed only once the
+  host answers that it is gone. Tests: `packages/pages-core/test/agent/home.test.ts`.
+
+### Added
+
+- **`pages.open({ home: true })` sends the reader to the host's home.** Beside `{ sessionId }`, it navigates the
+  reader's view in place to the host's home address: the page designated as home while there is one, otherwise the
+  built-in home page; Back returns. A page cannot reach the home any other way (top navigation is sandboxed, and
+  `navigation.openExternal` refuses the host's own addresses), and a page that remembered the designated session's id
+  broke when the home changed. Inside an embed it works right after the reader acts in it, as `pages.open` does.
+  `{ sessionId }` and `{ home: true }` together, or neither, is `invalid_params`. Tests:
+  `packages/pages-core/test/serving/bridge.test.ts`, `test/runtime/kernel/embed.test.ts`.
+- **A page shown in the built-in home may make 60 calls a minute, not 30.** The home's main view is the page the reader
+  opened there; at 30 a Syns workspace answered "Didn't open: rate_limited" when the reader flipped through files
+  quickly. Elsewhere an embedded page keeps 30 a minute. Spec 02 R4.49, 08 §Limits (`homeEmbedCallsPerMinute`) and
+  A203, decision U59. Tests: `packages/pages-core/test/runtime/kernel/embed.test.ts`.
 
 ## 1.11.0 (bb plugin) — 2026-10-23
 

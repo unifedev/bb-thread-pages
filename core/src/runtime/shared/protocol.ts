@@ -55,6 +55,8 @@ export interface BridgeRequestMessage {
   scope?: string;
   /** Structured clone beside the JSON. 03 R5.75 */
   files?: File[];
+  /** Set only by an embedding kernel relaying an embedded document's `storage.*` or contributed call: that embed's answer token, from which the host takes the caller. 02 R4.48; 07 R5.49 (U56) */
+  embed?: string;
 }
 
 export type KernelMessage =
@@ -306,8 +308,9 @@ export function isSubmitFile(value: unknown): value is SubmitFile {
 /** The shell checks every bridge request before it leaves the reader's browser. 05 R3.7, R3.9 */
 export function isBridgeRequest(value: unknown, pageRevision?: string): value is BridgeRequestMessage {
   if (!isRecord(value)) return false;
-  if (!hasKeys(value, ["v", "id", "method", "params", "pageRevision"], ["scope", "files"])) return false;
+  if (!hasKeys(value, ["v", "id", "method", "params", "pageRevision"], ["scope", "files", "embed"])) return false;
   if ("scope" in value && !isCanonicalScope(value.scope)) return false;
+  if ("embed" in value && !(typeof value.embed === "string" && value.embed.length > 0 && value.embed.length <= LIMITS.tokenChars)) return false;
   if ("files" in value && !(Array.isArray(value.files) && value.files.every(isFileLike))) return false;
   return value.v === BRIDGE_VERSION && isValidRequestId(value.id) && typeof value.method === "string" && value.method.length >= 3 && value.method.length <= LIMITS.methodNameChars && METHOD_PATTERN.test(value.method) && typeof value.pageRevision === "string" && REVISION_PATTERN.test(value.pageRevision) && (pageRevision === undefined || value.pageRevision === pageRevision);
 }

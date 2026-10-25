@@ -131,6 +131,7 @@ export const PUBLIC_MESSAGES = Object.freeze({
   rateLimited: "Too many requests from this page; try again shortly.",
   invalidSession: "A valid session id is required.",
   tokenInvalid: "This page session is invalid or expired; reload the page.",
+  embedReadsOnly: "Shown inside another session's page, this page can only read through its plugins; open it on its own or in the home to change anything.",
   confirmationRequired: "This action needs the reader's confirmation.",
   confirmationInvalid: "This confirmation is not valid for this request.",
   cancelled: "The reader declined.",

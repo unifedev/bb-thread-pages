@@ -8,6 +8,7 @@ import type { DraftRecord } from "../shared/drafts.ts";
 import { isKernelMessage, isReadyMessage, isRecord, makeFailure, type BridgeRequestMessage, type KernelMessage, type ShellMessage } from "../shared/protocol.ts";
 import type { ScrollState } from "../shared/scroll-state.ts";
 import { embeddedRoster, GESTURE_WINDOW_MS, relayCall, RelayRefusal, type EmbedView } from "./embed-relay.ts";
+import type { RelayedAs } from "./bridge-client.ts";
 import type { KernelPrimitives } from "./primitives.ts";
 import type { RecordAnswer } from "./record-client.ts";
 
@@ -32,6 +33,8 @@ export interface EmbedOptions {
 
 export interface EmbedManagerDeps {
   invoke(method: string, params?: unknown): Promise<unknown>;
+  /** An embedded document's `storage.*` or contributed call, sent through this page's channel as that document's. 02 R4.48 (U56) */
+  relay(method: string, params: unknown, as: RelayedAs): Promise<unknown>;
   /** Whether any embed is holding its refresh (typing, a pending answer, `setDirty(true)`): the page counts as dirty toward its shell meanwhile. 02 R4.47; U49 */
   setDirty(dirty: boolean): void;
   /** The host's working label, as this page's shell told it; forwarded with each embed's own state. 05 R2.26 */
@@ -117,6 +120,8 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
   let rotation = 0;
   let listening = false;
   let roster: Promise<Record<string, unknown>[]> | null = null;
+  /** This page's own session (null on the built-in home), from the same `context.get` as the roster. */
+  let ownSession: string | null | undefined;
 
   function report(embed: Embed): void {
     if (!embed.onState) return;
@@ -349,7 +354,10 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
 
   function ownRoster(): Promise<Record<string, unknown>[]> {
     roster ??= deps.invoke("context.get").then(
-      (value) => (isRecord(value) && Array.isArray(value.capabilities) ? value.capabilities.filter(isRecord) : []),
+      (value) => {
+        ownSession = isRecord(value) && isRecord(value.session) && typeof value.session.id === "string" ? value.session.id : null;
+        return isRecord(value) && Array.isArray(value.capabilities) ? value.capabilities.filter(isRecord) : [];
+      },
       (error: unknown) => {
         roster = null;
         throw error;
@@ -378,11 +386,27 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     }
   }
 
+  /** The embedded document's own storage and contributed calls, as that document: its revision, its scope, the embed's answer token. 02 R4.48 (U56) */
+  async function asEmbedded(embed: Embed, method: string, params: unknown, scope: string | null): Promise<unknown> {
+    if (!embed.answerToken || embed.revision === null) throw new RelayRefusal("unavailable", "This page is still loading; try again in a moment.");
+    // Checked again as it leaves: calls that waited on the roster were not charged when they arrived. 02 R4.49
+    if (atBound(embed)) throw new RelayRefusal("rate_limited", RATE_LIMITED);
+    charge(embed);
+    try {
+      return await deps.relay(method, params, { embed: embed.answerToken, pageRevision: embed.revision, scope });
+    } catch (error) {
+      // A token the host no longer takes is renewed by the next read, which costs nothing to the embed. 03 R5.60a
+      if (isRecord(error) && error.code === "confirmation_invalid") soon();
+      throw error;
+    }
+  }
+
   /** One budget for everything an embed can make this page spend: charged when a call leaves the kernel, so a call the relay refuses counts nothing. 02 R4.49 */
   function atBound(embed: Embed): boolean {
     const now = Date.now();
     embed.calls = embed.calls.filter((at) => now - at < 60_000);
-    return embed.calls.length >= LIMITS.embedCallsPerMinute;
+    // The built-in home's main view is the page the reader opened there; known from this page's own context.get, until then the general bound. U59
+    return embed.calls.length >= (ownSession === null ? LIMITS.homeEmbedCallsPerMinute : LIMITS.embedCallsPerMinute);
   }
   function charge(embed: Embed): void {
     embed.calls.push(Date.now());
@@ -399,7 +423,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
         charge(embed);
         return deps.invoke(method, params);
       };
-      const result = await relayCall(embed, request.method, request.params, { invoke, roster: ownRoster, now: () => Date.now(), answer: (view, body) => answer(view as Embed, body) });
+      const result = await relayCall(embed, request.method, request.params, { invoke, roster: ownRoster, now: () => Date.now(), answer: (view, body) => answer(view as Embed, body), asEmbedded: (view, method, params, scope) => asEmbedded(view as Embed, method, params, scope), whole: async (view) => (await ownRoster(), ownSession === null || ownSession === view.sessionId) }, request.scope ?? null);
       reply(embed, { v: 1, id: request.id, ok: true, result });
     } catch (error) {
       fail(embed, request.id, error);
@@ -553,6 +577,8 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     reply(embed, { kind: "thread-page:restore", nonce: embed.nonce, scroll: embed.scroll, drafts: [...embed.drafts.values()], clearedNotice: [] });
     reply(embed, { kind: "thread-page:shown" });
     reply(embed, { kind: "thread-page:voice", available: deps.voiceAvailable(), reason: null });
+    // This page's own context, once, charged to no embed: it says whether this is the built-in home, whose bound is higher. U59
+    void ownRoster().catch(() => undefined);
   }
 
   function listen(): void {

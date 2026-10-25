@@ -553,16 +553,23 @@ export const sessionsStop = spec({
   doc: { params: "`{ sessionId }`.", result: "`{ stopped }`.", notes: "Confirmed, on this page's own session too: a Stop button on your page stops your running turn once the reader confirms; the session stays and takes the next message." },
 });
 
+export type PagesOpenParams = s.Infer<typeof pagesOpenParams>;
+/** A session's page, or the host's home: exactly one. 03 R5.29a (U58) */
+const pagesOpenParams = s.refine(s.object({ sessionId: s.optional(entityId("Session id")), home: s.optional(s.literal([true], "Home")) }), exactlyOneOf("sessionId", "home"));
+
 export const pagesOpen = spec({
   method: "pages.open",
   tier: "core",
-  description: "Open another session's page in place.",
+  description: "Open another session's page, or the host's home, in place.",
   effect: "navigation",
   confirmed: false,
   implemented: true,
-  validateParams: params(sessionTarget),
+  validateParams: params(pagesOpenParams),
   validateResult: result(openedResult),
-  doc: { params: "`{ sessionId }`.", result: "`{ opened: true }`, after which the reader's view navigates in place; the back button returns here. A deleted session is `not_found`." },
+  doc: {
+    params: "`{ sessionId }`, or `{ home: true }` for the host's home.",
+    result: "`{ opened: true }`, after which the reader's view navigates in place; the back button returns here. A deleted session is `not_found`. `home` goes to whatever the home is when the reader arrives (the page designated as home, or the host's built-in one), so a link home never needs a session id.",
+  },
 });
 
 export type OpenExternalParams = s.Infer<typeof openExternalParams>;

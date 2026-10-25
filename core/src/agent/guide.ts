@@ -583,11 +583,14 @@ embedded session (an embedded activity feed reads \`session.messages\`;
 \`pages.open\`, \`sessions.openHost\`, \`navigation.openExternal\`,
 \`sessions.snapshot\`, \`sessions.messages\`, \`workspaces.list\` and
 \`providers.list\` work; \`session.respond\` with \`answers\` is carried under the
-same grant. Everything else — \`storage.*\`, \`sessions.send\`, \`sessions.start\`,
-every other \`sessions.*\` and \`workspaces.*\` method, \`pages.read\`,
-\`pages.answer\`, \`session.respond\` with a \`decision\`, voice, every
-contributed capability — rejects with \`unavailable\`, and an embed may make
-${L.embedCallsPerMinute} calls a minute. Uploads are refused inside an embed: a form with a file
+same grant. Its contributed capabilities and \`storage.*\` work for the
+embedded session when the home or a page of that same session shows it; inside
+another session's page only its contributed reads do, and \`storage.*\` and
+contributed writes reject with \`unavailable\`. Everything else —
+\`sessions.send\`, \`sessions.start\`, every other \`sessions.*\` and
+\`workspaces.*\` method, \`pages.read\`, \`pages.answer\`, \`session.respond\`
+with a \`decision\`, voice — rejects with \`unavailable\`, and an embed may make
+${L.embedCallsPerMinute} calls a minute (${L.homeEmbedCallsPerMinute} in the built-in home page). Uploads are refused inside an embed: a form with a file
 attached is not sent, and its status line tells the reader to open the page
 itself. **Embedding is one level deep:** \`embed\` called inside an embedded
 page shows a line saying so and loads nothing. So write your own page to
@@ -1028,8 +1031,9 @@ On the reader's click:
   same thing.
 - **This host's own addresses are not "another site".** \`navigation.openExternal\`
   refuses them with \`invalid_params\`, before any dialog, and so does a link to
-  one. Open another page with \`pages.open\`, a session with
-  \`sessions.openHost\` where the host has it; link your own files relatively.
+  one. Open another page with \`pages.open\`, the host's home with
+  \`pages.open({ home: true })\`, a session with \`sessions.openHost\` where the
+  host has it; link your own files relatively.
 - **\`window.open(url)\`** from a click handler opens a window with no dialog —
   but that window **stays sandboxed**: the site in it has no cookies and no
   storage, as in a frame. Fine for a plain page or a document you built; use
@@ -1268,7 +1272,7 @@ function limitsTable(input: GuideInput): string {
     ["Embeds", `${L.embedsPerPage} per page; checked every ${seconds(L.embedPollWorkingMs)} while an embedded session works or was answered in the last ${seconds(L.embedPollAfterAnswerMs)}, every ${seconds(L.embedPollMs)} otherwise; one call per tick for every ${L.pagesReadEntries}`],
     ["pages.read", `${L.pagesReadEntries} documents per call, ${mebibytes(L.pagesReadBytes)} per response; a larger single document is refused, the rest deferred`],
     ["pages.answer", `${kibibytes(L.pagesAnswerBytes)} per request`],
-    ["Calls from one embedded page", `${L.embedCallsPerMinute} a minute, then \`rate_limited\``],
+    ["Calls from one embedded page", `${L.embedCallsPerMinute} a minute (${L.homeEmbedCallsPerMinute} in the built-in home page), then \`rate_limited\``],
     ["Answer grant", `asked once per (your page → embedded session), kept until revoked; ${L.grantsPerPage} per page, ${L.grantPages} pages; answer tokens last ${hours(L.answerTokenMs)}`],
     ["Declined decision or grant", `no dialog again for ${seconds(L.declinedCooldownMs)}`],
     ["watch interval", `${seconds(L.watchDefaultMs)} default, ${seconds(L.watchMinMs)}–${minutes(L.watchMaxMs)}`],

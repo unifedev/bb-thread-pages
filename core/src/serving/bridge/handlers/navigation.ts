@@ -1,17 +1,20 @@
-// `pages.open` and `navigation.openExternal`: the host validates the destination and the trusted shell navigates — in place to a page, or after confirmation to another site in a new tab; the host's own origins are refused before any dialog (03 R5.29–R5.34; DESIGN §E.4).
-import type { OpenExternalParams } from "../../../domain/capabilities/specs.ts";
+// `pages.open` and `navigation.openExternal`: the host validates the destination and the trusted shell navigates — in place to a page or the home, or after confirmation to another site in a new tab; the host's own origins are refused before any dialog (03 R5.29–R5.34; DESIGN §E.4).
+import type { OpenExternalParams, PagesOpenParams } from "../../../domain/capabilities/specs.ts";
 import { PageError } from "../../../domain/errors.ts";
 import { externalUrlProblem } from "../../../domain/external-url.ts";
 import { existingSession, handler, quoted } from "../handler.ts";
 
-export const pagesOpen = handler<{ sessionId: string }, unknown>({
+export const pagesOpen = handler<PagesOpenParams, unknown>({
   method: "pages.open",
   async refuse(params, context) {
     // An archived or page-less session still opens: the shell shows its state. Only a deleted one is refused. 03 R5.29
-    await existingSession(context, params.sessionId);
+    if (params.sessionId !== undefined) await existingSession(context, params.sessionId);
   },
   async execute(params, context) {
-    return { result: { opened: true }, navigate: { kind: "page", url: `${context.serving.serving.base()}/page?session=${encodeURIComponent(params.sessionId)}` } };
+    const base = context.serving.serving.base();
+    // Home is the route, which serves whatever is designated when the reader arrives. 03 R5.29a, 05 R-S12 (U58)
+    const url = params.sessionId !== undefined ? `${base}/page?session=${encodeURIComponent(params.sessionId)}` : `${base}/home`;
+    return { result: { opened: true }, navigate: { kind: "page", url } };
   },
 });
 

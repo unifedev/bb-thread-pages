@@ -5,8 +5,17 @@ import { LIMITS } from "../../domain/limits.ts";
 import { checkScope } from "../../domain/scope.ts";
 import { BRIDGE_VERSION, isBridgeResponse, type BridgeRequestMessage, type BridgeResponseMessage } from "../shared/protocol.ts";
 
+/** How an embedding kernel relays an embedded document's call: as that document, under that embed's answer token. 02 R4.48 (U56) */
+export interface RelayedAs {
+  embed: string;
+  pageRevision: string;
+  scope: string | null;
+}
+
 export interface BridgeClient {
   invoke(method: string, params?: unknown): Promise<unknown>;
+  /** An embedded document's `storage.*` or contributed call, sent through this page's channel as that document's. 02 R4.48 (U56) */
+  relay(method: string, params: unknown, as: RelayedAs): Promise<unknown>;
   watch(method: string, params: unknown, listener: (value: unknown, error: unknown) => void, options?: { intervalMs?: number }): () => void;
   setScope(folder: unknown): string | null;
   scope(): string | null;
@@ -62,7 +71,7 @@ export function createBridgeClient(deps: BridgeClientDeps): BridgeClient {
   let roster: Promise<Map<string, string>> | null = null;
   const doc = deps.document;
 
-  function call(method: string, params: unknown, scopeAt: string | null): Promise<unknown> {
+  function call(method: string, params: unknown, scopeAt: string | null, as?: RelayedAs): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (typeof method !== "string" || method.length === 0) {
         reject(new ThreadPageError("invalid_request", "A method name is required"));
@@ -82,7 +91,7 @@ export function createBridgeClient(deps: BridgeClientDeps): BridgeClient {
         if (extracted.length > 0) files = extracted;
       }
       const id = deps.nextId();
-      const request: BridgeRequestMessage = { v: BRIDGE_VERSION, id, method, params: sent === undefined ? null : sent, pageRevision: deps.pageRevision, ...(scopeAt !== null ? { scope: scopeAt } : {}), ...(files ? { files } : {}) };
+      const request: BridgeRequestMessage = { v: BRIDGE_VERSION, id, method, params: sent === undefined ? null : sent, pageRevision: as ? as.pageRevision : deps.pageRevision, ...(scopeAt !== null ? { scope: scopeAt } : {}), ...(files ? { files } : {}), ...(as ? { embed: as.embed } : {}) };
       pending.set(id, { resolve, reject });
       if (!deps.send(request)) {
         pending.delete(id);
@@ -163,6 +172,7 @@ export function createBridgeClient(deps: BridgeClientDeps): BridgeClient {
 
   return {
     invoke: (method, params) => call(method, params, scope),
+    relay: (method, params, as) => call(method, params, as.scope, as),
     watch,
     setScope(folder) {
       const checked = checkScope(folder);
