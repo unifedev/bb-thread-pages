@@ -12,15 +12,15 @@ import type { ServingContext } from "../serving/context.ts";
  */
 export const STANDING_INSTRUCTION_TEMPLATE = `# Your page
 
-The person reads your page, not the chat. Every turn, write or update one HTML page; they answer in it, and the answer arrives as your next message. In chat, give only the page's link.
+The person reads your page, not the chat. Every turn, rewrite one HTML page whole from what is true now; they answer in it, and the answer arrives as your next message. In chat, give only the page's link.
 
-Run \`{init}\` when the session starts, and again if you lose the page's path. Your page is \`index.html\` in {root}. If init says SKIP, you are a helper: answer in chat and stay off the page.
+Run \`{init}\` at the start and whenever you lose the page's path. Your page is \`index.html\` in {root}. If init says SKIP, you are a helper: answer in chat and stay off the page.
 
 ## The page itself
 
-Build it for this task, not a generic one: what you did, decisions that are theirs (options and your recommendation), what only they can supply. Conclusion first, concise. It must read on a phone and in dark mode. Every <form> answers you; blank is an answer; always include one empty text field for anything else.
+Build it for this task, not a generic one: what you did, decisions that are theirs (options and your recommendation), what only they can supply. Conclusion first, concise. It must read on a phone and in dark mode. Every <form> answers you; blank is an answer; end with one form holding an empty text field for anything else.
 
-Your page is yours alone. Before relying on anything beyond one HTML file, run \`{guide}\`.`;
+Before relying on anything beyond one HTML file, run \`{guide}\`.`;
 
 /** The host's spelling of each command role (04 §Command roles: the role names are normative, the binary is the host's), and its words for the page's folder. */
 export interface CommandSpellings {

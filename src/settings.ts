@@ -39,6 +39,10 @@ export const PAST_INSTRUCTION_DEFAULTS: ReadonlySet<string> = new Set([
   // built-in text; it reads as the built-in text, so the copy moves to the short one (U54) as an untouched default would.
   "6758d43f21421e68d656b5c403bc3a6717ff208cd65888f2d01bc0eb6c2ee786",
   "b8a834fd921f346b7c36a266331f3589d87e8bc127063bfc729ff4d5f9e79b70",
+  // The short built-in text of 1.11.0–1.13.1 (U54), with its placeholders and with bb's words filled: an operator's
+  // verbatim copy moves to D-49's text as an untouched default would (B-0143).
+  "754f0dc348c338641e89447acee3c4fa56516f53ee3ba267ab678788f57c7aa3",
+  "342ea59dd696661e44eb1d76f9006726451d1f274bcec01e4599c8153cca02d6",
 ]);
 
 /** The page seed of 1.0.3, and of 1.1.0–1.2.0 (templates with `{{TITLE}}`/`{{DATE}}`); 1.3.0 onwards shipped no seed. */

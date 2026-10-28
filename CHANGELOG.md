@@ -1,10 +1,58 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` f222811): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` ba73bba): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.13.2 (bb plugin) — 2026-10-28
+
+The bb plugin's release of the 0.5.2 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.13.2`): the owner's guide batch, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.13.2.
+
+## 0.5.2 — 2026-10-28
+
+The owner's guide batch, in pages-core, so both hosts carry it (B-0143): spec 04 §The text, R6.17, R6.24, 08 A56.
+Under Tests, the fixtures are read from the protocol's tree only (B-0149) and the instruction test reads its
+committed copy only (B-0121).
+
+`@unifedev/pages-core` 0.5.2, `@unifedev/claude-pages` 0.5.2, the bb plugin `@unifedev/thread-pages` 1.13.2.
+
+### Changed
+
+- **The standing instruction tells the agent to rewrite its page whole each turn.** Its first paragraph now reads
+  "Every turn, rewrite one HTML page whole from what is true now", it says to run init "at the start and whenever you
+  lose the page's path", and it ends its form line with "end with one form holding an empty text field for anything
+  else". The sentence "Your page is yours alone." left it; the guide still teaches it in full. The text is 787 bytes
+  around its placeholders. On bb, an *Agent instruction text* that is a verbatim copy of the 1.11.0–1.13.1 built-in
+  text reads as the built-in text, so it moves to the new one; any other operator text is kept as it is.
+- **The guide keeps one composer at the bottom of the page.** *Forms* now asks for the empty text field in one
+  captured form at the bottom of the page, always visible, as how the reader starts the agent, with the page's other
+  controls joined to it by `form="<its id>"` so their picks arrive with what was typed; that field is a `<textarea>`,
+  so it takes files, and voice where the host transcribes. Tests: `packages/pages-core/test/agent/instruction.test.ts`,
+  `guide.test.ts`, `packages/bb-pages/test/provider/instruction.test.ts`.
+
+### Tests
+
+- **The fixtures are read from the protocol's tree only; this repository's own copy is gone** (B-0149). The
+  repository kept a copy of the protocol's `verify/`, made on 8 October and never kept up: it lacked fixtures 13–15 and
+  had older 06, 09 and 10, and the browser fixture runner read it whenever no folder was named, so a plain
+  `pnpm test:browser` failed 09 and 10. Every reader here (the runner, the integration tests of the core and both
+  hosts, the Claude Code host's end-to-end test, `pnpm dev` without a directory) now finds the fixtures one way
+  (`packages/pages-core/test/fixtures-dir.mjs`): `--fixtures-dir` where the reader takes it, else `PAGES_FIXTURES`,
+  else the protocol tree placed at `~/.syns/unife-pages`. A named folder without fixtures, or none found, stops the run
+  naming where it looked; nothing falls back to a stale copy. Fixture 06's "Reply with settings" probe (A189), which
+  only this copy had, is now in the protocol's fixture 06. Nothing a page or a reader sees changes. Tests:
+  `pnpm test:runner` (four new checks).
+- **The instruction test compares the standing text with its committed copy only** (B-0121). It read spec 04 from a
+  shared local checkout, so the same code passed or failed with whether that checkout was pulled. A script,
+  `packages/pages-core/scripts/check-instruction-spec.mjs`, compares the copy with spec 04 at the spec's head, and the
+  release's check step runs it. Nothing a page or a reader sees changes.
 
 ## 1.13.1 (bb plugin) — 2026-10-28
 

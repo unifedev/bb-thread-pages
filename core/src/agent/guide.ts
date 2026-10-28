@@ -135,9 +135,16 @@ the swap while it keeps focus, as \`setDirty(true)\` does; prefer a
 function purpose(): string {
   return `## What the page is for
 
-The first time there is no file: you write the whole document. Read an
-existing page before editing it; saving publishes it at once, and an open page
-reloads itself (a page with \`onPageUpdate\` is handed the new version).
+The first time there is no file: you write the whole document. Saving
+publishes it at once, and an open page reloads itself (a page with
+\`onPageUpdate\` is handed the new version).
+
+**Your page is the conversation.** It exists for the whole session, whatever
+else you build: what you did, your questions, the decisions that are theirs.
+Rewrite it whole each turn from what is true now; it keeps nothing between
+turns. When something must outlive a turn (data the reader keeps working on),
+build an app for it (*Apps in the workspace*) and link it from the page. The
+page stays, and reports on the app.
 
 Work out what this reader needs to see and do right now, and build exactly
 that. If the page would suit a different task just as well, it is not
@@ -187,9 +194,10 @@ sends. A question can therefore sit beside the thing it asks about and still
 arrive in one answer. The form's status line appears inside the form element,
 so put that element where the reader expects to send from.
 
-Always include one empty text field for anything else: the reader may want
-something none of your options cover. That field is a \`<textarea>\`, and it
-takes voice and files with no code of yours (below).
+**One composer.** Keep the empty text field in one captured form at the bottom
+of the page, always visible; it is how the reader starts you. Other controls
+join it with \`form="<its id>"\`, so their picks arrive with what was typed.
+That field is a \`<textarea>\`.
 
 **Give every form a stable \`id\`.** A submission and a draft name their form
 by \`id\`, else by \`${TITLE_ATTRIBUTE}\`, never by position. A form with neither is
