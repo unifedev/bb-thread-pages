@@ -589,7 +589,7 @@ export const navigationOpenExternal = spec({
   validateResult: result(openedResult),
   doc: {
     params: "`{ url, label? }` — http or https only.",
-    result: "`{ opened: true }`. The confirmation names the destination origin and says it opens in a new tab; the page stays. An ordinary `<a href=\"https://…\">` in your page goes through this automatically. The host's own origins are refused with `invalid_params` before any dialog: use `pages.open` or `sessions.openHost`.",
+    result: "`{ opened: true }`. The confirmation names the destination origin and says it opens in a new tab; the page stays. An ordinary `<a href=\"https://…\">` in your page goes through this automatically. A URL that is the host's own page address (`…/page?session=<id>`, or `…/home`) opens that page at its entry, in place, with no dialog, as `pages.open` (other parameters and a fragment are not carried); any other address of the host is refused with `invalid_params` before any dialog: use `pages.open` or `sessions.openHost`.",
   },
 });
 

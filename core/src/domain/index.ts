@@ -11,7 +11,7 @@ export { captureForms, firstHeading, MANUAL_ATTRIBUTE, TITLE_ATTRIBUTE } from ".
 export { matchForm, formKey, controlKey, normalizeTitle, type FormIdentity, type WantedForm } from "./forms/identity.ts";
 export { ENTRY_DOCUMENT, UPLOAD_DIR, isDocumentPath, isPartPath, directoryOf, documentKey, documentFragment, checkDocumentQuery, splitDocumentUrl, RESERVED_QUERY_NAMES } from "./document-path.ts";
 export { checkScope, isCanonicalScope, scopeProblem } from "./scope.ts";
-export { externalUrlProblem, isLoopbackHost } from "./external-url.ts";
+export { externalUrlProblem, hostPageTarget, isLoopbackHost } from "./external-url.ts";
 export { PAGE_SANDBOX, PAGE_SANDBOX_FLAGS, REFUSED_SANDBOX_FLAGS, PAGE_FRAME_ALLOW, DOCUMENT_CSP, DOCUMENT_PERMISSIONS_POLICY, SHELL_PERMISSIONS_POLICY, FILE_CSP, shellCsp } from "./sandbox.ts";
 export { createRateLimiter, createPageBudget, type RateLimiter, type PageBudget, type RateBudget, type BudgetRequest } from "./rate-limit.ts";
 export { isOwnFilePath, ownFileReference, shellFetchLimit, isOpenableInTab, isLargeMediaType, downloadName, baseName, encodeFilePath } from "./own-files.ts";

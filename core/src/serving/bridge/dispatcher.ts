@@ -1,10 +1,10 @@
-// `createDispatcher(ctx, handlers?)`: the one path every `POST /bridge` call takes, in the order of DESIGN §E.1 — reader, envelope, token, request, budget, lookup, stale, params, home, eligibility, the replay of an approved retry, cheap refusals, archived, offline, recording bar, confirm/grant/decision, execute, project, answer (05 §Confirmed effects, R3.19a; 03 §Rules for every capability, 07 §The call).
+// `createDispatcher(ctx, handlers?)`: the one path every `POST /bridge` call takes, in the order of DESIGN §E.1 — reader, envelope, token, request, budget, lookup, stale, params, the host's own page address as pages.open, home, eligibility, the replay of an approved retry, cheap refusals, archived, offline, recording bar, confirm/grant/decision, execute, project, answer (05 §Confirmed effects, R3.19a; 03 §Rules for every capability, 07 §The call).
 import { canonicalMethod, unknownMethodMessage } from "../../domain/capabilities/aliases.ts";
 import type { AnyCapabilitySpec } from "../../domain/capabilities/contract.ts";
 import type { ContributedSpec } from "../../domain/capabilities/contributed.ts";
 import { completeInvocation, decodeBridgeRequest, failure, resolveInvocation, type BridgeRequest, type BridgeTransport, type ResolvedInvocation } from "../../domain/capabilities/protocol.ts";
 import type { CapabilityLookup } from "../../domain/capabilities/registry.ts";
-import { SESSIONLESS_CAPABILITIES } from "../../domain/capabilities/specs.ts";
+import { SESSIONLESS_CAPABILITIES, type OpenExternalParams } from "../../domain/capabilities/specs.ts";
 import { ENTRY_DOCUMENT } from "../../domain/document-path.ts";
 import { PageError, PUBLIC_MESSAGES, STATUS_BY_CODE, errorText, isBridgeErrorCode, mapProviderError, type PageErrorCode } from "../../domain/errors.ts";
 import { HOME_IDENTITY, isMethodName, isRequestId, isRevision, isSessionIdentity } from "../../domain/ids.ts";
@@ -23,6 +23,7 @@ import { requestOrigins } from "../request.ts";
 import type { ApprovedCall } from "../stores.d.ts";
 import { FILE_METHODS } from "./handlers/files.ts";
 import { ALL_HANDLERS } from "./handlers/index.ts";
+import { hostPageParams } from "./handlers/navigation.ts";
 import { HOME_SESSION, type BridgeContext } from "./handler.ts";
 
 export type { BridgeEnvelope, Dispatcher };
@@ -277,7 +278,12 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
         if (relayed && !whole && !(relayed.contributor && relayed.effect === "read")) throw new PageError("unavailable", PUBLIC_MESSAGES.embedReadsOnly);
       }
       const page = await loadPageState(ctx, caller.session, caller.path);
-      const invocation = resolveParams(bridgeRequest, lookup, page.revision);
+      let invocation = resolveParams(bridgeRequest, lookup, page.revision);
+      // 8a. A link to the host's own page address is that page, opened as `pages.open` with its refusals and no dialog. 03 R5.32b
+      if (invocation.spec.method === "navigation.openExternal") {
+        const target = await hostPageParams((invocation.params as OpenExternalParams).url, ctx, request);
+        if (target) invocation = resolveParams({ ...bridgeRequest, method: "pages.open", params: target }, lookup, page.revision);
+      }
       const spec = invocation.spec;
       const contributed = spec.contributor ? (spec as ContributedSpec) : null;
       const entry = contributed ? null : byMethod.get(spec.method);

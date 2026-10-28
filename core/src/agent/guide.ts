@@ -1029,11 +1029,15 @@ On the reader's click:
   site in a **new tab** as itself, signed in as the reader is. Your page is
   never replaced. Call \`navigation.openExternal\` yourself from script for the
   same thing.
-- **This host's own addresses are not "another site".** \`navigation.openExternal\`
-  refuses them with \`invalid_params\`, before any dialog, and so does a link to
-  one. Open another page with \`pages.open\`, the host's home with
-  \`pages.open({ home: true })\`, a session with \`sessions.openHost\` where the
-  host has it; link your own files relatively.
+- **This host's own addresses are not "another site".** A link to another
+  session's page at its address on this host (\`…/page?session=<id>\`) or to the
+  host's home (\`…/home\`) opens it **in place** with no dialog, as
+  \`pages.open\` does, at the page's entry (a \`path\` or \`#part\` in the
+  link is not carried). Any other address of this host is refused with
+  \`invalid_params\`, before any dialog. From script, open another page with
+  \`pages.open\`, the host's home with \`pages.open({ home: true })\`, a session
+  with \`sessions.openHost\` where the host has it; link your own files
+  relatively.
 - **\`window.open(url)\`** from a click handler opens a window with no dialog —
   but that window **stays sandboxed**: the site in it has no cookies and no
   storage, as in a frame. Fine for a plain page or a document you built; use

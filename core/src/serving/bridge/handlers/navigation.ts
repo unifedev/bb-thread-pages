@@ -1,7 +1,10 @@
-// `pages.open` and `navigation.openExternal`: the host validates the destination and the trusted shell navigates — in place to a page or the home, or after confirmation to another site in a new tab; the host's own origins are refused before any dialog (03 R5.29–R5.34; DESIGN §E.4).
+// `pages.open` and `navigation.openExternal`: the host validates the destination and the trusted shell navigates — in place to a page or the home, or after confirmation to another site in a new tab; the host's own page address is `pages.open`, its other own addresses are refused before any dialog (03 R5.29–R5.34; DESIGN §E.4).
 import type { OpenExternalParams, PagesOpenParams } from "../../../domain/capabilities/specs.ts";
 import { PageError } from "../../../domain/errors.ts";
-import { externalUrlProblem } from "../../../domain/external-url.ts";
+import { externalUrlProblem, hostPageTarget } from "../../../domain/external-url.ts";
+import type { PagesRequest } from "../../../host/serving.ts";
+import type { ServingContext } from "../../context.ts";
+import { requestOrigins } from "../../request.ts";
 import { existingSession, handler, quoted } from "../handler.ts";
 
 export const pagesOpen = handler<PagesOpenParams, unknown>({
@@ -26,6 +29,11 @@ async function ownOrigins(context: { requestOrigins: readonly string[]; serving:
   const declared = await context.serving.serving.ownOrigins().catch(() => [] as string[]);
   own.push(...declared);
   return own;
+}
+
+/** `pages.open`'s parameters when `url` is the host's own page address on any of its origins, else null. 03 R5.32b */
+export async function hostPageParams(url: string, serving: ServingContext, request: PagesRequest): Promise<PagesOpenParams | null> {
+  return hostPageTarget(url, await ownOrigins({ requestOrigins: requestOrigins(request.headers), serving }), serving.serving.base());
 }
 
 export const navigationOpenExternal = handler<OpenExternalParams, unknown>({

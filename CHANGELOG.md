@@ -1,10 +1,39 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 24510e8): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 18ac2b7): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.12.1 (bb plugin) — 2026-10-28
+
+The bb plugin's release of the 0.4.1 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.12.1`): a link to another session's page or to the
+home opens it in place, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.12.1.
+
+## 0.4.1 — 2026-10-28
+
+One change in pages-core, so both hosts carry it: a link to the host's own page address opens that page (B-0134):
+spec 02 R4.15, 03 R5.32b, 04's guide, 08 A204.
+
+`@unifedev/pages-core` 0.4.1, `@unifedev/claude-pages` 0.4.1, the bb plugin `@unifedev/thread-pages` 1.12.1.
+
+### Fixed
+
+- **A link to another session's page, or to the home, opens it.** An ordinary `<a href>` to the host's own page
+  address — `…/page?session=<id>` or `…/home`, on any origin the reader reaches the host at — did nothing: the
+  kernel sends every link outside the page to `navigation.openExternal`, which refuses the host's own origins, and
+  the refusal was silent. The host now answers such a call as `pages.open` with that session (or the home): in
+  place, with no dialog, the back button returning, and with `pages.open`'s own refusals (a deleted session is
+  `not_found`). It works the same from a page opened on its own and from one shown inside another, on both hosts.
+  Any other address of the host is still refused before a dialog, and other sites are still asked about first. A
+  `path` or fragment in such a link is not carried yet: the page opens at its entry. Tests:
+  `packages/pages-core/test/domain/scope.test.ts` (the address) and `test/serving/bridge.test.ts` (the dispatch).
 
 ## 1.12.0 (bb plugin) — 2026-10-25
 
