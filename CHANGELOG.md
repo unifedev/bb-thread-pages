@@ -1,10 +1,66 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 3fe27f8): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` f222811): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.13.1 (bb plugin) — 2026-10-28
+
+The bb plugin's release of the 0.5.1 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.13.1`): Stop on the page's own agent works at the
+first Confirm while the agent saves, a Copy button works in Chrome and other Chromium browsers, and a document
+whose own query names `file` opens as that document, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.13.1.
+
+## 0.5.1 — 2026-10-28
+
+Three fixes in pages-core, so both hosts carry them: Stop on the page's own session works at the first Confirm while
+the agent saves (B-0120): spec 03 R5.28, 05 R2.13, R3.19, 02 R-K1, 08 A15, A49, 04's guide. A page may write the
+clipboard on the reader's press in every browser (B-0133): spec 05 R3.3b, 02 R4.43, 08 A94; fixture 09. And a
+document whose own query names `file` opens as that document on bb (B-0140), as 01 R1.12g already said.
+
+`@unifedev/pages-core` 0.5.1, `@unifedev/claude-pages` 0.5.1, the bb plugin `@unifedev/thread-pages` 1.13.1.
+
+### Fixed
+
+- **Stopping the page's own agent works at the first Confirm while the agent saves.** When the agent saved its page
+  while the reader looked at the Stop dialog, or in the moment between a save and the page updating, the confirmed
+  Stop was refused `stale_page` and the turn kept running; a retry from the updated page was refused too. A stop of
+  the page's own session now does not depend on which version of the page is open: the reader still confirms it, in
+  the host's own words, and its confirmation still holds for that one request, once and briefly. A stop of another
+  session, and every other call, is still refused `stale_page` once the page changed. The guide also says that a
+  page with `onPageUpdate` is handed its new version rather than reloaded. Tests:
+  `packages/pages-core/test/serving/bridge.test.ts` (§11a).
+- **A Copy button in a page works in Chrome, other Chromium browsers and the bb desktop app.**
+  `navigator.clipboard.writeText()` on the reader's click was refused in Chromium-based browsers, in the page and in
+  any page shown inside it, while Safari and Firefox copied. The page frame and every frame the kernel shows now carry
+  `allow="fullscreen *; clipboard-write *"`, so a click copies there too (measured in Chromium, WebKit and Firefox on
+  both hosts, and in Chrome and the bb desktop app's Browser tab on bb). A write without the reader's recent click, in that
+  frame or in a frame inside it, is still refused in every browser measured, and a page still cannot read the
+  clipboard. A page that shows another page inside it can write the clipboard in the seconds after the reader clicks
+  inside the page it shows, as Safari and Firefox already allowed. Tests:
+  `packages/pages-core/test/runtime/shell/swap.test.ts`, `test/runtime/kernel/embed.test.ts`, and fixture 09 in
+  Chromium, WebKit and Firefox.
+- **On bb, a document whose own query names `file` opens as that document.** A link, `pages.open` or a typed page
+  address to `tool.html?file=report.pdf` showed the file `report.pdf` in the frame instead of `tool.html`, and on
+  every host a `file` typed as a further parameter of the page address (`&path=tool.html&file=report.pdf`) was
+  dropped. The document now opens with `?file=report.pdf` as its own query, as with any other name the host does not
+  use itself (`session`, `path`, `render`), and keeps it when the page updates; the page's own files still load as
+  before. Claude Code opened the document already but lost its `file` at the page's next update. Tests:
+  `packages/pages-core/test/serving/routes.test.ts` (the document route, B-0140).
+
+### Tests
+
+- **The browser fixture runner no longer counts a fixture that stopped early as a pass** (B-0144). It read a fixture
+  until its rows had not changed for 2.5 s, and fixture 03's frame check waits silently for just as long, so a timer a
+  little late ended the read after R4.13 with no FAIL. A fixture that declares a complete row (01–06) is now read until
+  that row comes; one that never records it gets a FAIL row of the runner's own and the run exits 1. Nothing a page or
+  a reader sees changes. Tests: `packages/pages-core/test/browser/runner.mjs` (`pnpm test:runner`).
 
 ## 1.13.0 (bb plugin) — 2026-10-28
 

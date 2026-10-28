@@ -10,7 +10,7 @@ import { PageError, PUBLIC_MESSAGES, STATUS_BY_CODE, errorText, isBridgeErrorCod
 import { HOME_IDENTITY, isMethodName, isRequestId, isRevision, isSessionIdentity } from "../../domain/ids.ts";
 import { boundIssue, isJsonObject, parseStrictJson, type JsonValue, type Validation } from "../../domain/json/strict-json.ts";
 import { LIMITS } from "../../domain/limits.ts";
-import { EMPTY_REVISION } from "../../domain/revision.ts";
+import { EMPTY_REVISION, sha256Hex } from "../../domain/revision.ts";
 import { verifyActionToken } from "../../domain/tokens/action-token.ts";
 import { verifyAnswerToken } from "../../domain/tokens/answer-token.ts";
 import { challengeId, challengeMatches, mintChallenge, openChallenge, paramsFingerprint, type ChallengeKind, type ConfirmationBinding } from "../../domain/tokens/confirmation.ts";
@@ -46,6 +46,9 @@ interface FileParams {
   files?: { name: string; size: number; type: string }[];
   attachments?: string[];
 }
+
+/** The revision an own-session stop's challenge is bound to: no page's, so the page saving between the ask and the confirm does not matter. 05 R3.19 (B-0120) */
+const ANY_REVISION = sha256Hex("unife-pages:any-revision");
 
 /** Steps 6–8 through the domain; a parameter that breaks a byte, depth or node bound is `request_too_large` naming it, not `invalid_params`. 07 R-X3, R-X4 */
 function resolveParams(request: BridgeRequest, lookup: CapabilityLookup, revision: string): ResolvedInvocation {
@@ -278,7 +281,9 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
         if (relayed && !whole && !(relayed.contributor && relayed.effect === "read")) throw new PageError("unavailable", PUBLIC_MESSAGES.embedReadsOnly);
       }
       const page = await loadPageState(ctx, caller.session, caller.path);
-      let invocation = resolveParams(bridgeRequest, lookup, page.revision);
+      // A stop of the page's own session means the same whatever the page shows, and the reader presses it most while the agent saves: no `stale_page`, and its challenge is bound without the revision. 03 R5.28; 05 R2.13, R3.19 (B-0120)
+      const ownStop = !home && canonicalMethod(bridgeRequest.method) === "sessions.stop" && isJsonObject(bridgeRequest.params) && bridgeRequest.params.sessionId === caller.session;
+      let invocation = resolveParams(bridgeRequest, lookup, ownStop ? bridgeRequest.pageRevision : page.revision);
       // 8a. A link to the host's own page address is that page, opened as `pages.open` with its refusals and no dialog. 03 R5.32b
       if (invocation.spec.method === "navigation.openExternal") {
         const target = await hostPageParams((invocation.params as OpenExternalParams).url, ctx, request);
@@ -296,7 +301,7 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
       const record = home ? null : await eligibleRecord(ctx, caller.session);
       if (record?.archived) page.archived = true;
       const context: BridgeContext = { serving: ctx, session: record ?? HOME_SESSION, page, requestId: bridgeRequest.id, requestOrigins: requestOrigins(request.headers), scope, request, attachments: null };
-      const binding: ConfirmationBinding = { session: caller.session, revision: page.revision, requestId: bridgeRequest.id, method: spec.method, params };
+      const binding: ConfirmationBinding = { session: caller.session, revision: ownStop ? ANY_REVISION : page.revision, requestId: bridgeRequest.id, method: spec.method, params };
       // 10a. A retry of a call this challenge already approved: the original answer, nothing done again. 05 R3.19a
       const replay = replayOf(checked.confirmation, binding);
       if (replay) return replay;

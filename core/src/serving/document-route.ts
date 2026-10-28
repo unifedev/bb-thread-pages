@@ -234,7 +234,13 @@ export async function serveOwnFile(provider: ProviderHost, request: PagesRequest
   return { status: 200, headers, body: bytes };
 }
 
-/** `GET /document?session=<id>[&path=<document>][&render=…]`, the exact strategy; with `file=` the carried strategy's file variant. 05 R-S10, R-S7a */
+/**
+ * `GET /document?session=<id>[&path=<document>][&render=…]`, the exact
+ * strategy; `?session=<id>&file=<relative>` alone (no `path`, no `render`, not
+ * a poll) the carried strategy's file variant. Every document load carries
+ * `render` and every poll the poll header, so a document's own `file`
+ * parameter is the document's (B-0140). 05 R-S10, R-S7a; 01 R1.12g
+ */
 export function documentRoute(ctx: ServingContext) {
   return async (request: PagesRequest): Promise<PagesResponse> => {
     try {
@@ -242,7 +248,7 @@ export function documentRoute(ctx: ServingContext) {
       const id = request.query.get("session");
       if (!isSessionId(id)) throw new PageError("not_found", PUBLIC_MESSAGES.invalidSession);
       const file = request.query.get("file");
-      if (file !== null) {
+      if (file !== null && !request.query.has("path") && !request.query.has("render") && !isPoll(request)) {
         if (ctx.strategy.kind !== "carried") throw new PageError("not_found", PUBLIC_MESSAGES.notFound);
         const access = await ctx.sessionFor(id);
         requirePageSession(access);

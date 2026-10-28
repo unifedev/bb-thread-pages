@@ -67,8 +67,8 @@ export function splitDocumentUrl(raw: string): { path: string; query: string } {
   return mark < 0 ? { path: raw, query: "" } : { path: raw.slice(0, mark), query: raw.slice(mark) };
 }
 
-/** The host's own query names on a page address; `file` is the file variant's. 01 R1.12g */
-const ADDRESS_NAMES: ReadonlySet<string> = new Set([...RESERVED_QUERY_NAMES, "file"]);
+/** The host's own query names on a page address; a document's own `file` is its own, as the document route reads it (B-0140). 01 R1.12g */
+const ADDRESS_NAMES: ReadonlySet<string> = new Set(RESERVED_QUERY_NAMES);
 
 /** `written`, then every parameter of a page address the host does not use itself, in order (a query typed with a raw `&`). 01 R1.12g */
 export function addressQuery(params: URLSearchParams, written: string): string {

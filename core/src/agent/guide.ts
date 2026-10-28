@@ -137,7 +137,7 @@ function purpose(): string {
 
 The first time there is no file: you write the whole document. Read an
 existing page before editing it; saving publishes it at once, and an open page
-reloads itself.
+reloads itself (a page with \`onPageUpdate\` is handed the new version).
 
 Work out what this reader needs to see and do right now, and build exactly
 that. If the page would suit a different task just as well, it is not
@@ -670,7 +670,8 @@ The complete page-facing API; it is frozen and cannot be replaced.
 - \`setScope\` scopes the document's later calls to a folder inside your
   session's folder; \`storage\` keys are then that folder's own.
 - \`stale_page\` means the page changed under the call: the shell swaps in the
-  new version, or offers it while the page is dirty. **\`cancelled\` means the
+  new version, or offers it while the page is dirty, or, for a page with
+  \`onPageUpdate\`, hands it over; call again after that. **\`cancelled\` means the
   reader declined a confirmation** — a normal outcome every page calling a
   confirmed capability must handle, not an error:
 

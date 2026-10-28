@@ -15,8 +15,14 @@ export const PAGE_SANDBOX_FLAGS = ["allow-scripts", "allow-forms", "allow-popups
 export const PAGE_SANDBOX = PAGE_SANDBOX_FLAGS.join(" ");
 export const REFUSED_SANDBOX_FLAGS = ["allow-popups-to-escape-sandbox", "allow-same-origin", "allow-top-navigation", "allow-top-navigation-by-user-activation", "allow-top-navigation-to-custom-protocols", "allow-modals"] as const;
 
-/** Full screen for the page and anything it frames; WebKit needs the `*`. 05 R3.3b */
-export const PAGE_FRAME_ALLOW = "fullscreen *";
+/**
+ * Full screen and clipboard writes for the page and anything it frames; WebKit
+ * needs the `*`, Chromium refuses `writeText` on a press without
+ * `clipboard-write`. A write still needs the reader's recent press in that frame
+ * or in a frame inside it, never one in the shell or the frame around it;
+ * `clipboard-read` is not granted. 05 R3.3b (HOST_FACTS H-8, H-9)
+ */
+export const PAGE_FRAME_ALLOW = "fullscreen *; clipboard-write *";
 
 /**
  * The document's CSP: the sandbox restated; the open network (R3.11); frames
