@@ -1,5 +1,5 @@
 // One `CapabilitySpec` per built-in method of 03 (core and optional), params and result validators, guide doc paragraphs; `projectId` accepted as `workspaceId` (U34).
-import { ENTRY_DOCUMENT, isDocumentPath } from "../document-path.ts";
+import { checkDocumentUrl, ENTRY_DOCUMENT, isDocumentPath } from "../document-path.ts";
 import { externalUrlProblem } from "../external-url.ts";
 import { isEntityId, isOpaqueToken, isStorageKey } from "../ids.ts";
 import type { JsonValue } from "../json/strict-json.ts";
@@ -554,8 +554,20 @@ export const sessionsStop = spec({
 });
 
 export type PagesOpenParams = s.Infer<typeof pagesOpenParams>;
-/** A session's page, or the host's home: exactly one. 03 R5.29a (U58) */
-const pagesOpenParams = s.refine(s.object({ sessionId: s.optional(entityId("Session id")), home: s.optional(s.literal([true], "Home")) }), exactlyOneOf("sessionId", "home"));
+/** A session's page, at a document of it and a fragment if asked, or the host's home: exactly one. 03 R5.29a (U58), R5.29b */
+const pagesOpenParams = s.refine(
+  s.object({
+    sessionId: s.optional(entityId("Session id")),
+    path: s.optional(s.refine(s.string({ min: 1, max: 1024 + LIMITS.documentQueryChars, label: "Path" }), (value) => {
+      const checked = checkDocumentUrl(value);
+      return checked.ok ? null : checked.part === "path" ? "Path: is not a document of the page" : `Path: ${checked.message}`;
+    })),
+    // The text after `#`; as the address carries it (percent-encoded) and with its `#`, within the shell's bound. 01 R1.12f
+    fragment: s.optional(s.refine(s.string({ min: 1, max: LIMITS.fragmentChars - 1, pattern: /^[^#\s\u0000-\u001f\u007f-\u009f]+$/, label: "Fragment" }), (value) => (new URL(`http://h/#${value}`).hash.length > LIMITS.fragmentChars ? `Fragment: at most ${LIMITS.fragmentChars} characters in the address, its \`#\` and percent-encoding included` : null))),
+    home: s.optional(s.literal([true], "Home")),
+  }),
+  (value) => exactlyOneOf("sessionId", "home")(value) ?? (value.home && (value.path !== undefined || value.fragment !== undefined) ? "path and fragment go with sessionId, not home" : null),
+);
 
 export const pagesOpen = spec({
   method: "pages.open",
@@ -567,8 +579,8 @@ export const pagesOpen = spec({
   validateParams: params(pagesOpenParams),
   validateResult: result(openedResult),
   doc: {
-    params: "`{ sessionId }`, or `{ home: true }` for the host's home.",
-    result: "`{ opened: true }`, after which the reader's view navigates in place; the back button returns here. A deleted session is `not_found`. `home` goes to whatever the home is when the reader arrives (the page designated as home, or the host's built-in one), so a link home never needs a session id.",
+    params: "`{ sessionId, path?, fragment? }`, or `{ home: true }` for the host's home. `path` opens that document of the page, with a query if it carries one (`\"notes.html\"`, `\"tool.html?scope=a\"`), as the page's own address does; `fragment` is the place in it, without the `#` (`\"results\"`).",
+    result: "`{ opened: true }`, after which the reader's view navigates in place; the back button returns here. A deleted session is `not_found`; a `path` that is not a document of a page (a part, `uploads/`, outside the folder, a query using `session`, `path` or `render`) is `invalid_params`, while a document the page does not hold is the opened page's to show. `home` goes to whatever the home is when the reader arrives (the page designated as home, or the host's built-in one), so a link home never needs a session id.",
   },
 });
 
@@ -589,7 +601,7 @@ export const navigationOpenExternal = spec({
   validateResult: result(openedResult),
   doc: {
     params: "`{ url, label? }` — http or https only.",
-    result: "`{ opened: true }`. The confirmation names the destination origin and says it opens in a new tab; the page stays. An ordinary `<a href=\"https://…\">` in your page goes through this automatically. A URL that is the host's own page address (`…/page?session=<id>`, or `…/home`) opens that page at its entry, in place, with no dialog, as `pages.open` (other parameters and a fragment are not carried); any other address of the host is refused with `invalid_params` before any dialog: use `pages.open` or `sessions.openHost`.",
+    result: "`{ opened: true }`. The confirmation names the destination origin and says it opens in a new tab; the page stays. An ordinary `<a href=\"https://…\">` in your page goes through this automatically. A URL that is the host's own page address (`…/page?session=<id>`, or `…/home`) opens that page in place, with no dialog, as `pages.open`, at the document and place the address names (`&path=notes.html#results`); any other address of the host is refused with `invalid_params` before any dialog: use `pages.open` or `sessions.openHost`.",
   },
 });
 
@@ -768,6 +780,7 @@ export const pagesRead = spec({
           working: s.optional(s.boolean()),
           readOnly: s.optional(s.boolean()),
           answerToken: s.optional(answerToken),
+          own: s.optional(s.literal([true])),
           error: s.optional(s.object({ code: s.literal(["not_found", "unavailable", "response_too_large"]), reason: s.literal(PAGE_READ_REASONS), message: s.string({ min: 1, max: LIMITS.errorMessageChars, label: "Message" }) })),
         }),
         LIMITS.pagesReadEntries,
@@ -776,7 +789,7 @@ export const pagesRead = spec({
   ),
   doc: {
     params: `\`{ pages: [{ sessionId, path?, ifNoneMatch? }] }\` — 1 to ${LIMITS.pagesReadEntries} entries. \`path\` is a document of that page (default its entry document); \`ifNoneMatch\` is the revision you already hold.`,
-    result: `\`{ pages: [entry] }\`, one per request entry, in order, each with \`sessionId\` and \`path\` and one of: the document \`{ revision, html, title, workspaceId, working, readOnly, answerToken }\`; \`{ unchanged: true, title, workspaceId, working, readOnly, answerToken }\` when \`ifNoneMatch\` is current; \`{ deferred: true }\` when it did not fit this response — ask again; \`{ error: { code, reason, message } }\` with reason \`no_session\`, \`no_page\`, \`too_large\` or \`unreachable\`. \`readOnly\` is true for an offline copy and for an archived session.`,
+    result: `\`{ pages: [entry] }\`, one per request entry, in order, each with \`sessionId\` and \`path\` and one of: the document \`{ revision, html, title, workspaceId, working, readOnly, answerToken }\`; \`{ unchanged: true, title, workspaceId, working, readOnly, answerToken }\` when \`ifNoneMatch\` is current; \`{ deferred: true }\` when it did not fit this response — ask again; \`{ error: { code, reason, message } }\` with reason \`no_session\`, \`no_page\`, \`too_large\` or \`unreachable\`. \`readOnly\` is true for an offline copy and for an archived session. \`own: true\` marks a document of the calling page's own session.`,
     notes: `\`threadPage.embed\` calls this for you; call it yourself only to quote or summarise another page. \`html\` is the document as the host serves it for a sandboxed \`srcdoc\` frame, with the kernel in embedded mode. One response holds at most ${mebibytes(LIMITS.pagesReadBytes)}: a larger single document is refused for that entry, never truncated, and the rest are deferred; the first entry is never deferred.`,
   },
 });

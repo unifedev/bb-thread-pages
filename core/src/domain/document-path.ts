@@ -1,4 +1,4 @@
-// `ENTRY_DOCUMENT`, `UPLOAD_DIR`, `isDocumentPath`, `isPartPath`, `directoryOf`, `documentKey`, `documentFragment`, `checkDocumentQuery`, `RESERVED_QUERY_NAMES` (`session`, `path`, `render`).
+// `ENTRY_DOCUMENT`, `UPLOAD_DIR`, `isDocumentPath`, `isPartPath`, `directoryOf`, `documentKey`, `documentFragment`, `checkDocumentQuery`, `RESERVED_QUERY_NAMES` (`session`, `path`, `render`), `addressQuery`, `addressDocumentUrl`, `checkDocumentUrl`.
 import { LIMITS } from "./limits.ts";
 
 /** The entry document of a page. 01 §The page root */
@@ -65,4 +65,32 @@ export function checkDocumentQuery(value: unknown): QueryCheck {
 export function splitDocumentUrl(raw: string): { path: string; query: string } {
   const mark = raw.indexOf("?");
   return mark < 0 ? { path: raw, query: "" } : { path: raw.slice(0, mark), query: raw.slice(mark) };
+}
+
+/** The host's own query names on a page address; `file` is the file variant's. 01 R1.12g */
+const ADDRESS_NAMES: ReadonlySet<string> = new Set([...RESERVED_QUERY_NAMES, "file"]);
+
+/** `written`, then every parameter of a page address the host does not use itself, in order (a query typed with a raw `&`). 01 R1.12g */
+export function addressQuery(params: URLSearchParams, written: string): string {
+  const folded = [...params.entries()].filter(([name]) => !ADDRESS_NAMES.has(name)).map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value).replace(/%2F/gi, "/")}`);
+  if (folded.length === 0) return written;
+  return `${written && written !== "?" ? `${written}&` : "?"}${folded.join("&")}`;
+}
+
+/** The document URL a page address names: `path` (`path=tool.html?scope=a`) with the parameters it does not use itself. 01 R1.12d, R1.12g */
+export function addressDocumentUrl(params: URLSearchParams): string {
+  const { path, query } = splitDocumentUrl(params.get("path") ?? "");
+  return `${path}${addressQuery(params, query)}`;
+}
+
+export type DocumentUrlCheck = { readonly ok: true; readonly path: string | null; readonly query: string } | { readonly ok: false; readonly part: "path" | "query"; readonly message: string };
+
+/** A document URL as a page address carries it: no path or `index.html` is the entry (`path: null`), else a document of the page, with a query R1.12g allows. 01 R1.12d, R1.12e, R1.12g */
+export function checkDocumentUrl(raw: string): DocumentUrlCheck {
+  const { path, query } = splitDocumentUrl(raw);
+  const checked = checkDocumentQuery(query);
+  if (!checked.ok) return { ok: false, part: "query", message: checked.message };
+  if (path === "" || path === ENTRY_DOCUMENT) return { ok: true, path: null, query: checked.query };
+  if (!isDocumentPath(path)) return { ok: false, part: "path", message: "is not a document of the page" };
+  return { ok: true, path, query: checked.query };
 }

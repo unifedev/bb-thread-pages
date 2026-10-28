@@ -1,4 +1,6 @@
-// `externalUrlProblem(url, ownOrigins)` (03 R5.32, R5.32a): http(s) only; own-origin folding incl. loopback names and the all-hosts-on-port rule. `hostPageTarget` (R5.32b): the host's own page address read as `pages.open`.
+// `externalUrlProblem(url, ownOrigins)` (03 R5.32, R5.32a): http(s) only; own-origin folding incl. loopback names and the all-hosts-on-port rule. `hostPageTarget` (R5.32b): the host's own page address read as `pages.open`, with its document and fragment (R5.29b).
+
+import { addressDocumentUrl } from "./document-path.ts";
 
 const LOOPBACK_V4 = /^127\.(?:\d{1,3}\.){2}\d{1,3}$/;
 
@@ -80,13 +82,18 @@ export function externalUrlProblem(value: unknown, ownOrigins: readonly string[]
 /**
  * The host's own page address as `pages.open` reads it: on an own origin,
  * `<base>/page` with exactly one non-empty `session` is that session's page,
- * `<base>/home` the home; anything else is null. spec 03 R5.32b
+ * at the document the address names (read as the page route reads it) and
+ * its fragment; `<base>/home` the home; anything else is null. Whether the
+ * document is one is `pages.open`'s parameters' to refuse. spec 03 R5.32b, R5.29b
  */
-export function hostPageTarget(value: unknown, ownOrigins: readonly string[], base: string): { sessionId: string } | { home: true } | null {
+export function hostPageTarget(value: unknown, ownOrigins: readonly string[], base: string): { sessionId: string; path?: string; fragment?: string } | { home: true } | null {
   const parsed = httpUrl(value);
   if (!parsed || !isOwnOrigin(parsed, ownOrigins)) return null;
   if (parsed.pathname === `${base}/home`) return { home: true };
   if (parsed.pathname !== `${base}/page`) return null;
   const sessions = parsed.searchParams.getAll("session");
-  return sessions.length === 1 && sessions[0] ? { sessionId: sessions[0] } : null;
+  if (sessions.length !== 1 || !sessions[0]) return null;
+  const path = addressDocumentUrl(parsed.searchParams);
+  const fragment = parsed.hash.slice(1);
+  return { sessionId: sessions[0], ...(path ? { path } : {}), ...(fragment ? { fragment } : {}) };
 }

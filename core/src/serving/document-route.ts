@@ -1,5 +1,5 @@
 // `GET /page/<id>/<document>` or `GET /document`: render token check, assembled document with kernel injected, ETag; the poll variant (`X-Pages-Poll`) and the carried strategy's file variant (05 R2.11–R2.13, R2.17, R2.25, R-S7a, R-S10; DESIGN §C.3, §F.3, P3).
-import { checkDocumentQuery, directoryOf, documentKey, ENTRY_DOCUMENT, isDocumentPath, RESERVED_QUERY_NAMES, splitDocumentUrl } from "../domain/document-path.ts";
+import { addressDocumentUrl, addressQuery, checkDocumentQuery, checkDocumentUrl, directoryOf, documentKey, ENTRY_DOCUMENT, isDocumentPath } from "../domain/document-path.ts";
 import { PageError, PUBLIC_MESSAGES } from "../domain/errors.ts";
 import { injectKernel } from "../domain/html/document.ts";
 import { escapeHtml } from "../domain/html/escape.ts";
@@ -23,33 +23,21 @@ import { requireReader } from "./request.ts";
 import { loadPageView, requirePageSession, type PageView } from "./session-access.ts";
 import { voiceAvailability } from "./voice.ts";
 
-/** The host's own query names on a document address; `file` is the file variant's. 01 R1.12g */
-const ADDRESS_NAMES: ReadonlySet<string> = new Set([...RESERVED_QUERY_NAMES, "file"]);
-
-function foldQuery(params: URLSearchParams, written: string): string {
-  const folded = [...params.entries()].filter(([name]) => !ADDRESS_NAMES.has(name)).map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value).replace(/%2F/gi, "/")}`);
-  if (folded.length === 0) return written;
-  return `${written && written !== "?" ? `${written}&` : "?"}${folded.join("&")}`;
-}
-
 /**
  * The document a page address names: `path` is its path and query
  * (`path=tool.html?scope=a`); a query typed with a raw `&` arrives as further
  * parameters, which are the document's, in order. 01 R1.12d, R1.12g
  */
 export function documentAddressFrom(params: URLSearchParams): { path: string | null; query: string } {
-  const { path, query: written } = splitDocumentUrl(params.get("path") ?? "");
-  const query = foldQuery(params, written);
-  const checked = checkDocumentQuery(query);
-  if (!checked.ok) throw new PageError("invalid_request", `That address's query cannot be carried: ${checked.message}.`);
-  if (path === "" || path === ENTRY_DOCUMENT) return { path: null, query: checked.query };
-  if (!isDocumentPath(path)) throw new PageError("not_found", "That is not a document of this page.");
-  return { path: documentKey(path), query: checked.query };
+  const checked = checkDocumentUrl(addressDocumentUrl(params));
+  if (checked.ok) return { path: checked.path, query: checked.query };
+  if (checked.part === "query") throw new PageError("invalid_request", `That address's query cannot be carried: ${checked.message}.`);
+  throw new PageError("not_found", "That is not a document of this page.");
 }
 
 /** The document's own query on a document load: every parameter the host does not use itself. 01 R1.12g */
 export function documentQueryFrom(params: URLSearchParams): string {
-  const checked = checkDocumentQuery(foldQuery(params, ""));
+  const checked = checkDocumentQuery(addressQuery(params, ""));
   return checked.ok ? checked.query : "";
 }
 

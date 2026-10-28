@@ -1,7 +1,7 @@
 // The shell↔server HTTP body and header types (DESIGN §C.3): JSON everywhere, file bytes as base64 (DR-1).
 import type { BridgeErrorCode, PageErrorCode } from "../../domain/errors.ts";
 import type { BridgeRequest, BridgeResponse, BridgeTransport, NavigationDirective } from "../../domain/capabilities/protocol.ts";
-import type { Delivery, GrantSummary } from "./protocol.ts";
+import type { Delivery, GrantSummary, SubmitFrame } from "./protocol.ts";
 
 export type { BridgeRequest, BridgeResponse, BridgeTransport, NavigationDirective };
 
@@ -46,6 +46,8 @@ export interface SubmitBody {
   answers: { name: string; label: string; value: string | string[] | boolean }[];
   /** As `/upload` returned them. */
   files: { field: string; name: string; path: string; sizeBytes: number; transcript?: string | null }[];
+  /** Sent from a frame of the page's own session. 05 R2.32; 02 R4.48a */
+  frame?: SubmitFrame;
 }
 
 export type SubmitResponse =

@@ -16,7 +16,11 @@ export const pagesOpen = handler<PagesOpenParams, unknown>({
   async execute(params, context) {
     const base = context.serving.serving.base();
     // Home is the route, which serves whatever is designated when the reader arrives. 03 R5.29a, 05 R-S12 (U58)
-    const url = params.sessionId !== undefined ? `${base}/page?session=${encodeURIComponent(params.sessionId)}` : `${base}/home`;
+    if (params.sessionId === undefined) return { result: { opened: true }, navigate: { kind: "page", url: `${base}/home` } };
+    // The document and place ride the page address as the shell writes it; the shell opens them. 03 R5.29b, 01 R1.12d, R1.12f
+    const query = new URLSearchParams({ session: params.sessionId });
+    if (params.path !== undefined) query.set("path", params.path);
+    const url = `${base}/page?${query}${params.fragment !== undefined ? `#${params.fragment}` : ""}`;
     return { result: { opened: true }, navigate: { kind: "page", url } };
   },
 });

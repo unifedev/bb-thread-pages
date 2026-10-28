@@ -35,6 +35,8 @@ export interface SubmissionToDeliver {
   readonly action: string | null;
   readonly answers: readonly Answer[];
   readonly files: readonly SubmissionFile[];
+  /** The title of the frame of the page's own session the form was in. 02 R4.42a */
+  readonly frame?: string | null;
 }
 
 export interface Delivered {
@@ -109,11 +111,12 @@ export async function deliverReply(ctx: ServingContext, args: { target: string; 
  * replays the first outcome. `stale_page` only when no form matches.
  * 05 R2.32–R2.37, R-S11; 03 R5.61, R5.63; 02 R-K5, R-K6
  */
-export async function deliverSubmission(ctx: ServingContext, args: { target: string; path: string | null; sender: Sender; submission: SubmissionToDeliver; requestId: string; pathForAgent?: (relative: string) => string }): Promise<DeliveredSubmission> {
+export async function deliverSubmission(ctx: ServingContext, args: { target: string; path: string | null; sender: Sender; submission: SubmissionToDeliver; requestId: string; pathForAgent?: (relative: string) => string; held?: { revision: string } }): Promise<DeliveredSubmission> {
   const { submission, target, sender } = args;
-  const print = fingerprint({ writtenAgainst: submission.writtenAgainst, title: submission.title, formId: submission.formId, formTitle: submission.formTitle, action: submission.action, answers: submission.answers as unknown as JsonValue, files: submission.files.map((file) => ({ field: file.field, name: file.name, path: file.path, sizeBytes: file.sizeBytes })) });
+  const print = fingerprint({ writtenAgainst: submission.writtenAgainst, title: submission.title, formId: submission.formId, formTitle: submission.formTitle, action: submission.action, answers: submission.answers as unknown as JsonValue, files: submission.files.map((file) => ({ field: file.field, name: file.name, path: file.path, sizeBytes: file.sizeBytes })), frame: submission.frame ?? null });
   const deliver = async (): Promise<{ delivery: "started" | "queued" | "steered"; matchedRevision: string; revisionChanged: boolean }> => {
-    const match = await matchSubmissionForm(ctx.pages, target, args.path, { formId: submission.formId, formTitle: submission.formTitle, writtenAgainst: submission.writtenAgainst, fields: submission.answers.map((answer) => answer.name) });
+    // A form of an `html` frame is in no stored document: the page holds it, so it is answered against the page's current revision. 05 R2.32; 02 R4.48a
+    const match = args.held ? { form: true, revision: args.held.revision } : await matchSubmissionForm(ctx.pages, target, args.path, { formId: submission.formId, formTitle: submission.formTitle, writtenAgainst: submission.writtenAgainst, fields: submission.answers.map((answer) => answer.name) });
     if (match.form === null) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
     const revisionChanged = submission.writtenAgainst !== match.revision;
     const pathForAgent =
@@ -123,7 +126,7 @@ export async function deliverSubmission(ctx: ServingContext, args: { target: str
           throw mapProviderError(error, ctx.log, "sessions.storage");
         })
       ).pathForAgent;
-    const text = formatSubmissionMessage({ title: submission.title, action: submission.action, answers: submission.answers, files: submission.files }, pathForAgent, framingFor(sender, target, revisionChanged));
+    const text = formatSubmissionMessage({ title: submission.title, frame: submission.frame ?? null, action: submission.action, answers: submission.answers, files: submission.files }, pathForAgent, framingFor(sender, target, revisionChanged));
     const sent = await send(ctx, target, text, "queue", sender, args.requestId);
     return { delivery: sent.delivery, matchedRevision: match.revision, revisionChanged };
   };

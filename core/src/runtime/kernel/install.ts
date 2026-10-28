@@ -8,7 +8,8 @@ import { createBridgeClient } from "./bridge-client.ts";
 import { createChannel } from "./channel.ts";
 import { createDirtyTracker } from "./dirty.ts";
 import { createDrafts } from "./drafts.ts";
-import { createEmbedManager, EMBEDDED_FILES_REFUSAL } from "./embed.ts";
+import { createEmbedManager } from "./embed.ts";
+import { kernelSource } from "./frame-document.ts";
 import { buildIntent, capturedForms, clearStatusOverride, fileLimitProblem, formsReachedFrom, isManualForm, lockForm, newSubmissionId, ownerForm, prepareForm, setDeliveryStatus, setStatus, setUpdateStatus, tagOf, unlockForm, type FormControl } from "./forms.ts";
 import { createLargeMedia } from "./large-media.ts";
 import { createPageUpdates } from "./page-update.ts";
@@ -72,6 +73,8 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   const session = createSessionState(doc);
   const bridgeDeps = { pageRevision: config.pageRevision, send: (request: BridgeRequestMessage) => send(request), nextId: () => channel.nextId("b"), document: doc };
   const bridge = createBridgeClient(bridgeDeps);
+  // An `html` frame starts in the scope the page gave it. 02 R4.42a
+  if (config.scope !== undefined) bridge.setScope(config.scope);
   const initialCause: ReadOnlyCause = config.archived ? "archived" : config.stale ? "offline" : null;
   const readOnly = createReadOnlyController(doc, initialCause);
   const recorder = createRecordClient((message) => send(message), () => channel.nextId("r"));
@@ -79,7 +82,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   const drafts = createDrafts(win, draftsDeps);
   const scroll = installScroll(win, prim, (state) => send({ kind: "thread-page:scroll", state }));
   const restorer = createRestorer(win, { drafts, scroll, send });
-  const largeMedia = createLargeMedia(win, { send, nextId: () => channel.nextId("f"), embedded });
+  const largeMedia = createLargeMedia(win, { send, nextId: () => channel.nextId("f") });
   const pageUpdates = createPageUpdates(win, {
     send,
     // The document stays, its authority moves on: answers, calls and drafts are written against the version handed over. 02 R4.66
@@ -110,17 +113,20 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
             send({ kind: "thread-page:embed-dirty", dirty: value });
           }
         },
-        embedded,
         send,
+        nextId: (prefix) => channel.nextId(prefix),
+        // Read now, before any script of the page runs: an `html` frame gets this kernel, whatever the page does later.
+        kernelSource: kernelSource(doc),
+        config: () => config,
         dictate: (prompt, fromControl) => recorder.request("dictate", { prompt, fromControl }),
         voiceAvailable: () => voiceAvailable,
         workingLabel: () => session.label(),
+        working: () => session.working(),
         prim,
       })
     : null;
 
   const textAreas = createTextAreaControls(win, {
-    embedded,
     uploads: config.uploads !== false,
     isReadOnly: () => readOnly.isReadOnly(),
     dictate: (prompt, fromControl) => recorder.request("dictate", { prompt, fromControl }),
@@ -129,10 +135,10 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       dirty.touch(form);
     },
   });
-  installAudioInputs(win, { embedded, voiceAvailable: () => voiceAvailable, record: () => recorder.request("audio") });
+  installAudioInputs(win, { uploads: config.uploads !== false, voiceAvailable: () => voiceAvailable, record: () => recorder.request("audio") });
 
-  // The page's own `fetch` of a relative file goes through the shell where the file route refuses the frame. 05 R-S7a
-  if (!config.ownFilesByFrame && !embedded) {
+  // The page's own `fetch` of a relative file goes through the shell where the file route refuses the frame; inside another session's page the embedding kernel refuses it. 05 R-S7a; 02 R4.48a
+  if (!config.ownFilesByFrame) {
     installOwnFetch(win, {
       documentPath: config.documentPath,
       rootUrl,
@@ -300,11 +306,8 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       const target = form as HTMLFormElement;
       if (readOnly.isReadOnly() || pendingByForm.has(target)) return;
       const submissionId = newSubmissionId();
+      // Inside another session's page the embedding kernel refuses files (02 R4.51); everywhere else they upload.
       const intent = buildIntent(target, (event as SubmitEvent).submitter ?? null, submissionId, textAreas.filesOf(target));
-      if (embedded && intent.files.length > 0) {
-        setStatus(target, EMBEDDED_FILES_REFUSAL);
-        return;
-      }
       const problem = fileLimitProblem(intent.files);
       if (problem) {
         setStatus(target, problem);
@@ -323,7 +326,7 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
 
   installAnchorInterception(
     doc,
-    { documentPath: config.documentPath, rootUrl, embedded },
+    { documentPath: config.documentPath, rootUrl },
     {
       document: (path, fragment, linked) => {
         const query = withoutOwnHostParameters(linked);
@@ -351,6 +354,8 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   );
 
   function onShellMessage(message: ShellMessage): void {
+    // An answer to what a frame of this page's own session sent through this page. 02 R4.48a
+    if (embeds?.receive(message)) return;
     if (!("kind" in message)) {
       bridge.receive(message);
       return;
@@ -362,11 +367,12 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       case "thread-page:source-state":
         readOnly.apply(message.archived ? "archived" : message.stale ? "offline" : null, message.reason);
         textAreas.update();
+        embeds?.setSource({ stale: message.stale, archived: message.archived, reason: message.reason });
         return;
       case "thread-page:session-state": {
-        const relabelled = message.label !== session.label();
+        const changed = message.label !== session.label() || message.working !== session.working();
         session.apply(message.working, message.label);
-        if (relabelled) embeds?.setWorkingLabel();
+        if (changed) embeds?.setSession();
         return;
       }
       case "thread-page:update":

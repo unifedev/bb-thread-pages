@@ -1,4 +1,5 @@
 // `POST /submit`: parse, token, budget, the session's state, then the one delivery path of `deliverSubmission` — form match in the current document, idempotency, wording, `matchedRevision` (05 R2.32–R2.37, R-S11; 02 R-K5, §The answer wording; DESIGN §C.3, §D.4).
+import { documentKey } from "../domain/document-path.ts";
 import { PageError, PUBLIC_MESSAGES } from "../domain/errors.ts";
 import { LIMITS } from "../domain/limits.ts";
 import { parseSubmission } from "../domain/submissions/parse.ts";
@@ -35,12 +36,15 @@ export function submitRoute(ctx: ServingContext) {
       if (access.archived) throw new PageError("unavailable", PUBLIC_MESSAGES.archived, { reason: "archived" });
       const page = await ctx.pages.load(session, token.path);
       if (page.stale) throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy, { reason: "offline" });
+      // From a frame of the page's own session: matched in that frame's document of this session, or, for an `html` frame, in none. 05 R2.32; 02 R4.48a
+      const frame = submission.frame;
       const delivered = await deliverSubmission(ctx, {
         target: session,
-        path: token.path,
+        path: frame?.path ? documentKey(frame.path) : token.path,
         sender: { id: session, label: sessionLabel(access.record.title) },
         requestId: submission.submissionId,
-        submission: { submissionId: submission.submissionId, title: submission.title, writtenAgainst: submission.writtenAgainst, formId: submission.formId, formTitle: submission.formTitle, action: submission.action, answers: submission.answers, files: submission.files },
+        submission: { submissionId: submission.submissionId, title: submission.title, writtenAgainst: submission.writtenAgainst, formId: submission.formId, formTitle: submission.formTitle, action: submission.action, answers: submission.answers, files: submission.files, frame: frame?.title ?? null },
+        ...(frame && !frame.path ? { held: { revision: page.revision } } : {}),
       });
       return json(200, { ok: true, ...delivered });
     } catch (error) {

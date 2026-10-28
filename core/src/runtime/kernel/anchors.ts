@@ -15,7 +15,6 @@ export interface AnchorContext {
   documentPath: string;
   /** The page root's URL (ends with `/`), where files are served by URL; null when carried. */
   rootUrl: string | null;
-  embedded: boolean;
 }
 
 /** Schemes handed to the reader's own handlers as a popup. 02 R4.15 */
@@ -32,8 +31,6 @@ function ownDecision(path: string, hash: string, search: string, anchor: HTMLAnc
   if (!isOwnFilePath(path)) return { kind: "block" };
   const download = anchor.hasAttribute("download");
   if (isDocumentPath(path) && !download) return { kind: "document", path, fragment: documentFragment(hash), query: search };
-  // Inside an embed the shell is not this page's: such a link does nothing. 02 R4.50
-  if (context.embedded) return { kind: "block" };
   return { kind: "file", path, download, name: download ? downloadName(anchor.getAttribute("download")) : null };
 }
 

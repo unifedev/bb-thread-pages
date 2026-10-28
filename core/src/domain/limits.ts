@@ -180,6 +180,8 @@ export const LIMITS = Object.freeze({
   pagesAnswerBytes: 96 * 1024,
   /** Embeds on one page; further ones show a placeholder with status `unavailable`. 02 R4.44 */
   embedsPerPage: 32,
+  /** `html` frames one inside another below a page; a deeper one shows a placeholder with status `unavailable`. 02 R4.42a */
+  frameDepth: 4,
   /** Embed refresh while the embedded session works or was just answered. 02 R4.44 */
   embedPollWorkingMs: 3_000,
   /** Embed refresh otherwise; paused hidden; one `pages.read` call per tick per 16 embeds. 02 R4.44 */

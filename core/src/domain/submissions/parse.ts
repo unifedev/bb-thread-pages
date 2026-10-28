@@ -1,5 +1,5 @@
 // `parseSubmission(body)` → `Submission` incl. `writtenAgainst`, `formId?`, `formTitle?`; bounds (08); `isSafeUploadName`.
-import { UPLOAD_DIR } from "../document-path.ts";
+import { isDocumentPath, UPLOAD_DIR } from "../document-path.ts";
 import { isRevision, isSubmissionId } from "../ids.ts";
 import { LIMITS } from "../limits.ts";
 
@@ -21,6 +21,12 @@ export interface SubmissionFile {
   readonly transcript?: string | null;
 }
 
+/** A frame of the page's own session the form was in: its title, and its document when it is one of the page's (a `{ sessionId }` frame); none for an `html` frame. 02 R4.48a; 05 R2.32 */
+export interface SubmissionFrame {
+  readonly title: string | null;
+  readonly path: string | null;
+}
+
 export interface Submission {
   readonly actionToken: string;
   readonly submissionId: string;
@@ -33,6 +39,7 @@ export interface Submission {
   readonly action: string | null;
   readonly answers: readonly Answer[];
   readonly files: readonly SubmissionFile[];
+  readonly frame: SubmissionFrame | null;
 }
 
 /** A host-generated upload name: `<yyyymmdd>-<hhmmss>-<6 hex>-<suffix>`, the suffix reduced to `[A-Za-z0-9._-]`, not starting with a dot. 02 R4.21; DR-42 */
@@ -50,7 +57,7 @@ function optionalText(value: unknown, max: number): string | null | false {
 export function parseSubmission(value: unknown): Submission | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const input = value as Record<string, unknown>;
-  const allowed = new Set(["actionToken", "submissionId", "writtenAgainst", "formId", "formTitle", "title", "action", "answers", "files"]);
+  const allowed = new Set(["actionToken", "submissionId", "writtenAgainst", "formId", "formTitle", "title", "action", "answers", "files", "frame"]);
   if (Object.keys(input).some((key) => !allowed.has(key))) return null;
   if (
     typeof input.actionToken !== "string" ||
@@ -69,6 +76,8 @@ export function parseSubmission(value: unknown): Submission | null {
   const formTitle = optionalText(input.formTitle, 300);
   const action = optionalText(input.action, LIMITS.answerValueChars);
   if (formId === false || formTitle === false || action === false) return null;
+  const frame = parseFrame(input.frame);
+  if (frame === false) return null;
 
   const answers: Answer[] = [];
   let total = input.title.length + (action?.length ?? 0);
@@ -114,7 +123,18 @@ export function parseSubmission(value: unknown): Submission | null {
     }
   }
 
-  return { actionToken: input.actionToken, submissionId: input.submissionId, writtenAgainst: input.writtenAgainst, formId, formTitle, title: input.title, action, answers, files };
+  return { actionToken: input.actionToken, submissionId: input.submissionId, writtenAgainst: input.writtenAgainst, formId, formTitle, title: input.title, action, answers, files, frame };
+}
+
+function parseFrame(value: unknown): SubmissionFrame | null | false {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) return false;
+  const frame = value as Record<string, unknown>;
+  if (Object.keys(frame).some((key) => key !== "title" && key !== "path")) return false;
+  const title = optionalText(frame.title, 300);
+  if (title === false) return false;
+  if (frame.path !== undefined && frame.path !== null && !isDocumentPath(frame.path)) return false;
+  return { title, path: typeof frame.path === "string" ? frame.path : null };
 }
 
 function isAnswerValue(value: unknown): value is AnswerValue {

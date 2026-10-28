@@ -1,10 +1,57 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 18ac2b7): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 3fe27f8): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.13.0 (bb plugin) — 2026-10-28
+
+The bb plugin's release of the 0.5.0 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.13.0`): a page shows a document it holds as a frame
+of its own session, which works as the page itself, and `pages.open` opens another page at a document and a place,
+from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.13.0.
+
+## 0.5.0 — 2026-10-28
+
+Two changes in pages-core, so both hosts carry them: a frame of the page's own session is the page (B-0136): spec 02
+R4.42a, R4.48a (R4.44, R4.48–R4.53 now about another session's page), 03 R5.59a, 05 R2.32, 04's guide, 08 A101,
+A104, A131, A205; fixture 15. And `pages.open` takes a document and a fragment (B-0135): spec 03 R5.29b, R5.32b,
+01 R1.12d, 08 A206.
+
+`@unifedev/pages-core` 0.5.0, `@unifedev/claude-pages` 0.5.0, the bb plugin `@unifedev/thread-pages` 1.13.0.
+
+### Added
+
+- **A page can show a document it holds, and that frame works as the page.** `threadPage.embed(target, { html,
+  scope, title, onState })` shows `html` in a frame with the page's own kernel and its plugins' page scripts in front
+  of it; `scope` is the folder its calls are about, `title` names it in its form answers. Inside it everything works
+  as on the page: forms upload their files to `uploads/`, text areas offer Attach (and Dictate where the host has
+  voice), a voice-note input records, every capability the page may call works with `files`, under the host's own
+  confirmations and the page's own budget, `storage` and plugin calls carry the frame's scope, and the frame may embed
+  further, up to 4 frames deep. Its form answers reach the page's own session worded `The user answered the form in
+  <title> on your Thread Page — <form title>.` The page's kernel passes everything the frame sends to the host as the
+  page's own, so the frame cannot name another session. Its links resolve as the page's; its relative images, styles
+  and scripts load from the page's folder on Claude Code, which serves files by URL, and not on bb, which carries a
+  page's files inside it: there a frame inlines them or names them absolutely. A plugin's page script runs inside each
+  such frame too; the kernel's `data-config` says `embedded: true` there. Tests: `packages/pages-core/test/runtime/kernel/embed.test.ts` (the frame and
+  its relay), `test/serving/submit.test.ts` (the answer), `test/runtime/protocol.test.ts`,
+  `test/runtime/shell/submit.test.ts`, and fixture 15 in Chromium, WebKit and Firefox.
+- **`pages.open` opens another session's page at one of its documents and at a place in it.**
+  `pages.open({ sessionId, path: "notes.html", fragment: "results" })` opens that page at `notes.html`, scrolled to
+  `#results`, in place, and Back returns; `path` may carry the document's query (`"tool.html?scope=a"`), as the page's
+  address does. A link to another session's page address with `&path=…#…` now lands there too, where it opened the
+  page's entry before; such a link whose `path` is not a document of the page (a part, a file that is not HTML) or whose
+  fragment the call refuses now does nothing, where it opened the entry. A `path` that is not a document of a page (a part, `uploads/`, outside its folder, a query using
+  the host's names `session`, `path` or `render`), a fragment with `#`, whitespace or control characters or over 2,048
+  characters in the address, and either field beside `home` are `invalid_params`; whether the
+  document exists is the opened page's to show. Tests: `packages/pages-core/test/serving/bridge.test.ts`,
+  `test/domain/scope.test.ts`.
 
 ## 1.12.1 (bb plugin) — 2026-10-28
 

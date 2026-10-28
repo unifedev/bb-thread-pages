@@ -4,6 +4,8 @@ import { UPLOAD_DIR } from "../document-path.ts";
 /** What a submission looks like to the formatter: the title, action and answers the reader saw, and the files as stored. 02 §A form answer */
 export interface FormattedSubmission {
   readonly title: string;
+  /** The title of the frame of the page's own session the form was in, when it has one. 02 R4.42a */
+  readonly frame?: string | null;
   /** The submitter's value, or null when the form was submitted another way. 05 R2.36 */
   readonly action: string | null;
   readonly answers: readonly { readonly name: string; readonly label: string; readonly value: string | string[] | boolean }[];
@@ -57,7 +59,8 @@ function framingParagraphs(framing: Framing): string[] {
  */
 export function formatSubmissionMessage(submission: FormattedSubmission, pathForAgent: (relative: string) => string, framing: Framing = {}): string {
   const heading = submission.title.trim() || DEFAULT_FORM_TITLE;
-  const sections: string[] = [`The user answered the form on your Thread Page — ${heading}.`, ...framingParagraphs(framing)];
+  const frame = submission.frame?.trim();
+  const sections: string[] = [`The user answered the form ${frame ? `in ${frame} ` : ""}on your Thread Page — ${heading}.`, ...framingParagraphs(framing)];
   if (submission.action !== null) sections.push(`**Action**\n${submission.action}`);
   // Files attached to a text area are reported beside that field's text; the rest together. 02 R4.62
   const textFields = new Set(submission.answers.filter((answer) => typeof answer.value === "string").map((answer) => answer.name));

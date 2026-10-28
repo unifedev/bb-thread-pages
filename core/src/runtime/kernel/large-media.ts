@@ -1,4 +1,4 @@
-// Marked media elements (`data-thread-page-file`) → `file-request` → `blob:` URL (02 R4.25a); not inside an embed.
+// Marked media elements (`data-thread-page-file`) → `file-request` → `blob:` URL (02 R4.25a); inside another session's page the embedding kernel refuses the request.
 import type { KernelMessage, ShellMessage } from "../shared/protocol.ts";
 
 /** `data-thread-page-file="<path>@<version>"` on an element whose `src` the server could not carry; `data-thread-page-poster` for a poster. 02 R4.25a */
@@ -18,7 +18,6 @@ export interface LargeMedia {
 export interface LargeMediaDeps {
   send(message: KernelMessage): void;
   nextId(): string;
-  embedded: boolean;
 }
 
 /** The path a marker names, without its `@<version>` suffix. */
@@ -36,13 +35,11 @@ export function createLargeMedia(win: Window & typeof globalThis, deps: LargeMed
     const known = files.get(value);
     if (known) return known;
     const path = markedPath(value);
-    const answer = deps.embedded
-      ? Promise.resolve<Outcome>({ ok: false, error: EMBEDDED_MEDIA_REFUSAL })
-      : new Promise<Outcome>((settle) => {
-          const id = deps.nextId();
-          waiting.set(id, settle);
-          deps.send({ kind: "thread-page:file-request", id, path, purpose: "media" });
-        });
+    const answer = new Promise<Outcome>((settle) => {
+      const id = deps.nextId();
+      waiting.set(id, settle);
+      deps.send({ kind: "thread-page:file-request", id, path, purpose: "media" });
+    });
     files.set(value, answer);
     void answer.then((outcome) => {
       if (!outcome.ok && files.get(value) === answer) files.delete(value);

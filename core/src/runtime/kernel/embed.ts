@@ -1,18 +1,21 @@
-// `threadPage.embed`: frame creation, sandbox/allow set on every load, `pages.read` batching (16 per call), cadence, the deferred refresh (typing, a pending answer, `setDirty` — U49), the hand-over to an embedded `onPageUpdate` (R4.66), session state forwarded, grant cooldown, per-embed budget, the message relay (R4.48 allow-list), `onState`, drafts forwarding (02 §Embedded pages).
+// `threadPage.embed`: frame creation, sandbox/allow set on every load, `pages.read` batching (16 per call), cadence, the deferred refresh (typing, a pending answer, `setDirty` — U49), the hand-over to an embedded `onPageUpdate` (R4.66), session state forwarded, `onState`, drafts kept; a frame of the page's own session (`html`, or the page's own session) passed to this page's shell as the page's own (R4.48a); another session's page under grant cooldown, its own budget and the relay's allow-list (R4.48) (02 §Embedded pages).
 import { ENTRY_DOCUMENT, isDocumentPath } from "../../domain/document-path.ts";
 import type { BridgeErrorCode } from "../../domain/errors.ts";
 import { isSessionId } from "../../domain/ids.ts";
 import { LIMITS } from "../../domain/limits.ts";
 import { PAGE_FRAME_ALLOW, PAGE_SANDBOX } from "../../domain/sandbox.ts";
+import { checkScope } from "../../domain/scope.ts";
 import type { DraftRecord } from "../shared/drafts.ts";
-import { isKernelMessage, isReadyMessage, isRecord, makeFailure, type BridgeRequestMessage, type KernelMessage, type ShellMessage } from "../shared/protocol.ts";
+import { isKernelMessage, isReadyMessage, isRecord, makeFailure, type BridgeRequestMessage, type KernelConfig, type KernelMessage, type ShellMessage } from "../shared/protocol.ts";
 import type { ScrollState } from "../shared/scroll-state.ts";
 import { embeddedRoster, GESTURE_WINDOW_MS, relayCall, RelayRefusal, type EmbedView } from "./embed-relay.ts";
 import type { RelayedAs } from "./bridge-client.ts";
+import { contributorScripts, frameDocument, type HostScripts } from "./frame-document.ts";
+import { EMBEDDED_MEDIA_REFUSAL } from "./large-media.ts";
 import type { KernelPrimitives } from "./primitives.ts";
 import type { RecordAnswer } from "./record-client.ts";
 
-export type EmbedStatus = "loading" | "shown" | "not_found" | "no_page" | "too_large" | "unavailable" | "nested";
+export type EmbedStatus = "loading" | "shown" | "not_found" | "no_page" | "too_large" | "unavailable";
 
 export interface EmbedState {
   status: EmbedStatus;
@@ -26,8 +29,12 @@ export interface EmbedState {
 }
 
 export interface EmbedOptions {
-  sessionId: string;
+  sessionId?: string;
   path?: string;
+  /** A document the page holds, shown as a frame of the page's own session. 02 R4.42a */
+  html?: string;
+  scope?: string | null;
+  title?: string;
   onState?: (state: EmbedState) => void;
 }
 
@@ -39,10 +46,16 @@ export interface EmbedManagerDeps {
   setDirty(dirty: boolean): void;
   /** The host's working label, as this page's shell told it; forwarded with each embed's own state. 05 R2.26 */
   workingLabel(): string;
-  /** This document is itself shown inside another page. 02 R4.52 */
-  embedded: boolean;
-  /** Forwards to the shell: drafts with `embed` set, Dictate asks, Escape. */
-  send(message: KernelMessage): void;
+  /** This page's own session's state, as its shell told it: an `html` frame's. 02 R4.42a */
+  working(): boolean;
+  /** This page's configuration now (its revision moves with a hand-over, 02 R4.66): an `html` frame's is made from it. */
+  config(): KernelConfig;
+  /** Forwards to the shell: drafts with `embed` set, Dictate asks, Escape, and everything a frame of the page's own session sends. 02 R4.48a */
+  send(message: KernelMessage): boolean;
+  /** A fresh id on this page's channel, for what a frame of the page's own session sends through it. */
+  nextId(prefix: string): string;
+  /** The kernel's own source, as it was when it installed: an `html` frame runs the same. 02 R4.42a */
+  kernelSource: string | null;
   dictate(prompt: string, fromControl: boolean): Promise<RecordAnswer>;
   voiceAvailable(): boolean;
   prim: KernelPrimitives;
@@ -51,8 +64,12 @@ export interface EmbedManagerDeps {
 export interface EmbedManager {
   embed(target: unknown, options: unknown): () => void;
   setVoice(available: boolean): void;
-  /** The host's label changed: every embed hears its own state again. */
-  setWorkingLabel(): void;
+  /** The host's label or this page's session state changed: every embed hears its own state again. */
+  setSession(): void;
+  /** This page's own read-only state changed: an `html` frame shares it. 02 R4.42a */
+  setSource(source: { stale: boolean; archived: boolean; reason: string | null }): void;
+  /** A shell answer to something a frame of the page's own session sent; true when it was one. 02 R4.48a */
+  receive(message: ShellMessage): boolean;
   /** A shell `draft-notice` or similar the embedding kernel may pass on; unused for now. */
   stopAll(): void;
 }
@@ -65,8 +82,11 @@ const PLACEHOLDERS: Record<Exclude<EmbedStatus, "loading" | "shown">, string> = 
   no_page: "This session has not written its page yet. It appears here as soon as the agent saves it.",
   too_large: "This page is too large to show inside another page. Open it on its own.",
   unavailable: "This page cannot be reached right now. It appears here when it can.",
-  nested: "A page shown inside another page does not show further pages. Open this page on its own to see them.",
 };
+/** What an `html` frame shows instead, for the page's author. 02 R4.42a */
+const HELD_TOO_LARGE = `This document is larger than ${LIMITS.pagesReadBytes / (1024 * 1024)} MiB, the most a frame of the page can show.`;
+const HELD_NO_KERNEL = "This frame cannot be shown: the page's runtime script is missing from the page.";
+const HELD_TOO_DEEP = `This frame is not shown: frames of the page go at most ${LIMITS.frameDepth} deep.`;
 const TOO_MANY = `This page already shows ${LIMITS.embedsPerPage} other pages, which is the most one page can.`;
 
 function escapeText(text: string): string {
@@ -81,6 +101,12 @@ interface Embed extends EmbedView {
   readonly frame: HTMLIFrameElement;
   readonly created: boolean;
   readonly onState: ((state: EmbedState) => void) | null;
+  /** An `html` frame: the document the page holds, never read through `pages.read`. 02 R4.42a */
+  readonly held: { html: string; scope: string | null } | null;
+  /** A frame of the page's own session: an `html` frame, or one `pages.read` marked `own`. 02 R4.48a */
+  own: boolean;
+  /** Its own embeds are held (02 R4.47, one level down). */
+  nestedDirty: boolean;
   path: string;
   status: EmbedStatus;
   latest: string | null;
@@ -111,6 +137,17 @@ interface Embed extends EmbedView {
   nonce: number;
 }
 
+/** `{ html, scope?, title? }` checked: a bad scope or title throws as a bad `sessionId` does; a text over the bound is a state. 02 R4.42a */
+function heldOptions(wanted: EmbedOptions): { html: string; scope: string | null; title: string | null; tooLarge: boolean } {
+  if (typeof wanted.html !== "string") throw new TypeError("threadPage.embed: html must be text");
+  if (wanted.sessionId !== undefined || wanted.path !== undefined) throw new TypeError("threadPage.embed takes { html } or { sessionId }, not both");
+  const scope = checkScope(wanted.scope);
+  if (!scope.ok) throw new TypeError(`threadPage.embed: ${scope.message}`);
+  if (wanted.title !== undefined && (typeof wanted.title !== "string" || wanted.title.length > 300)) throw new TypeError("threadPage.embed: title must be text of at most 300 characters");
+  const title = wanted.title?.trim() || null;
+  return { html: wanted.html, scope: scope.scope, title, tooLarge: new TextEncoder().encode(wanted.html).length > LIMITS.pagesReadBytes };
+}
+
 export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedManagerDeps): EmbedManager {
   const doc = win.document;
   const prim = deps.prim;
@@ -138,7 +175,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
 
   /** What holds an embed's refresh, the page-level rule applied inside it. 02 R4.46; U49 */
   function deferring(embed: Embed): boolean {
-    return embed.typing || embed.dirty || embed.pending > 0;
+    return embed.typing || embed.dirty || embed.nestedDirty || embed.pending > 0;
   }
 
   function syncDirty(): void {
@@ -155,7 +192,13 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
   }
 
   function tellSession(embed: Embed): void {
-    reply(embed, { kind: "thread-page:session-state", working: embed.working, label: deps.workingLabel() });
+    reply(embed, { kind: "thread-page:session-state", working: embed.held ? deps.working() : embed.working, label: deps.workingLabel() });
+  }
+
+  /** This page's own read-only state, which an `html` frame shares. 02 R4.42a */
+  let pageSource: { stale: boolean; archived: boolean; reason: string | null } = { stale: deps.config().stale, archived: deps.config().archived, reason: null };
+  function tellSource(embed: Embed): void {
+    reply(embed, embed.held ? { kind: "thread-page:source-state", ...pageSource } : { kind: "thread-page:source-state", stale: false, archived: embed.readOnly, reason: null });
   }
 
   /** The frame is configured by the kernel on every load, taken out of the document so no history entry is added. 02 R4.43 */
@@ -218,7 +261,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     embed.readOnly = readOnly;
     if (changed && embed.port) {
       tellSession(embed);
-      reply(embed, { kind: "thread-page:source-state", stale: false, archived: embed.readOnly, reason: null });
+      tellSource(embed);
     }
   }
 
@@ -230,6 +273,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       return;
     }
     describe(embed, entry);
+    embed.own = entry.own === true;
     if (entry.unchanged === true) {
       if (embed.latest === embed.revision && typeof entry.answerToken === "string") embed.answerToken = entry.answerToken;
       report(embed);
@@ -289,8 +333,9 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     report(embed);
   }
 
+  /** The embeds `pages.read` keeps fresh. */
   function active(): Embed[] {
-    return embeds.filter((embed) => !embed.stopped && !embed.inert);
+    return embeds.filter((embed) => !embed.stopped && !embed.inert && !embed.held);
   }
 
   function schedule(delay: number): void {
@@ -468,6 +513,63 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     reply(embed, outcome.ok ? { kind: "thread-page:recorded", id: data.id, ok: true, ...(outcome.text !== undefined ? { text: outcome.text } : {}) } : { kind: "thread-page:recorded", id: data.id, ok: false, code: outcome.code, message: outcome.message });
   }
 
+  /** What a frame of the page's own session sent, waiting on this page's shell's answer: by the id it went out under. 02 R4.48a */
+  const passed = new Map<string, { embed: Embed; id: string }>();
+  const submissions = new Map<string, Embed>();
+
+  /** Sent on as this page's own, under an id of this page's channel; the answer goes back to the frame under its own. */
+  function pass(embed: Embed, id: string, message: (passedId: string) => KernelMessage): void {
+    const passedId = deps.nextId("e");
+    passed.set(passedId, { embed, id });
+    if (!deps.send(message(passedId))) {
+      passed.delete(passedId);
+      reply(embed, makeFailure(id, "unavailable", "The request could not be sent"));
+    }
+  }
+
+  /** A frame of the page's own session is the page: what its kernel sends goes to this page's shell as this page's own. 02 R4.48a */
+  function asPage(embed: Embed, data: KernelMessage): boolean {
+    if (!("kind" in data)) {
+      const request = data as BridgeRequestMessage;
+      // A relayed call of the frame's own embed keeps that document's revision and token; the frame's own calls go under this page's revision. 02 R4.48
+      pass(embed, request.id, (id) => ({ ...request, id, ...(request.embed === undefined ? { pageRevision: deps.config().pageRevision } : {}) }));
+      return true;
+    }
+    switch (data.kind) {
+      case "thread-page:submit":
+        submissions.set(data.submissionId, embed);
+        embed.pending += 1;
+        syncDirty();
+        if (!deps.send({ ...data, ...(embed.held ? { writtenAgainst: deps.config().pageRevision } : {}), frame: embed.held ? { title: embed.title } : { title: null, path: embed.path } })) {
+          submissions.delete(data.submissionId);
+          settleSubmission(embed, { kind: "thread-page:submit-result", submissionId: data.submissionId, ok: false, error: "unavailable", message: "The request could not be sent" });
+        }
+        return true;
+      case "thread-page:record":
+        pass(embed, data.id, (id) => ({ ...data, id }));
+        return true;
+      case "thread-page:file-request":
+        pass(embed, data.id, (id) => ({ ...data, id }));
+        return true;
+      case "thread-page:open-file":
+        deps.send(data);
+        return true;
+      case "thread-page:open-document":
+        // An `html` frame's link to a document of the page is the page's own link (R4.15a); a document frame keeps R4.50.
+        if (!embed.held) return false;
+        deps.send(data);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  function settleSubmission(embed: Embed, message: ShellMessage): void {
+    embed.pending = Math.max(0, embed.pending - 1);
+    reply(embed, message);
+    if (!embed.stopped) reconsider(embed);
+  }
+
   function onEmbedMessage(embed: Embed, data: unknown): void {
     if (embed.stopped || !isRecord(data)) return;
     // Kernel-to-kernel only: the embedded kernel's trusted gesture, opening the navigation window. DR-32
@@ -479,13 +581,17 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       if (typeof data.id === "string") reply(embed, makeFailure(data.id, "invalid_request", "Invalid bridge request"));
       return;
     }
-    if (!("kind" in data)) {
+    // A document frame's own calls are checked against the version it shows; a call its own embed relays carries that document's. 02 R-K1
+    if (!("kind" in data) && !embed.held && !(embed.own && (data as BridgeRequestMessage).embed !== undefined)) {
       const request = data as BridgeRequestMessage;
       if (embed.revision === null || request.pageRevision !== embed.revision) {
         reply(embed, makeFailure(request.id, "stale_page", "This page changed; reload it before responding."));
         return;
       }
-      void bridge(embed, request);
+    }
+    if (embed.own && asPage(embed, data)) return;
+    if (!("kind" in data)) {
+      void bridge(embed, data as BridgeRequestMessage);
       return;
     }
     switch (data.kind) {
@@ -505,15 +611,15 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
         embed.scroll = data.state;
         return;
       case "thread-page:draft":
-        // Kept for the embed's next load, and forwarded to the shell keyed by the embedded session. 02 R-K4
+        // Kept for the embed's next load, and forwarded to the shell keyed by the embedded session; an `html` frame is no stored document, so its drafts stay here. 02 R-K4, R4.48a
         if (Object.keys(data.fields).length === 0) embed.drafts.delete(data.form.key);
         else embed.drafts.set(data.form.key, { form: data.form, fields: data.fields, focus: data.focus, savedAtMs: Date.now(), revision: embed.revision ?? "0".repeat(64) });
-        deps.send({ ...data, embed: { sessionId: embed.sessionId, documentPath: embed.path } });
+        if (!embed.held) deps.send({ ...data, embed: { sessionId: embed.sessionId, documentPath: embed.path } });
         return;
       case "thread-page:open-document":
         // A link to another document of the embedded page opens it here; no history entry. 02 R4.50
-        if (!isDocumentPath(data.path) || data.path === embed.path || atBound(embed)) return;
-        charge(embed);
+        if (!isDocumentPath(data.path) || data.path === embed.path || (!embed.own && atBound(embed))) return;
+        if (!embed.own) charge(embed);
         embed.path = data.path;
         embed.revision = null;
         embed.latest = null;
@@ -543,13 +649,19 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       case "thread-page:escape":
         deps.send({ kind: "thread-page:escape" });
         return;
+      case "thread-page:embed-dirty":
+        embed.nestedDirty = data.dirty;
+        reconsider(embed);
+        return;
+      case "thread-page:file-request":
+        // Another session's files are not this page's shell's to fetch. 02 R4.25a
+        reply(embed, { kind: "thread-page:file", id: data.id, ok: false, status: 403, error: EMBEDDED_MEDIA_REFUSAL });
+        return;
       case "thread-page:restored":
       case "thread-page:flushed":
       case "thread-page:pong":
       case "thread-page:fragment":
       case "thread-page:open-file":
-      case "thread-page:file-request":
-      case "thread-page:embed-dirty":
       case "thread-page:draft-discard":
       case "thread-page:grant-revoke":
         return;
@@ -572,7 +684,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       if (embed.port === port) onEmbedMessage(embed, prim.data(message));
     });
     embed.nonce += 1;
-    reply(embed, { kind: "thread-page:source-state", stale: false, archived: embed.readOnly, reason: null });
+    tellSource(embed);
     tellSession(embed);
     reply(embed, { kind: "thread-page:restore", nonce: embed.nonce, scroll: embed.scroll, drafts: [...embed.drafts.values()], clearedNotice: [] });
     reply(embed, { kind: "thread-page:shown" });
@@ -608,6 +720,8 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     if (embed.stopped) return;
     embed.stopped = true;
     dropHandOver(embed);
+    for (const [id, waiting] of passed) if (waiting.embed === embed) passed.delete(id);
+    for (const [id, owner] of submissions) if (owner === embed) submissions.delete(id);
     embed.port?.close?.();
     embed.port = null;
     embeds.splice(embeds.indexOf(embed), 1);
@@ -620,33 +734,124 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     }
   }
 
+  /** The document an `html` frame shows: the page's text behind this kernel and the page's contributors' scripts, configured as this page is, with its scope. 02 R4.42a */
+  let scripts: HostScripts | null | undefined;
+  function showHeld(embed: Embed): void {
+    const held = embed.held!;
+    scripts ??= deps.kernelSource ? { kernel: deps.kernelSource, contributors: contributorScripts(doc) } : null;
+    if (!scripts) {
+      placeholder(embed, "unavailable", HELD_NO_KERNEL);
+      return;
+    }
+    const { scope: _pages, frameDepth, ...page } = deps.config();
+    const depth = (frameDepth ?? 0) + 1;
+    // Frames of the page inside one another, as a page script that shows its apps on load would make them inside each app. 02 R4.42a
+    if (depth > LIMITS.frameDepth) {
+      placeholder(embed, "unavailable", HELD_TOO_DEEP);
+      return;
+    }
+    const config: KernelConfig = { ...page, embedded: true, frameDepth: depth, ...(held.scope !== null ? { scope: held.scope } : {}) };
+    embed.status = "shown";
+    load(embed, frameDocument(win, held.html, scripts, config));
+    report(embed);
+  }
+
+  /** What an `html` frame reports: the page's own state. 02 R4.42a */
+  function heldState(embed: Embed): void {
+    embed.working = deps.working();
+    embed.readOnly = pageSource.archived || pageSource.stale;
+  }
+
+  function settle(message: ShellMessage): boolean {
+    if (!("kind" in message)) {
+      const waiting = passed.get(message.id);
+      if (!waiting) return false;
+      passed.delete(message.id);
+      reply(waiting.embed, { ...message, id: waiting.id });
+      return true;
+    }
+    switch (message.kind) {
+      case "thread-page:recorded":
+      case "thread-page:file": {
+        const waiting = passed.get(message.id);
+        if (!waiting) return false;
+        passed.delete(message.id);
+        reply(waiting.embed, { ...message, id: waiting.id });
+        if (message.kind === "thread-page:recorded") {
+          try {
+            waiting.embed.frame.focus({ preventScroll: true });
+          } catch {
+            // Focus is a courtesy.
+          }
+        }
+        return true;
+      }
+      case "thread-page:submit-progress": {
+        const embed = submissions.get(message.submissionId);
+        if (!embed) return false;
+        reply(embed, message);
+        return true;
+      }
+      case "thread-page:submit-result": {
+        const embed = submissions.get(message.submissionId);
+        if (!embed) return false;
+        submissions.delete(message.submissionId);
+        settleSubmission(embed, message);
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
   return {
+    receive: settle,
     setVoice(available) {
       for (const embed of embeds) if (!embed.stopped && embed.port) reply(embed, { kind: "thread-page:voice", available, reason: null });
     },
-    setWorkingLabel() {
-      for (const embed of embeds) if (!embed.stopped && embed.port) tellSession(embed);
+    setSession() {
+      for (const embed of embeds) {
+        if (embed.stopped) continue;
+        if (embed.held) {
+          heldState(embed);
+          report(embed);
+        }
+        if (embed.port) tellSession(embed);
+      }
+    },
+    setSource(source) {
+      pageSource = source;
+      for (const embed of embeds) {
+        if (embed.stopped || !embed.held) continue;
+        heldState(embed);
+        report(embed);
+        if (embed.port) tellSource(embed);
+      }
     },
     stopAll() {
       for (const embed of [...embeds]) stop(embed);
     },
     embed(target, options) {
       const wanted = options as EmbedOptions | null;
-      if (!wanted || typeof wanted !== "object" || !isSessionId(wanted.sessionId)) throw new TypeError("threadPage.embed needs { sessionId }");
-      if (wanted.path !== undefined && !isDocumentPath(wanted.path)) throw new TypeError("threadPage.embed: path is not a document of a page");
-      if (wanted.onState !== undefined && typeof wanted.onState !== "function") throw new TypeError("threadPage.embed: onState must be a function");
+      const held = wanted && typeof wanted === "object" && wanted.html !== undefined ? heldOptions(wanted) : null;
+      if (!held && (!wanted || typeof wanted !== "object" || !isSessionId(wanted.sessionId))) throw new TypeError("threadPage.embed needs { sessionId } or { html }");
+      if (!held && wanted!.path !== undefined && !isDocumentPath(wanted!.path)) throw new TypeError("threadPage.embed: path is not a document of a page");
+      if (wanted!.onState !== undefined && typeof wanted!.onState !== "function") throw new TypeError("threadPage.embed: onState must be a function");
       const { frame, created } = frameFor(target);
       const embed: Embed = {
         frame,
         created,
-        sessionId: wanted.sessionId,
-        onState: wanted.onState ?? null,
-        path: wanted.path ?? ENTRY_DOCUMENT,
+        sessionId: held ? "" : wanted!.sessionId!,
+        onState: wanted!.onState ?? null,
+        held: held ? { html: held.html, scope: held.scope } : null,
+        own: held !== null,
+        nestedDirty: false,
+        path: held ? "" : (wanted!.path ?? ENTRY_DOCUMENT),
         status: "loading",
         revision: null,
         latest: null,
         answerToken: null,
-        title: null,
+        title: held ? held.title : null,
         workspaceId: null,
         working: false,
         readOnly: false,
@@ -672,12 +877,14 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       };
       for (const other of embeds) if (!other.stopped && other.frame === frame) stop(other);
       embeds.push(embed);
-      if (deps.embedded) {
-        embed.inert = true;
-        placeholder(embed, "nested");
-      } else if (active().length >= LIMITS.embedsPerPage + 1) {
+      if (embeds.filter((one) => !one.stopped && !one.inert).length >= LIMITS.embedsPerPage + 1) {
         embed.inert = true;
         placeholder(embed, "unavailable", TOO_MANY);
+      } else if (held) {
+        listen();
+        heldState(embed);
+        if (held.tooLarge) placeholder(embed, "too_large", HELD_TOO_LARGE);
+        else showHeld(embed);
       } else {
         report(embed);
         listen();

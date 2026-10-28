@@ -3,7 +3,8 @@ import { isAudioCaptureInput, isManualForm, ownerForm } from "./forms.ts";
 import type { RecordAnswer } from "./record-client.ts";
 
 export interface AudioInputDeps {
-  embedded: boolean;
+  /** The page's forms can upload: not inside another session's page (02 R4.48) nor on the built-in home. */
+  uploads: boolean;
   voiceAvailable(): boolean;
   record(): Promise<RecordAnswer>;
 }
@@ -24,7 +25,7 @@ export function installAudioInputs(win: Window & typeof globalThis, deps: AudioI
       const input = event.target as Element | null;
       if (event.defaultPrevented || !isAudioCaptureInput(input) || input.disabled) return;
       const form = ownerForm(input);
-      if (!form || isManualForm(form) || deps.embedded || !deps.voiceAvailable() || browserRecords(win)) return;
+      if (!form || isManualForm(form) || !deps.uploads || !deps.voiceAvailable() || browserRecords(win)) return;
       event.preventDefault();
       void deps.record().then((answer) => {
         // Cancel, and every failure, leave the input as it was.

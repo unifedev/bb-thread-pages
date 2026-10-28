@@ -60,7 +60,7 @@ export async function relaySubmit(deps: SubmitDeps, post: (message: ShellMessage
       files[index]!.transcript = text === null ? null : shortenTranscript(text);
     }
     if (files.length > 0) post({ kind: "thread-page:submit-progress", submissionId, message: "Sending…" });
-    const body: SubmitBody = { actionToken: deps.token(), submissionId, writtenAgainst: message.writtenAgainst, formId: message.formId, formTitle: message.formTitle, title: message.title, action: message.action, answers: message.answers, files };
+    const body: SubmitBody = { actionToken: deps.token(), submissionId, writtenAgainst: message.writtenAgainst, formId: message.formId, formTitle: message.formTitle, title: message.title, action: message.action, answers: message.answers, files, ...(message.frame ? { frame: message.frame } : {}) };
     const response = await deps.fetchImpl(deps.config.routes.submit, { method: "POST", credentials: "same-origin", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const answer = (await response.json().catch(() => null)) as Record<string, unknown> | null;
     if (response.ok && isRecord(answer) && answer.ok === true) {

@@ -42,6 +42,12 @@ export interface SubmitFile {
   transcribe?: boolean;
 }
 
+/** Set by an embedding kernel on a submission from a frame of its page's own session: the frame's title, and its document for a `{ sessionId }` frame. 02 R4.48a; 05 R2.32 */
+export interface SubmitFrame {
+  title: string | null;
+  path?: string;
+}
+
 export type RecordPurpose = "dictate" | "audio" | "capability";
 
 export interface BridgeRequestMessage {
@@ -65,7 +71,7 @@ export type KernelMessage =
   | { kind: "thread-page:clean" }
   /** A text control is focused and the last `input` was less than `swapIdleMs` ago; a swap waits while true. 05 R2.21 (U49) */
   | { kind: "thread-page:typing"; active: boolean }
-  | { kind: "thread-page:submit"; submissionId: string; title: string; writtenAgainst: string; formId: string | null; formTitle: string | null; action: string | null; answers: SubmitAnswer[]; files: SubmitFile[] }
+  | { kind: "thread-page:submit"; submissionId: string; title: string; writtenAgainst: string; formId: string | null; formTitle: string | null; action: string | null; answers: SubmitAnswer[]; files: SubmitFile[]; frame?: SubmitFrame }
   | { kind: "thread-page:open-document"; path: string; fragment?: string; query?: string }
   | { kind: "thread-page:open-file"; path: string; download: boolean; name: string | null }
   | { kind: "thread-page:file-request"; id: string; path: string; purpose: "media" | "fetch"; init?: { method: "GET" | "HEAD" } }
@@ -165,6 +171,10 @@ export interface KernelConfig {
   ownFilesByFrame: boolean;
   /** Composition tier present → `threadPage.embed` defined. 02 R-K2 */
   embedAvailable: boolean;
+  /** The scope the document starts with: an `html` frame's (02 R4.42a); absent elsewhere. 07 R5.81 */
+  scope?: string;
+  /** How many `html` frames this document sits inside, counted from the page: 1 for a frame the page made; absent on a page. 02 R4.42a */
+  frameDepth?: number;
   /** Large media the shell fetches. 02 R4.25a */
   deferredFiles: string[];
   /** How long after the last keystroke a focused text control stops deferring a swap. 05 R2.21 (U49) */
@@ -346,7 +356,8 @@ export function isKernelMessage(value: unknown): value is KernelMessage {
       return hasExactKeys(value, ["kind", "from", "to"]) && isSessionIdentity(value.from) && isSessionIdentity(value.to);
     case "thread-page:submit":
       return (
-        hasExactKeys(value, ["kind", "submissionId", "title", "writtenAgainst", "formId", "formTitle", "action", "answers", "files"]) &&
+        hasKeys(value, ["kind", "submissionId", "title", "writtenAgainst", "formId", "formTitle", "action", "answers", "files"], ["frame"]) &&
+        isOptional(value.frame, (item) => isRecord(item) && hasKeys(item, ["title"], ["path"]) && (item.title === null || isText(item.title, 300)) && isOptional(item.path, isDocumentPath)) &&
         (value.action === null || isText(value.action, LIMITS.answerValueChars)) &&
         typeof value.submissionId === "string" &&
         SUBMISSION_ID.test(value.submissionId) &&

@@ -239,8 +239,8 @@ behind a "+N" chip that lists them). The files are uploaded with the form, and
 the answer reports their paths beside that field's text under
 **Attached here:** (an audio file with its transcript), within the form's
 limits: ${mebibytes(L.uploadFileBytes)} per file and ${L.uploadsPerForm} per form, file inputs included. A text area
-outside any form, on the built-in home page or inside another page's embed
-gets ${input.voice ? "Dictate only" : "no Attach"}; a disabled, read-only or hidden one gets neither, and a
+outside any form, on the built-in home page or inside another session's page
+shown in an embed gets ${input.voice ? "Dictate only" : "no Attach"}; a disabled, read-only or hidden one gets neither, and a
 field loses them while its form sends. Put \`${MANUAL_ATTRIBUTE}\` on a
 \`<textarea>\` to give it no controls — its answer is still sent with its form —
 or on the form to leave the whole form alone. Do that for an editor built on a
@@ -391,8 +391,8 @@ holds \`data-thread-page-file\` in its place), so script that reads \`video.src\
 at load sees nothing; wait for \`loadedmetadata\`. A file that cannot come is
 marked on its element with the reason and named in \`status\`. Only those
 elements: a large stylesheet, script, font, \`srcset\` candidate or CSS \`url()\`
-is not fetched this way. Not inside another page's embed: there the element
-says why.`;
+is not fetched this way. Not inside another session's page shown in an embed:
+there the element says why.`;
   return `## Files you show the reader
 
 Put them beside \`${ENTRY_DOCUMENT}\` and reference them relatively — nested paths,
@@ -573,10 +573,31 @@ inside your page, the host asks them once, naming both pages; the grant is
 remembered until the reader revokes it from the home page or with the
 \`${input.commands.grants}\` command. Declined, the answer
 is not sent (\`cancelled\`) and the form says so. You cannot word, skip or
-pre-approve it. A document of your own page embedded in your page needs no
-grant.
+pre-approve it.
 
-Inside an embed the page is itself, with less reach: \`context.get\` describes
+**A frame of your own session is your page.** A document of your own page,
+\`embed(target, { sessionId: <your session>, path })\`, and a document your
+page holds, shown with
+
+    const stop = window.threadPage.embed(target, { html, scope, title, onState })
+
+work inside their frame exactly as your page does: forms with uploads, Attach
+${input.voice ? "and Dictate " : ""}in text areas, every capability your page may call (\`files\` included) under
+the same confirmations, \`storage.*\` and plugin calls, and — in an \`html\`
+frame — \`embed\` itself (a document shown with \`sessionId\` has no \`embed\`:
+it would show your page inside itself without end).
+Their answers come to **your** session, as your page's own; a form from an
+\`html\` frame with a \`title\` arrives as \`The user answered the form in <title>
+on your Thread Page — <form title>.\` \`html\` is the document's text (at most
+${mebibytes(L.pagesReadBytes)}); the kernel and your plugins' page scripts are put in front of it,
+and its links resolve as your page's. ${input.strategy === "by-url" ? "Its relative images, styles and scripts load from your page's folder; a \`<base>\` of its own wins." : "Its relative images, styles and scripts do not load on this host, which carries your page's files inside the page: inline them (\`data:\` URLs, \`<style>\`, \`<script>\`) or use absolute URLs."}
+\`scope\` is the folder its calls are about, as \`setScope\` takes it. Nothing
+re-reads an \`html\` frame: call \`embed\` again to change it. Frames go at most
+${L.frameDepth} deep inside one another. Your plugins' page scripts run inside the frame
+too (its kernel's \`data-config\` says \`embedded\`). No grant is asked for any of it.
+
+Shown for another session — in the home, or inside another session's page —
+a page is itself, with less reach: \`context.get\` describes
 *its* session; \`session.activity\` and \`session.messages\` answer for the
 embedded session (an embedded activity feed reads \`session.messages\`;
 \`session.activity\` there carries \`state\` and \`waiting\` and no items);
@@ -584,23 +605,22 @@ embedded session (an embedded activity feed reads \`session.messages\`;
 \`sessions.snapshot\`, \`sessions.messages\`, \`workspaces.list\` and
 \`providers.list\` work; \`session.respond\` with \`answers\` is carried under the
 same grant. Its contributed capabilities and \`storage.*\` work for the
-embedded session when the home or a page of that same session shows it; inside
+embedded session when the home shows it; inside
 another session's page only its contributed reads do, and \`storage.*\` and
 contributed writes reject with \`unavailable\`. Everything else —
 \`sessions.send\`, \`sessions.start\`, every other \`sessions.*\` and
 \`workspaces.*\` method, \`pages.read\`, \`pages.answer\`, \`session.respond\`
-with a \`decision\`, voice — rejects with \`unavailable\`, and an embed may make
-${L.embedCallsPerMinute} calls a minute (${L.homeEmbedCallsPerMinute} in the built-in home page). Uploads are refused inside an embed: a form with a file
+with a \`decision\`, voice — rejects with \`unavailable\`, and such an embed may make
+${L.embedCallsPerMinute} calls a minute (${L.homeEmbedCallsPerMinute} in the built-in home page). Uploads are refused there: a form with a file
 attached is not sent, and its status line tells the reader to open the page
-itself. **Embedding is one level deep:** \`embed\` called inside an embedded
-page shows a line saying so and loads nothing. So write your own page to
+itself; \`threadPage.embed\` is absent. So write your own page to
 degrade when \`storage\` answers \`unavailable\`: it may be shown inside
 someone else's.
 
 \`onState\`, if you pass it, is called with
 \`{ status, sessionId, path, title, revision, working, updateAvailable }\` when
 any of them changes — \`status\` is \`loading\`, \`shown\`, \`not_found\`,
-\`no_page\`, \`too_large\`, \`unavailable\` or \`nested\`. Use it to draw your own
+\`no_page\`, \`too_large\` or \`unavailable\`. Use it to draw your own
 frame around an embed: a title, a working dot, a link made with
 \`pages.open\`.
 
@@ -628,7 +648,7 @@ The complete page-facing API; it is frozen and cannot be replaced.
     await window.threadPage.invoke(method, params)
     const stop = window.threadPage.watch(method, params, (value, error) => {…}, { intervalMs })
     window.threadPage.setDirty(true | false)
-    ${hasEmbed ? "const stopEmbed = window.threadPage.embed(target, { sessionId, path, onState })" : "window.threadPage.embed                 // absent on this host"}
+    ${hasEmbed ? "const stopEmbed = window.threadPage.embed(target, { sessionId, path, onState } or { html, scope, title, onState })" : "window.threadPage.embed                 // absent on this host"}
     const stopUpdates = window.threadPage.onPageUpdate(({ html, revision, documentPath }) => {…})
     window.threadPage.setScope("clients/vela")   // or null; see *Capabilities from contributors*
     window.threadPage.scope                 // the scope set, or null
@@ -1032,10 +1052,12 @@ On the reader's click:
 - **This host's own addresses are not "another site".** A link to another
   session's page at its address on this host (\`…/page?session=<id>\`) or to the
   host's home (\`…/home\`) opens it **in place** with no dialog, as
-  \`pages.open\` does, at the page's entry (a \`path\` or \`#part\` in the
-  link is not carried). Any other address of this host is refused with
+  \`pages.open\` does, at the document and place the link names
+  (\`&path=notes.html#results\`). Any other address of this host is refused with
   \`invalid_params\`, before any dialog. From script, open another page with
-  \`pages.open\`, the host's home with \`pages.open({ home: true })\`, a session
+  \`pages.open\` (\`{ sessionId, path: "notes.html", fragment: "results" }\`
+  for a document of it and a place in it), the host's home with
+  \`pages.open({ home: true })\`, a session
   with \`sessions.openHost\` where the host has it; link your own files
   relatively.
 - **\`window.open(url)\`** from a click handler opens a window with no dialog —
@@ -1276,6 +1298,7 @@ function limitsTable(input: GuideInput): string {
     ["Embeds", `${L.embedsPerPage} per page; checked every ${seconds(L.embedPollWorkingMs)} while an embedded session works or was answered in the last ${seconds(L.embedPollAfterAnswerMs)}, every ${seconds(L.embedPollMs)} otherwise; one call per tick for every ${L.pagesReadEntries}`],
     ["pages.read", `${L.pagesReadEntries} documents per call, ${mebibytes(L.pagesReadBytes)} per response; a larger single document is refused, the rest deferred`],
     ["pages.answer", `${kibibytes(L.pagesAnswerBytes)} per request`],
+    ["Frames of your page (\`embed { html }\`)", `${mebibytes(L.pagesReadBytes)} of text each; at most ${L.frameDepth} inside one another`],
     ["Calls from one embedded page", `${L.embedCallsPerMinute} a minute (${L.homeEmbedCallsPerMinute} in the built-in home page), then \`rate_limited\``],
     ["Answer grant", `asked once per (your page → embedded session), kept until revoked; ${L.grantsPerPage} per page, ${L.grantPages} pages; answer tokens last ${hours(L.answerTokenMs)}`],
     ["Declined decision or grant", `no dialog again for ${seconds(L.declinedCooldownMs)}`],

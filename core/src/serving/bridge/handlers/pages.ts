@@ -75,6 +75,7 @@ async function resolveEntry(context: BridgeContext, wanted: PagesReadParams["pag
     const shared = {
       sessionId,
       path,
+      ...(sessionId === context.session.id ? { own: true } : {}),
       title: boundTitle(owner.title),
       workspaceId: owner.workspaceId,
       working: owner.state === "working",
@@ -84,7 +85,10 @@ async function resolveEntry(context: BridgeContext, wanted: PagesReadParams["pag
     };
     if (wanted.ifNoneMatch === page.revision) return { entry: { ...shared, unchanged: true } };
     const baseHref = serving.strategy.siteRoot(sessionId, key);
-    const config: KernelConfig = { pageRevision: page.revision, stale: page.stale, archived, siteRoot: baseHref, embedded: true, uploads: false, documentPath: path, ownFilesByFrame: false, embedAvailable: false, deferredFiles: page.site.deferred.map((file) => file.path), swapIdleMs: LIMITS.swapIdleMs };
+    // A document of the page's own session is the page: uploads as on its own URL; another session's page has none. Neither embeds: a document of
+    // the page embedding one of the page would show the page inside itself without end. 02 R4.48, R4.48a
+    const own = sessionId === context.session.id;
+    const config: KernelConfig = { pageRevision: page.revision, stale: page.stale, archived, siteRoot: baseHref, embedded: true, uploads: own, documentPath: path, ownFilesByFrame: false, embedAvailable: false, deferredFiles: page.site.deferred.map((file) => file.path), swapIdleMs: LIMITS.swapIdleMs };
     // The embedded page's own contributors' scripts, asked for its session and document: the same pipeline. 07 R5.88
     return { shared, page, config, baseHref, scripts: serving.pageScripts.scriptsFor(sessionId, path) };
   } catch (error) {

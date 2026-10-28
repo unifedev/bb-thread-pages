@@ -6,7 +6,6 @@ import type { KernelPrimitives, LayerDom } from "./primitives.ts";
 import type { RecordAnswer } from "./record-client.ts";
 
 export interface TextAreaDeps {
-  embedded: boolean;
   uploads: boolean;
   isReadOnly(): boolean;
   /** Opens the shell's recording bar; `fromControl` is the reader's own press on the kernel's control. 05 R3.32b */
@@ -175,7 +174,7 @@ export function createTextAreaControls(win: Window & typeof globalThis, deps: Te
 
   /** The captured form whose answer this field's files ride on, else null. 02 R4.60 */
   function attachable(field: HTMLTextAreaElement): HTMLFormElement | null {
-    if (deps.embedded || !deps.uploads) return null;
+    if (!deps.uploads) return null;
     const form = ownerForm(field);
     return form && !isManualForm(form) ? form : null;
   }
