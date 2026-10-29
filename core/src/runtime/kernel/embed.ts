@@ -100,9 +100,13 @@ export function placeholderDocument(text: string): string {
 interface Embed extends EmbedView {
   readonly frame: HTMLIFrameElement;
   readonly created: boolean;
-  readonly onState: ((state: EmbedState) => void) | null;
+  onState: ((state: EmbedState) => void) | null;
   /** An `html` frame: the document the page holds, never read through `pages.read`. 02 R4.42a */
-  readonly held: { html: string; scope: string | null } | null;
+  held: { html: string; scope: string | null } | null;
+  /** An `html` frame's newer version, waiting while R4.46's holds stand. 02 R4.42a */
+  waiting: HeldVersion | null;
+  /** The flush asked before that version is taken: its nonce, while the frame flushes. */
+  taking: number | null;
   /** A frame of the page's own session: an `html` frame, or one `pages.read` marked `own`. 02 R4.48a */
   own: boolean;
   /** Its own embeds are held (02 R4.47, one level down). */
@@ -135,6 +139,11 @@ interface Embed extends EmbedView {
   inert: boolean;
   lastState: string;
   nonce: number;
+}
+
+interface HeldVersion {
+  html: string;
+  tooLarge: boolean;
 }
 
 /** `{ html, scope?, title? }` checked: a bad scope or title throws as a bad `sessionId` does; a text over the bound is a state. 02 R4.42a */
@@ -185,6 +194,16 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
   /** A deferred version is taken as soon as nothing holds it. */
   function reconsider(embed: Embed): void {
     syncDirty();
+    if (embed.held) {
+      if (!embed.waiting) return;
+      if (!deferring(embed)) take(embed, LIMITS.frameVersionGraceMs);
+      else if (embed.taking !== null) {
+        // A hold that begins during the grace or the flush cancels the take: the next lift gets a whole grace.
+        embed.taking = null;
+        announce(embed);
+      }
+      return;
+    }
     if (embed.updateAvailable && !deferring(embed) && !embed.reload) {
       embed.reload = true;
       soon();
@@ -518,13 +537,13 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
   const submissions = new Map<string, Embed>();
 
   /** Sent on as this page's own, under an id of this page's channel; the answer goes back to the frame under its own. */
-  function pass(embed: Embed, id: string, message: (passedId: string) => KernelMessage): void {
+  function pass(embed: Embed, id: string, message: (passedId: string) => KernelMessage): boolean {
     const passedId = deps.nextId("e");
     passed.set(passedId, { embed, id });
-    if (!deps.send(message(passedId))) {
-      passed.delete(passedId);
-      reply(embed, makeFailure(id, "unavailable", "The request could not be sent"));
-    }
+    if (deps.send(message(passedId))) return true;
+    passed.delete(passedId);
+    reply(embed, makeFailure(id, "unavailable", "The request could not be sent"));
+    return false;
   }
 
   /** A frame of the page's own session is the page: what its kernel sends goes to this page's shell as this page's own. 02 R4.48a */
@@ -546,7 +565,13 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
         }
         return true;
       case "thread-page:record":
-        pass(embed, data.id, (id) => ({ ...data, id }));
+        // An open recorder holds the frame as it holds the page (05 R2.21 (d)), until its answer comes back.
+        embed.pending += 1;
+        syncDirty();
+        if (!pass(embed, data.id, (id) => ({ ...data, id }))) {
+          embed.pending = Math.max(0, embed.pending - 1);
+          reconsider(embed);
+        }
         return true;
       case "thread-page:file-request":
         pass(embed, data.id, (id) => ({ ...data, id }));
@@ -657,8 +682,10 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
         // Another session's files are not this page's shell's to fetch. 02 R4.25a
         reply(embed, { kind: "thread-page:file", id: data.id, ok: false, status: 403, error: EMBEDDED_MEDIA_REFUSAL });
         return;
-      case "thread-page:restored":
       case "thread-page:flushed":
+        if (embed.taking === data.nonce) taken(embed, data.nonce);
+        return;
+      case "thread-page:restored":
       case "thread-page:pong":
       case "thread-page:fragment":
       case "thread-page:open-file":
@@ -756,6 +783,77 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     report(embed);
   }
 
+  let flushes = 0;
+
+  /** The frame is told once that a newer version waits, as R4.46 tells an embed. */
+  function announce(embed: Embed): void {
+    if (!embed.updateAvailable) {
+      embed.updateAvailable = true;
+      reply(embed, { kind: "thread-page:update", available: true });
+    }
+    report(embed);
+  }
+  /** An `html` frame takes its waiting version once the frame has flushed its drafts and scroll and handled what it was sent, as the page's own swap does (05 R2.21): first a grace, so the tap that lifted a hold lands where it was aimed. 02 R4.42a */
+  function take(embed: Embed, graceMs: number): void {
+    if (embed.taking !== null || !embed.waiting) return;
+    const nonce = ++flushes;
+    embed.taking = nonce;
+    const flush = (): void => {
+      if (embed.stopped || embed.taking !== nonce) return;
+      if (!embed.port) {
+        taken(embed, nonce);
+        return;
+      }
+      reply(embed, { kind: "thread-page:flush", nonce });
+      setTimeout(() => taken(embed, nonce), LIMITS.draftFlushMs);
+    };
+    if (graceMs > 0) setTimeout(flush, graceMs);
+    else flush();
+  }
+
+  /** The frame flushed (or did not answer in time): the latest version loads, unless a hold began meanwhile. */
+  function taken(embed: Embed, nonce: number): void {
+    if (embed.stopped || embed.taking !== nonce) return;
+    embed.taking = null;
+    const version = embed.waiting;
+    if (!version) return;
+    if (deferring(embed)) {
+      announce(embed);
+      return;
+    }
+    // A form with neither id nor title is keyed by its place under the page's revision, which an `html` frame's versions share: its draft could land in another form. 02 R-K4
+    for (const key of embed.drafts.keys()) if (key.startsWith("none:")) embed.drafts.delete(key);
+    embed.held = { html: version.html, scope: embed.held!.scope };
+    embed.waiting = null;
+    embed.updateAvailable = false;
+    if (version.tooLarge) placeholder(embed, "too_large", HELD_TOO_LARGE);
+    else showHeld(embed);
+  }
+
+  /** A call on the same frame with the same scope is a new version of its document, never shown under a reader who is typing, answering or mid-flow. 02 R4.42a, R4.46 */
+  function newVersion(embed: Embed, version: HeldVersion, title: string | null, onState: ((state: EmbedState) => void) | null): () => void {
+    embed.title = title;
+    embed.onState = onState;
+    embed.lastState = "";
+    if (version.html === embed.held!.html && embed.status === "shown") {
+      embed.waiting = null;
+      embed.taking = null;
+      if (embed.updateAvailable) {
+        embed.updateAvailable = false;
+        reply(embed, { kind: "thread-page:update", available: false });
+      }
+      report(embed);
+    } else if (deferring(embed)) {
+      embed.waiting = version;
+      announce(embed);
+    } else {
+      embed.waiting = version;
+      report(embed);
+      take(embed, 0);
+    }
+    return () => stop(embed);
+  }
+
   /** What an `html` frame reports: the page's own state. 02 R4.42a */
   function heldState(embed: Embed): void {
     embed.working = deps.working();
@@ -783,6 +881,8 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
           } catch {
             // Focus is a courtesy.
           }
+          waiting.embed.pending = Math.max(0, waiting.embed.pending - 1);
+          if (!waiting.embed.stopped) reconsider(waiting.embed);
         }
         return true;
       }
@@ -838,12 +938,16 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       if (!held && wanted!.path !== undefined && !isDocumentPath(wanted!.path)) throw new TypeError("threadPage.embed: path is not a document of a page");
       if (wanted!.onState !== undefined && typeof wanted!.onState !== "function") throw new TypeError("threadPage.embed: onState must be a function");
       const { frame, created } = frameFor(target);
+      const live = held && !created ? embeds.find((other) => !other.stopped && !other.inert && other.frame === frame) : undefined;
+      if (live?.held && live.held.scope === held!.scope) return newVersion(live, held!, held!.title, wanted!.onState ?? null);
       const embed: Embed = {
         frame,
         created,
         sessionId: held ? "" : wanted!.sessionId!,
         onState: wanted!.onState ?? null,
         held: held ? { html: held.html, scope: held.scope } : null,
+        waiting: null,
+        taking: null,
         own: held !== null,
         nestedDirty: false,
         path: held ? "" : (wanted!.path ?? ENTRY_DOCUMENT),

@@ -1,10 +1,55 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` ba73bba): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 147f467): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.13.3 (bb plugin) — 2026-10-29
+
+The bb plugin's release of the 0.5.3 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.13.3`): an `html` frame keeps the reader's work across
+a new version of its document, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.13.3.
+
+## 0.5.3 — 2026-10-29
+
+An `html` frame keeps the reader's drafts and scroll across a new version of its document, in pages-core, so both
+hosts carry it (B-0153): spec 02 R4.42a, R4.48a, 08 A207, fixture 15.
+
+`@unifedev/pages-core` 0.5.3, `@unifedev/claude-pages` 0.5.3, the bb plugin `@unifedev/thread-pages` 1.13.3.
+
+### Changed
+
+- **A new version of an `html` frame keeps what the reader typed.** `threadPage.embed(iframe, { html, scope, title })`
+  on an `<iframe>` that already shows an `html` frame with the same `scope` (or none in both) is now a new version of
+  that frame's document, not a fresh frame: it keeps the reader's drafts and scroll and takes the call's `title` and
+  `onState`. While the reader types in it, an answer from it is in flight, or it holds `setDirty(true)`, the frame keeps
+  the version it shows, is told a newer one waits (`data-thread-page-update`, the event, the forms' status line), and
+  takes the latest once nothing holds it, as an embedded page does with its revisions; a recording the frame asked for
+  (Dictate, a voice note) holds it too. Before it takes a version that waited, the frame waits `frameVersionGraceMs`
+  (400 ms) once nothing holds it, so a tap that lifted the hold still lands where it was aimed; before any version it
+  flushes its drafts and scroll, so the last keystrokes are kept and a form just sent does not come back filled in.
+  Drafts of a form with neither an `id` nor a `data-title` are not carried to a different text. A call with the text the frame already shows loads
+  nothing. Every call's stop function stops the frame: a page that disposes of an earlier call's stop function after
+  showing a new version now stops the frame, where until 0.5.2 that earlier function did nothing. Another `scope`,
+  `{ sessionId }`, or a container element still shows a fresh frame; a page that wants one on the same `<iframe>`
+  stops it first. Two calls without a `scope` on one `<iframe>` count as versions of one document. The new version
+  loads anew: it is not handed to `onPageUpdate`. Until now each call showed a fresh frame, so an app shown in a frame
+  lost the reader's typing when the page showed its new version. Tests:
+  `packages/pages-core/test/runtime/kernel/embed.test.ts`.
+
+### Fixed
+
+- **A frame restored before it has a viewport keeps its scroll.** In Firefox a frame of a page could reach
+  DOMContentLoaded with no viewport yet (`innerHeight` 0), so the scroll restored into it was clamped to the top;
+  the kernel now applies it again once the frame gets its size. Seen on the Claude Code host's page frame for a new
+  version of an `html` frame; it applies to every frame the kernel restores. Tests:
+  `packages/pages-core/test/runtime/kernel/restore.test.ts`.
 
 ## 1.13.2 (bb plugin) — 2026-10-28
 

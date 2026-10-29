@@ -250,6 +250,8 @@ export const LIMITS = Object.freeze({
   // Server-side extras this server adds (DESIGN §I P28).
   /** How long the shell waits for a kernel's `flushed` before removing a frame. 02 R-K4 */
   draftFlushMs: 200,
+  /** How long an `html` frame waits once nothing holds it before it takes a newer version, so the tap that lifted the hold (focus leaving a text area) lands in the version it was aimed at. 02 R4.42a */
+  frameVersionGraceMs: 400,
   /** How far behind the keystroke a draft reaches the shell. 02 R-K4 */
   draftDebounceMs: 250,
   /** How long after a delivery a user row with the same text is taken for it, where the provider returns no message id. 06 R-P5 */
