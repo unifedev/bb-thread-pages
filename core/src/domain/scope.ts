@@ -50,3 +50,24 @@ export function scopeProblem(value: unknown): string | null {
   if (!checked.ok) return checked.message;
   return "A scope crosses the wire in its canonical form: no trailing /, never empty";
 }
+
+/** Whether `scope` is `bound` or a folder below it; any scope is within no bound, and no scope is within none but no bound. 02 R4.42a; 07 R5.83a (B-0154) */
+export function scopeWithin(scope: string | null, bound: string | null): boolean {
+  if (bound === null) return true;
+  return scope !== null && (scope === bound || scope.startsWith(`${bound}/`));
+}
+
+/** The embedding kernel's mark of an `html` frame, as it crosses the wire: its bound (canonical or null) and title. 02 R4.48a; 05 R3.9 (B-0154) */
+export interface FrameMark {
+  readonly scope: string | null;
+  readonly title: string | null;
+}
+
+/** A frame mark of exactly `{ scope, title }`: a canonical scope or null, a title of at most 300 characters or null. 05 R3.9 */
+export function isFrameMark(value: unknown): value is FrameMark {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join(",") !== "scope,title") return false;
+  if (record.scope !== null && !isCanonicalScope(record.scope)) return false;
+  return record.title === null || (typeof record.title === "string" && record.title.length <= 300);
+}

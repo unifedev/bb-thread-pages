@@ -11,6 +11,7 @@ import { HOME_IDENTITY, isMethodName, isRequestId, isRevision, isSessionIdentity
 import { boundIssue, isJsonObject, parseStrictJson, type JsonValue, type Validation } from "../../domain/json/strict-json.ts";
 import { LIMITS } from "../../domain/limits.ts";
 import { EMPTY_REVISION, sha256Hex } from "../../domain/revision.ts";
+import { scopeWithin } from "../../domain/scope.ts";
 import { verifyActionToken } from "../../domain/tokens/action-token.ts";
 import { verifyAnswerToken } from "../../domain/tokens/answer-token.ts";
 import { challengeId, challengeMatches, mintChallenge, openChallenge, paramsFingerprint, type ChallengeKind, type ConfirmationBinding } from "../../domain/tokens/confirmation.ts";
@@ -99,6 +100,9 @@ async function eligibleRecord(ctx: ServingContext, session: string): Promise<Ses
 
 /** What an embedding kernel relays for an embedded document, as that document's own call. 02 R4.48 (U56) */
 const EMBED_RELAYED: ReadonlySet<string> = new Set(["storage.get", "storage.set", "storage.setMany"]);
+
+/** The built-ins that read a scope (07 R5.84a): with contributed calls, what an `html` frame's bound holds. 07 R5.83a */
+const SCOPED_STORAGE: ReadonlySet<string> = new Set(["storage.get", "storage.set", "storage.setMany"]);
 
 /** Who a contributed write was for, as the log names it: the session, and the page that embeds it when the call came through an embed. 07 R5.55 */
 function writer(caller: string, page: string): string {
@@ -280,6 +284,12 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
         if (relayed && !relayed.contributor && !EMBED_RELAYED.has(relayed.method)) throw new PageError("invalid_request", `${relayed.method} is not relayed for an embedded page`);
         if (relayed && !whole && !(relayed.contributor && relayed.effect === "read")) throw new PageError("unavailable", PUBLIC_MESSAGES.embedReadsOnly);
       }
+      // 5b. The contributor is told of any marked call, whatever session it is for (07 R5.84c); an `html` frame's call in the page's own session, its own or one it relays under a token for that session, stays in the folder the page bound it to; another session's page inside it keeps its own rules. 02 R4.42a; 07 R5.83a (B-0154)
+      const frame = bridgeRequest.frame ?? null;
+      if (frame && caller.session === token.session && !scopeWithin(scope, frame.scope)) {
+        const scoped = lookup.get(canonicalMethod(bridgeRequest.method));
+        if (scoped && (scoped.contributor || SCOPED_STORAGE.has(scoped.method))) throw new PageError("invalid_params", `This frame is bound to ${frame.scope}: its calls stay in that folder or below`);
+      }
       const page = await loadPageState(ctx, caller.session, caller.path);
       // A stop of the page's own session means the same whatever the page shows, and the reader presses it most while the agent saves: no `stale_page`, and its challenge is bound without the revision. 03 R5.28; 05 R2.13, R3.19 (B-0120)
       const ownStop = !home && canonicalMethod(bridgeRequest.method) === "sessions.stop" && isJsonObject(bridgeRequest.params) && bridgeRequest.params.sessionId === caller.session;
@@ -359,7 +369,7 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
       try {
         if (contributed) {
           contributedWrite = contributed.effect === "contributed-write" ? contributed : null;
-          const result = await ctx.contributions.invoke(contributed, params, { sessionId: home ? null : caller.session, scope }, bridgeRequest.id);
+          const result = await ctx.contributions.invoke(contributed, params, { sessionId: home ? null : caller.session, scope, ...(frame ? { frame } : {}) }, bridgeRequest.id);
           // Nothing else records a write no dialog saw. 07 R5.55
           if (contributedWrite) ctx.log.info(`contributed write ${contributed.method} for ${writer(caller.session, token.session)}: ok`);
           outcome = { result };

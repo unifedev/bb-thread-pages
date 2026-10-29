@@ -111,7 +111,7 @@ export function createRelay(deps: RelayDeps): Relay {
         return;
       }
       // The host is told about files only by the shell, from the files it holds. 05 R3.20a
-      request = { v: message.v, id: message.id, method: message.method, params: { ...message.params, files: files.map(describeFile) }, pageRevision: message.pageRevision, ...(message.scope !== undefined ? { scope: message.scope } : {}) };
+      request = { v: message.v, id: message.id, method: message.method, params: { ...message.params, files: files.map(describeFile) }, pageRevision: message.pageRevision, ...(message.scope !== undefined ? { scope: message.scope } : {}), ...(message.frame !== undefined ? { frame: message.frame } : {}) };
     }
     const withAttachments = (attachmentIds: string[]): BridgeRequestMessage => {
       const { files: _described, ...rest } = request.params as Record<string, unknown>;

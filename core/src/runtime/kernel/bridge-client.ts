@@ -2,7 +2,7 @@
 import { RESERVED_NAMESPACES } from "../../domain/capabilities/contributed.ts";
 import type { BridgeErrorCode } from "../../domain/errors.ts";
 import { LIMITS } from "../../domain/limits.ts";
-import { checkScope } from "../../domain/scope.ts";
+import { checkScope, scopeWithin } from "../../domain/scope.ts";
 import { BRIDGE_VERSION, isBridgeResponse, type BridgeRequestMessage, type BridgeResponseMessage } from "../shared/protocol.ts";
 
 /** How an embedding kernel relays an embedded document's call: as that document, under that embed's answer token. 02 R4.48 (U56) */
@@ -63,11 +63,14 @@ export interface BridgeClientDeps {
   send(request: BridgeRequestMessage): boolean;
   nextId(): string;
   document: Document;
+  /** An `html` frame's bound: `setScope` takes only it or a folder below it. 02 R4.42a, R4.63 (B-0154) */
+  bound?: string | null;
 }
 
 export function createBridgeClient(deps: BridgeClientDeps): BridgeClient {
   const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
-  let scope: string | null = null;
+  const bound = deps.bound ?? null;
+  let scope: string | null = bound;
   let roster: Promise<Map<string, string>> | null = null;
   const doc = deps.document;
 
@@ -177,6 +180,7 @@ export function createBridgeClient(deps: BridgeClientDeps): BridgeClient {
     setScope(folder) {
       const checked = checkScope(folder);
       if (!checked.ok) throw new TypeError(`threadPage.setScope: ${checked.message}`);
+      if (!scopeWithin(checked.scope, bound)) throw new TypeError(`threadPage.setScope: this frame is bound to ${bound}; its scope is that folder or one below it`);
       scope = checked.scope;
       return scope;
     },

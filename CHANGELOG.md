@@ -1,10 +1,42 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 147f467): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 8f676d5): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.13.4 (bb plugin) — 2026-10-29
+
+The bb plugin's release of the 0.5.4 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.13.4`): an `html` frame stays in the folder its page
+gave it, and a plugin is told a call came from it, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.13.4.
+
+## 0.5.4 — 2026-10-29
+
+An `html` frame is bound to the folder its page gave it, and a plugin is told a call came from it, in pages-core, so
+both hosts carry it (B-0154, B-0155): spec 02 R4.42a, R4.48a, R4.63; 04; 05 R3.9; 07 R5.83a, R5.84c and the call's
+shape; 08 A208, A209; fixture 15.
+
+`@unifedev/pages-core` 0.5.4, `@unifedev/claude-pages` 0.5.4, the bb plugin `@unifedev/thread-pages` 1.13.4.
+
+### Changed
+
+- **An app shown in a frame stays in its folder.** `threadPage.embed(iframe, { html, scope, title })`: `scope` is now
+  the frame's bound, not only where it starts. Inside the frame `setScope` takes only that folder or one below it;
+  `null` or any other folder throws `TypeError`. A `storage.*` or plugin call from the frame, its own or one it relays
+  under a token for the page's own session, whose scope is not that folder or below it is refused `invalid_params`
+  and does nothing. Without `scope` (or with `null`) the bound is the page's scope at the call; a page with no scope
+  gives no bound, and the frame keeps the page's whole reach. A frame inside a frame is held by both: an `embed` there
+  with a `scope` outside its bound throws. Other calls (`session.*`, `sessions.*`, forms, uploads) and another
+  session's page shown inside the frame are as before. Until now `scope` was only where the frame started, so an
+  app's script could widen it to the whole session. A page that has set its own scope and embeds an `html` frame
+  without `scope` now starts that frame in its scope instead of in none. Tests:
+  `packages/pages-core/test/serving/frame-bound.test.ts`, `packages/pages-core/test/runtime/kernel/embed.test.ts`.
 
 ## 1.13.3 (bb plugin) — 2026-10-29
 

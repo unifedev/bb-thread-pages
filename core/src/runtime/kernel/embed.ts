@@ -4,7 +4,7 @@ import type { BridgeErrorCode } from "../../domain/errors.ts";
 import { isSessionId } from "../../domain/ids.ts";
 import { LIMITS } from "../../domain/limits.ts";
 import { PAGE_FRAME_ALLOW, PAGE_SANDBOX } from "../../domain/sandbox.ts";
-import { checkScope } from "../../domain/scope.ts";
+import { checkScope, scopeWithin, type FrameMark } from "../../domain/scope.ts";
 import type { DraftRecord } from "../shared/drafts.ts";
 import { isKernelMessage, isReadyMessage, isRecord, makeFailure, type BridgeRequestMessage, type KernelConfig, type KernelMessage, type ShellMessage } from "../shared/protocol.ts";
 import type { ScrollState } from "../shared/scroll-state.ts";
@@ -50,6 +50,10 @@ export interface EmbedManagerDeps {
   working(): boolean;
   /** This page's configuration now (its revision moves with a hand-over, 02 R4.66): an `html` frame's is made from it. */
   config(): KernelConfig;
+  /** This document's scope now: the bound of an `html` frame it shows without `scope`. 02 R4.42a (B-0154) */
+  scope(): string | null;
+  /** This document's own bound, when it is an `html` frame: a frame it shows is bound within it. */
+  bound: string | null;
   /** Forwards to the shell: drafts with `embed` set, Dictate asks, Escape, and everything a frame of the page's own session sends. 02 R4.48a */
   send(message: KernelMessage): boolean;
   /** A fresh id on this page's channel, for what a frame of the page's own session sends through it. */
@@ -146,15 +150,17 @@ interface HeldVersion {
   tooLarge: boolean;
 }
 
-/** `{ html, scope?, title? }` checked: a bad scope or title throws as a bad `sessionId` does; a text over the bound is a state. 02 R4.42a */
-function heldOptions(wanted: EmbedOptions): { html: string; scope: string | null; title: string | null; tooLarge: boolean } {
+/** `{ html, scope?, title? }` checked: a bad scope or title throws as a bad `sessionId` does; a text over the bound is a state. Its bound is the given scope, else this document's at the call, and lies within this document's own bound. 02 R4.42a (B-0154) */
+function heldOptions(wanted: EmbedOptions, here: { scope: string | null; bound: string | null }): { html: string; scope: string | null; title: string | null; tooLarge: boolean } {
   if (typeof wanted.html !== "string") throw new TypeError("threadPage.embed: html must be text");
   if (wanted.sessionId !== undefined || wanted.path !== undefined) throw new TypeError("threadPage.embed takes { html } or { sessionId }, not both");
-  const scope = checkScope(wanted.scope);
-  if (!scope.ok) throw new TypeError(`threadPage.embed: ${scope.message}`);
+  const given = checkScope(wanted.scope);
+  if (!given.ok) throw new TypeError(`threadPage.embed: ${given.message}`);
+  const scope = given.scope ?? here.scope;
+  if (!scopeWithin(scope, here.bound)) throw new TypeError(`threadPage.embed: this frame is bound to ${here.bound}; a frame it shows is bound to that folder or one below it`);
   if (wanted.title !== undefined && (typeof wanted.title !== "string" || wanted.title.length > 300)) throw new TypeError("threadPage.embed: title must be text of at most 300 characters");
   const title = wanted.title?.trim() || null;
-  return { html: wanted.html, scope: scope.scope, title, tooLarge: new TextEncoder().encode(wanted.html).length > LIMITS.pagesReadBytes };
+  return { html: wanted.html, scope, title, tooLarge: new TextEncoder().encode(wanted.html).length > LIMITS.pagesReadBytes };
 }
 
 export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedManagerDeps): EmbedManager {
@@ -546,12 +552,20 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     return false;
   }
 
+  /** What an `html` frame's request carries out: its bound and title, or the mark of a frame inside it whose bound lies within this one (the innermost holds). A `{ sessionId }` frame's requests carry none. 02 R4.48a; 07 R5.83a, R5.84c (B-0154) */
+  function markOf(embed: Embed, inner: FrameMark | undefined): FrameMark {
+    const scope = embed.held!.scope;
+    if (inner && scopeWithin(inner.scope, scope)) return inner;
+    return { scope, title: embed.title };
+  }
+
   /** A frame of the page's own session is the page: what its kernel sends goes to this page's shell as this page's own. 02 R4.48a */
   function asPage(embed: Embed, data: KernelMessage): boolean {
     if (!("kind" in data)) {
       const request = data as BridgeRequestMessage;
       // A relayed call of the frame's own embed keeps that document's revision and token; the frame's own calls go under this page's revision. 02 R4.48
-      pass(embed, request.id, (id) => ({ ...request, id, ...(request.embed === undefined ? { pageRevision: deps.config().pageRevision } : {}) }));
+      const { frame: inner, ...rest } = request;
+      pass(embed, request.id, (id) => ({ ...rest, id, ...(request.embed === undefined ? { pageRevision: deps.config().pageRevision } : {}), ...(embed.held ? { frame: markOf(embed, inner) } : {}) }));
       return true;
     }
     switch (data.kind) {
@@ -933,7 +947,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     },
     embed(target, options) {
       const wanted = options as EmbedOptions | null;
-      const held = wanted && typeof wanted === "object" && wanted.html !== undefined ? heldOptions(wanted) : null;
+      const held = wanted && typeof wanted === "object" && wanted.html !== undefined ? heldOptions(wanted, { scope: deps.scope(), bound: deps.bound }) : null;
       if (!held && (!wanted || typeof wanted !== "object" || !isSessionId(wanted.sessionId))) throw new TypeError("threadPage.embed needs { sessionId } or { html }");
       if (!held && wanted!.path !== undefined && !isDocumentPath(wanted!.path)) throw new TypeError("threadPage.embed: path is not a document of a page");
       if (wanted!.onState !== undefined && typeof wanted!.onState !== "function") throw new TypeError("threadPage.embed: onState must be a function");

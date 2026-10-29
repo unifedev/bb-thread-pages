@@ -17,4 +17,4 @@ export type {
   Logger,
 } from "./provider.ts";
 export { ProviderError } from "./provider.ts";
-export type { ContributorHost, ContributorCall, ContributorAnswer, ContributorWorkspace, PageScriptAsk, PageScriptAnswer } from "./contributor.ts";
+export type { ContributorHost, ContributorCall, ContributorAnswer, ContributorFrame, ContributorWorkspace, PageScriptAsk, PageScriptAnswer } from "./contributor.ts";

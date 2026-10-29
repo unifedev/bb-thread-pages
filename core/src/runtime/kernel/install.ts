@@ -71,10 +71,10 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   const dirty = createDirtyTracker(doc, prim, (isDirty, custom) => send(isDirty ? { kind: "thread-page:dirty", custom } : { kind: "thread-page:clean" }));
   const typing = createTypingTracker(doc, prim, config.swapIdleMs, send);
   const session = createSessionState(doc);
-  const bridgeDeps = { pageRevision: config.pageRevision, send: (request: BridgeRequestMessage) => send(request), nextId: () => channel.nextId("b"), document: doc };
+  // An `html` frame starts in the scope the page gave it, and that scope is its bound. 02 R4.42a (B-0154)
+  const bound = embedded && typeof config.scope === "string" ? config.scope : null;
+  const bridgeDeps = { pageRevision: config.pageRevision, send: (request: BridgeRequestMessage) => send(request), nextId: () => channel.nextId("b"), document: doc, bound };
   const bridge = createBridgeClient(bridgeDeps);
-  // An `html` frame starts in the scope the page gave it. 02 R4.42a
-  if (config.scope !== undefined) bridge.setScope(config.scope);
   const initialCause: ReadOnlyCause = config.archived ? "archived" : config.stale ? "offline" : null;
   const readOnly = createReadOnlyController(doc, initialCause);
   const recorder = createRecordClient((message) => send(message), () => channel.nextId("r"));
@@ -118,6 +118,8 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
         // Read now, before any script of the page runs: an `html` frame gets this kernel, whatever the page does later.
         kernelSource: kernelSource(doc),
         config: () => config,
+        scope: () => bridge.scope(),
+        bound,
         dictate: (prompt, fromControl) => recorder.request("dictate", { prompt, fromControl }),
         voiceAvailable: () => voiceAvailable,
         workingLabel: () => session.label(),

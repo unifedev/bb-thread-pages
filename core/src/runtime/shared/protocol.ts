@@ -4,7 +4,7 @@ import { isDocumentPath } from "../../domain/document-path.ts";
 import { isSessionId, isSessionIdentity } from "../../domain/ids.ts";
 import { LIMITS } from "../../domain/limits.ts";
 import { isOwnFilePath } from "../../domain/own-files.ts";
-import { isCanonicalScope } from "../../domain/scope.ts";
+import { isCanonicalScope, isFrameMark, type FrameMark } from "../../domain/scope.ts";
 import { isDraftFields, isDraftFormRef, isDraftRecord, type DraftFormRef, type DraftRecord, type DraftValue } from "./drafts.ts";
 import { isScrollState, type ScrollState } from "./scroll-state.ts";
 
@@ -63,6 +63,8 @@ export interface BridgeRequestMessage {
   files?: File[];
   /** Set only by an embedding kernel relaying an embedded document's `storage.*` or contributed call: that embed's answer token, from which the host takes the caller. 02 R4.48; 07 R5.49 (U56) */
   embed?: string;
+  /** Set only by an embedding kernel on what an `html` frame sends: the bound its page gave it and its title. 02 R4.48a; 07 R5.83a, R5.84c (B-0154) */
+  frame?: FrameMark;
 }
 
 export type KernelMessage =
@@ -318,7 +320,8 @@ export function isSubmitFile(value: unknown): value is SubmitFile {
 /** The shell checks every bridge request before it leaves the reader's browser. 05 R3.7, R3.9 */
 export function isBridgeRequest(value: unknown, pageRevision?: string): value is BridgeRequestMessage {
   if (!isRecord(value)) return false;
-  if (!hasKeys(value, ["v", "id", "method", "params", "pageRevision"], ["scope", "files", "embed"])) return false;
+  if (!hasKeys(value, ["v", "id", "method", "params", "pageRevision"], ["scope", "files", "embed", "frame"])) return false;
+  if ("frame" in value && !isFrameMark(value.frame)) return false;
   if ("scope" in value && !isCanonicalScope(value.scope)) return false;
   if ("embed" in value && !(typeof value.embed === "string" && value.embed.length > 0 && value.embed.length <= LIMITS.tokenChars)) return false;
   if ("files" in value && !(Array.isArray(value.files) && value.files.every(isFileLike))) return false;

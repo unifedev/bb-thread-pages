@@ -135,7 +135,7 @@ export interface Contributions {
   /** Re-read when older than `contributionsTtlMs`; never rejects. */
   current(): Promise<ContributionSet>;
   cached(): ContributionSet;
-  invoke(spec: ContributedSpec, params: JsonValue, caller: { sessionId: string | null; scope: string | null }, requestId: string): Promise<JsonValue>;
+  invoke(spec: ContributedSpec, params: JsonValue, caller: { sessionId: string | null; scope: string | null; frame?: { scope: string | null; title: string | null } }, requestId: string): Promise<JsonValue>;
   /** The server reinjects the instruction on change (DR-33). */
   onChange(listener: (set: ContributionSet) => void): () => void;
 }

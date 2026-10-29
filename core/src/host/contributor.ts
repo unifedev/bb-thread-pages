@@ -29,11 +29,18 @@ export interface ContributorWorkspace {
   machine: string | null;                                         // the host's name for the machine; null where the host has one machine
 }
 
-/** One contributed call as the contributor receives it. spec 07 §The call, R5.48, R5.49, R5.84 */
+/** The `html` frame a contributed call came from: the folder its page bound it to and its title (a label, not a proof), each null when none was given. spec 07 R5.84c (B-0155) */
+export interface ContributorFrame {
+  scope: string | null;
+  title: string | null;
+}
+
+/** One contributed call as the contributor receives it. spec 07 §The call, R5.48, R5.49, R5.84, R5.84c */
 export interface ContributorCall {
   method: string;
   params: unknown;                                                // validated in params mode before the call (07 R5.48)
   caller: { sessionId: string | null; scope: string | null;      // from the action token; null session on the built-in home (R5.49)
+            frame?: ContributorFrame;                             // a call from an html frame, whatever session it is for; absent on every other (R5.84c)
             workspace: ContributorWorkspace | null };             // the host's, for that session; null on the built-in home (U44)
   requestId: string;
 }

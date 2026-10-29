@@ -1,8 +1,8 @@
 // @unifedev/pages-core: the public API of DESIGN §B.
-export const PAGES_CORE_VERSION = "0.5.3";
+export const PAGES_CORE_VERSION = "0.5.4";
 
 export { mountPages, type MountOptions, type PagesServer, type PagesSettings } from "./serving/mount.ts";
-export type { ServingHost, RouteTable, Route, PagesRequest, PagesResponse, Reader, ProviderHost, SessionRecord, SessionSettings, Waiting, RespondPayload, Message, ActivityItem, AttachmentRef, ProviderChoice, SettingScope, ReplySettings, AppliedSettings, Placement, Logger, ContributorHost, ContributorCall, ContributorAnswer, ContributorWorkspace } from "./host/index.ts";
+export type { ServingHost, RouteTable, Route, PagesRequest, PagesResponse, Reader, ProviderHost, SessionRecord, SessionSettings, Waiting, RespondPayload, Message, ActivityItem, AttachmentRef, ProviderChoice, SettingScope, ReplySettings, AppliedSettings, Placement, Logger, ContributorHost, ContributorCall, ContributorAnswer, ContributorFrame, ContributorWorkspace } from "./host/index.ts";
 export { ProviderError } from "./host/index.ts";
 export { LIMITS, type Limits } from "./domain/limits.ts";
 export { BRIDGE_ERROR_CODES, type BridgeErrorCode, PageError } from "./domain/errors.ts";
