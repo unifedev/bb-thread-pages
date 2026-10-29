@@ -616,10 +616,43 @@
     }
   }
   const goneIds = new Set(), goneChecked = new Map();
-  /** Asks the host whether a session the list no longer shows still exists, at most every 30 s. */
+  /** Where search read each row past the list: its workspace (null: the one list) and the page's cursor. B-0205 */
+  const foundAt = new Map();
+  /** Asks the host whether a session the list no longer shows still exists, at most every 30 s. A row search read
+   *  past the list is read again on its page (and the next, for rows that moved down), so the open session's row stays
+   *  fresh: its state, its wait, its page. Only where that misses it does the general check run. U57; B-0205 */
   function checkGone(id) {
     if (Date.now() - (goneChecked.get(id) || 0) < 30000) return;
     goneChecked.set(id, Date.now());
+    const fresh = (row) => {
+      if (!byId.has(id)) return;
+      byId.set(id, row);
+      sessions = sessions.map((session) => (session.id === id ? row : session));
+      if (activeAll) activeAll = activeAll.map((session) => (session.id === id ? row : session));
+      sideSig = "";
+      renderSidebar();
+      if (refresh) refresh();
+    };
+    const at = foundAt.get(id);
+    if (!at) { checkHost(id, fresh); return; }
+    (async () => {
+      let cursor = at.cursor;
+      for (let page = 0; page < 2; page += 1) {
+        // A read that failed (refused, halved, the fallback switched) says nothing: the next pass tries the page again.
+        const found = await readPage(listParams(at.workspaceId ? { workspaceId: at.workspaceId } : {}), cursor).catch(() => null);
+        if (!found || found === SWITCHED) return;
+        const hit = found.sessions.find((session) => session.id === id);
+        if (hit) { foundAt.set(id, { workspaceId: at.workspaceId, cursor }); fresh(hit); return; }
+        cursor = found.nextCursor;
+        if (!cursor) break;
+      }
+      // Read and not there: the general check decides.
+      foundAt.delete(id);
+      checkHost(id, fresh);
+    })();
+  }
+  /** The general check: the host's transcript says whether it exists, its workspace's archived rows whether it is archived. */
+  function checkHost(id, fresh) {
     const drop = () => {
       sessions = sessions.filter((session) => session.id !== id);
       byId.delete(id);
@@ -637,7 +670,7 @@
         if (!found || found === SWITCHED) return;
         const hit = found.sessions.find((session) => session.id === id);
         if (hit) {
-          if (!hit.archived) return;
+          if (!hit.archived) { fresh(hit); return; }
           archived = archived || [];
           if (!archived.some((session) => session.id === id)) archived.unshift(hit);
           goneIds.add(id);
@@ -848,11 +881,15 @@
     if (!activeAll) activeAll = [];
     try {
       while (!activeDone && isWanted()) {
-        const page = await readPage(listParams(), activeCursor);
+        const cursor = activeCursor;
+        const page = await readPage(listParams(), cursor);
         // The fallback took over (its rows are already in the list): stop. Null: the page halved, so ask again.
         if (page === SWITCHED) return;
         if (!page) continue;
-        for (const session of page.sessions) if (!activeAll.some((one) => one.id === session.id)) activeAll.push(session);
+        for (const session of page.sessions) {
+          foundAt.set(session.id, { workspaceId: null, cursor });
+          if (!activeAll.some((one) => one.id === session.id)) activeAll.push(session);
+        }
         activeCursor = page.nextCursor;
         activeDone = !activeCursor;
         onProgress();
@@ -871,7 +908,10 @@
         try { page = await readPage(listParams({ workspaceId: next.workspaceId }), next.cursor); }
         catch (error) { if (error.code === "invalid_result" || error.code === "not_found") { activeQueue.shift(); continue; } throw error; }
         if (!page || page === SWITCHED) continue;
-        for (const session of page.sessions) if (!activeAll.some((one) => one.id === session.id)) activeAll.push(session);
+        for (const session of page.sessions) {
+          foundAt.set(session.id, { workspaceId: next.workspaceId, cursor: next.cursor });
+          if (!activeAll.some((one) => one.id === session.id)) activeAll.push(session);
+        }
         if (page.nextCursor) next.cursor = page.nextCursor; else activeQueue.shift();
         onProgress();
         if (activeQueue.length) await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -1830,7 +1870,14 @@
     const scrim = h("div", { class: "scrim" }, palette);
     const close = () => { scrim.remove(); document.removeEventListener("keydown", keys, true); };
     scrim.addEventListener("pointerdown", (event) => { if (event.target === scrim) close(); });
-    const pick = (session) => { close(); openSession(session.id); };
+    // A row search read past the sidebar's joins the list as the open session; the list's rule keeps it there while
+    // the host finds it, and only the host saying it is gone makes it "not listed". 03 R5.12a; U57
+    const pick = (session) => {
+      close();
+      // One the host already said is gone opens as "not listed" at once.
+      if (!lookup(session.id) && !goneIds.has(session.id)) { sessions = sessions.concat([session]); byId.set(session.id, session); }
+      openSession(session.id);
+    };
     const draw = () => {
       const query = input.value.trim().toLowerCase();
       const known = new Set(sessions.map((session) => session.id));

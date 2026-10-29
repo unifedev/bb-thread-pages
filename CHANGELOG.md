@@ -1,10 +1,45 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` e3f3a9d): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` d002a7f): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.14.6 (bb plugin) — 2026-10-29
+
+The bb plugin's release of the 0.6.11 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.6`): an older session picked from the home's search
+opens, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.6.
+
+## 0.6.11 — 2026-10-29
+
+An older session found with the home's search opens and stays open. In pages-core's built-in home, so both hosts
+carry it (B-0205): spec 08 A201.
+
+`@unifedev/pages-core` 0.6.6, `@unifedev/claude-pages` 0.6.11, the bb plugin `@unifedev/thread-pages` 1.14.6.
+
+### Fixed
+
+- **An older session picked from the home's search opens.** The home's sidebar shows the newest sessions (of each
+  workspace, where there are several) and says that search finds the rest. Search did find them, but picking one
+  past the sidebar's rows showed "This session is not listed" for a session that was live. The picked session now
+  joins the list as the open session and stays there while the host still finds it. Every 30 s the home reads again
+  the one page search found it on, so its state, a question or decision it waits on, and a page written later all
+  show, also where the host lists by start and the session never comes back among the newest rows. The home says
+  "not listed" only once the host says the session is gone, as it already did for a session started from the home,
+  and at once for one it already knew to be gone. Leaving it returns the sidebar to the newest rows. Test: `packages/pages-core/test/agent/home.test.ts`.
+
+## 0.6.10 — 2026-10-29
+
+On Claude Code, a page answer that Claude Code throws away after a stop in the terminal is no longer lost (B-0208),
+and answers after a stop run in the order you sent them (B-0210).
+`@unifedev/claude-pages` 0.6.10; `@unifedev/pages-core` stays 0.6.5 and the bb plugin `@unifedev/thread-pages`
+1.14.5: neither changes.
 
 ## 1.14.5 (bb plugin) — 2026-10-29
 
