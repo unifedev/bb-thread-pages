@@ -618,6 +618,8 @@
   const goneIds = new Set(), goneChecked = new Map();
   /** Where search read each row past the list: its workspace (null: the one list) and the page's cursor. B-0205 */
   const foundAt = new Map();
+  /** The workspace of a session the home reopened after a reload before the list holds its row. B-0214 */
+  const restoredIn = new Map();
   /** Asks the host whether a session the list no longer shows still exists, at most every 30 s. A row search read
    *  past the list is read again on its page (and the next, for rows that moved down), so the open session's row stays
    *  fresh: its state, its wait, its page. Only where that misses it does the general check run. U57; B-0205 */
@@ -625,7 +627,12 @@
     if (Date.now() - (goneChecked.get(id) || 0) < 30000) return;
     goneChecked.set(id, Date.now());
     const fresh = (row) => {
-      if (!byId.has(id)) return;
+      if (!byId.has(id)) {
+        // Reopened after a reload and found: it joins the list as the open session, as a pick does. B-0214
+        if (!restoredIn.has(id) || goneIds.has(id) || view.kind !== "session" || view.id !== id) return;
+        restoredIn.delete(id);
+        sessions = sessions.concat([row]);
+      }
       byId.set(id, row);
       sessions = sessions.map((session) => (session.id === id ? row : session));
       if (activeAll) activeAll = activeAll.map((session) => (session.id === id ? row : session));
@@ -638,9 +645,17 @@
     (async () => {
       let cursor = at.cursor;
       for (let page = 0; page < 2; page += 1) {
-        // A read that failed (refused, halved, the fallback switched) says nothing: the next pass tries the page again.
-        const found = await readPage(listParams(at.workspaceId ? { workspaceId: at.workspaceId } : {}), cursor).catch(() => null);
-        if (!found || found === SWITCHED) return;
+        let found;
+        try { found = await readPage(listParams(at.workspaceId ? { workspaceId: at.workspaceId } : {}), cursor); }
+        catch (error) {
+          // The host refuses the place itself (one host's cursor names a session since deleted; the page no longer
+          // validates): a miss. Anything else (a rate limit, the network) says nothing: the next pass tries again. B-0215
+          if (["not_found", "invalid_params", "invalid_result"].includes(error.code)) break;
+          return;
+        }
+        // The hub now reads by workspace: a place in the one list is a miss. A halved page: the next pass tries again.
+        if (found === SWITCHED) break;
+        if (!found) return;
         const hit = found.sessions.find((session) => session.id === id);
         if (hit) { foundAt.set(id, { workspaceId: at.workspaceId, cursor }); fresh(hit); return; }
         cursor = found.nextCursor;
@@ -662,11 +677,11 @@
     };
     call("sessions.messages", { sessionId: id, limit: 1 }).then(async () => {
       // Still there: archived in the host, perhaps. Its workspace's archived rows say so; then it stays open, read-only.
-      const row = byId.get(id);
-      if (!row || !row.workspaceId) return;
+      const workspaceId = (byId.get(id) || {}).workspaceId || restoredIn.get(id);
+      if (!workspaceId) return;
       let cursor = null;
       for (let page = 0; page < 3; page += 1) {
-        const found = await readPage({ includeArchived: true, includeChildren: true, workspaceId: row.workspaceId }, cursor).catch(() => null);
+        const found = await readPage({ includeArchived: true, includeChildren: true, workspaceId }, cursor).catch(() => null);
         if (!found || found === SWITCHED) return;
         const hit = found.sessions.find((session) => session.id === id);
         if (hit) {
@@ -1125,12 +1140,20 @@
   }
 
   // ---- navigation -----------------------------------------------------------------------------------
+  /** What a reload comes back to. A session also keeps its title, workspace and where search found it, so one past
+   *  the list's rows opens again there. B-0214 */
+  function viewPref() {
+    if (view.kind !== "session") return { kind: view.kind, atMs: Date.now() };
+    const row = lookup(view.id);
+    const at = foundAt.get(view.id) || view.at || null;
+    return { kind: "session", id: view.id, atMs: Date.now(), title: row ? row.title : view.title || null, workspaceId: row ? row.workspaceId : view.workspaceId || null, at };
+  }
   function go(next, options) {
     dismiss();
     if (teardown) { teardown(); teardown = null; }
     refresh = null;
     view = next;
-    prefs.view = next.kind === "session" ? { kind: "session", id: next.id, atMs: Date.now() } : { kind: next.kind, atMs: Date.now() };
+    prefs.view = viewPref();
     savePrefs();
     appEl.classList.remove("drawer");
     sideSig = "";
@@ -1374,7 +1397,7 @@
     let session = lookup(id);
     let placeholder = !session;
     if (!session && loadedAt && !(options && (options.fresh || options.restore))) { renderGone(id); return; }
-    session = session || { id, title: options && options.restore ? "…" : "New session", state: "working", waiting: null, page: { available: false }, archived: false, workspaceId: prefs.compose.workspaceId };
+    session = session || { id, title: options && options.restore ? view.title || "…" : "New session", state: "working", waiting: null, page: { available: false }, archived: false, workspaceId: prefs.compose.workspaceId };
     let mode = modeFor(session);
     const titleEl = h("span", { class: "title", text: titleOf(session) });
     const more = button({ class: "ib", "aria-label": "Session actions", "aria-haspopup": "menu" }, icon("more"));
@@ -1420,13 +1443,16 @@
       const current = lookup(id);
       if (!current) {
         if (!loadedAt) return;
-        if (options && options.restore) { go({ kind: "new" }); return; }
-        // Started from here: it stays open while the host still finds it; only `not_found` makes it "not listed". U57
-        if (options && options.fresh && !goneIds.has(id)) { checkGone(id); return; }
+        // Reopened after a reload with nowhere saved to read it (saved before B-0214): a new session, as before.
+        if (options && options.restore && !restoredIn.has(id) && !foundAt.has(id)) { go({ kind: "new" }); return; }
+        // Started from here, or reopened after a reload: it stays open while the host still finds it; only
+        // `not_found` makes it "not listed". U57; B-0214
+        if (options && (options.fresh || options.restore) && !goneIds.has(id)) { checkGone(id); return; }
         renderGone(id);
         return;
       }
       if (options) { options.fresh = false; options.restore = false; }
+      restoredIn.delete(id);
       // Opened before the list had loaded: now the row says whether there is a page to show.
       if (placeholder) { placeholder = false; const want = modeFor(current); if (!prefs.modes[id] && want !== mode) switchTo(want, false); }
       session = current;
@@ -1977,13 +2003,19 @@
   await loadWorkspaces();
   await loadProviders();
   // The view's time moves while the reader stays on it, so a reload after a long read still comes back there.
-  const touchView = () => { if (prefs.view) { prefs.view.atMs = Date.now(); savePrefs(); } };
+  const touchView = () => { if (prefs.view) { prefs.view = viewPref(); savePrefs(); } };
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") touchView(); });
   setInterval(() => { if (document.visibilityState !== "hidden") touchView(); }, 180000);
   // A reload comes back to where the reader was; opening the hub later, or elsewhere, starts at home, as the host does.
   const recent = prefs.view && prefs.view.kind && (!prefs.view.atMs || Date.now() - prefs.view.atMs < 10 * 60e3);
   const start = recent ? prefs.view : { kind: "new" };
-  go(start.kind === "session" && start.id ? { kind: "session", id: start.id } : { kind: ["drafts", "permissions"].includes(start.kind) ? start.kind : "new" }, { restore: true });
+  if (start.kind === "session" && start.id) {
+    // Where search found it and its workspace, for when the list does not hold its row. B-0214
+    const at = start.at && typeof start.at === "object" && (start.at.cursor === null || typeof start.at.cursor === "string") && (start.at.workspaceId === null || typeof start.at.workspaceId === "string") ? { workspaceId: start.at.workspaceId, cursor: start.at.cursor } : null;
+    if (at) foundAt.set(start.id, at);
+    if (typeof start.workspaceId === "string") restoredIn.set(start.id, start.workspaceId);
+    go({ kind: "session", id: start.id, title: typeof start.title === "string" ? start.title : null, workspaceId: restoredIn.get(start.id) || null, at }, { restore: true });
+  } else go({ kind: ["drafts", "permissions"].includes(start.kind) ? start.kind : "new" }, { restore: true });
   watchSessions();
 })();
 </script>
