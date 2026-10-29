@@ -13,6 +13,7 @@ import { requireReader } from "./request.ts";
 import { loadPageView, requirePageSession, type PageView } from "./session-access.ts";
 import { renderShell } from "./shell-html.ts";
 import { voiceAvailability } from "./voice.ts";
+import { shellHead } from "./web-app.ts";
 
 export interface ShellArgs {
   access: SessionAccess;
@@ -94,7 +95,7 @@ export function shellRoute(ctx: ServingContext) {
       // A designated home is an agent's page: it is served as any page and gets none of the built-in home's duties (NS-1).
       const config = await buildShellConfig(ctx, request, { access, path, query, view, title: access.record.title });
       const nonce = shellNonce(ctx);
-      const body = renderShell({ nonce, config });
+      const body = renderShell({ nonce, config, head: await shellHead(ctx, access) });
       const headers = shellHeaders(nonce);
       return htmlResponse(200, body, { csp: headers.get("content-security-policy")!, permissionsPolicy: headers.get("permissions-policy")! });
     } catch (error) {

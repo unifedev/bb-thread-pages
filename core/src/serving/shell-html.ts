@@ -1,11 +1,13 @@
-// The shell document template (nonce CSP, `microphone=(self)`, elements the runtime expects) — identical wherever a page is read, and drawing no chrome around the page (05 R2.14–R2.16, R3.5, R3.6; DESIGN §F.2; U49).
+// The shell document template (nonce CSP, `microphone=(self)`, elements the runtime expects, the install head) — identical wherever a page is read, and drawing no chrome around the page (05 R2.14–R2.16, R2.14a, R3.5, R3.6; DESIGN §F.2; U49).
 import { escapeAttribute, escapeHtml } from "../domain/html/escape.ts";
 import { SHELL_RUNTIME } from "../generated/shell-runtime.ts";
 import type { ShellConfig } from "../runtime/shared/protocol.ts";
+import type { ShellHead } from "./web-app.ts";
 
 export interface ShellView {
   nonce: string;
   config: ShellConfig;
+  head: ShellHead;
 }
 
 /** The shell's own style: one block under the nonce, nothing from the page. The frame fills the viewport; the notice strip has no height until it has text. 05 R3.6; U49 */
@@ -27,14 +29,17 @@ dialog button{padding:.25rem .55rem;border:1px solid var(--line);border-radius:.
 /**
  * The trusted shell: the frame host (the runtime creates the sandboxed
  * frame), the notice strip, the dialog and the recording bar. Nothing is
- * drawn around the page; `<title>` alone carries the session's title. Its
- * one script carries `ShellConfig` in a data attribute; no reader-specific
- * text, the same everywhere. 05 R2.14–R2.16, R3.3; U49
+ * drawn around the page; `<title>` alone carries the session's title. The
+ * head also names the address for a shortcut (the Syns mark, a name, a
+ * description, the bar colour, the manifest), which draws nothing. Its one
+ * script carries `ShellConfig` in a data attribute; no reader-specific text,
+ * the same everywhere. 05 R2.14–R2.16, R2.14a, R3.3; U49
  */
 export function renderShell(view: ShellView): string {
   const title = escapeHtml(view.config.title);
   const nonce = escapeAttribute(view.nonce);
   const config = escapeAttribute(JSON.stringify(view.config));
+  const head = view.head;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -42,6 +47,16 @@ export function renderShell(view: ShellView): string {
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>${title}</title>
+<meta name="description" content="${escapeAttribute(head.description)}">
+<meta name="application-name" content="${escapeAttribute(head.appName)}">
+<meta name="apple-mobile-web-app-title" content="${escapeAttribute(head.appName)}">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="${escapeAttribute(head.theme.light)}" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="${escapeAttribute(head.theme.dark)}" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="${escapeAttribute(head.favicon)}">
+<link rel="apple-touch-icon" sizes="180x180" href="${escapeAttribute(head.appleTouchIcon)}">
+<link rel="manifest" href="${escapeAttribute(head.manifest)}" crossorigin="use-credentials">
 <style nonce="${nonce}">${SHELL_CSS}</style>
 </head>
 <body>

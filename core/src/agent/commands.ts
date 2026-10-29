@@ -32,12 +32,13 @@ export interface CommandOptions {
 
 export const COMMAND_ROLES: readonly CommandRole[] = ["init", "guide", "status", "home", "grants"];
 
-/** The exact first lines of `init`. 08 A01, A02, A53; DESIGN §B.5 */
+/** The exact first lines of `init`, and its line for the agent's own check. 08 A01, A02, A53, A211; DESIGN §B.5 */
 export const INIT_LINES = Object.freeze({
   new: (path: string) => `NEW      — no page yet; write the whole document at ${path}`,
   seeded: (path: string) => `NEW      — created from the operator's seed at ${path}; rewrite it for this task`,
   existing: (path: string) => `EXISTING — the page exists at ${path}; read it before editing`,
   skip: (reason: string) => `SKIP     — this session has no page: ${reason}. Answer in chat and stay off the page.`,
+  local: (url: string) => `Local: ${url} (this machine only, for your own check)`,
 });
 
 type Current = { kind: "session"; record: SessionRecord } | { kind: "skip"; reason: string };
@@ -56,6 +57,13 @@ export async function pageUrl(ctx: ServingContext, sessionId: string): Promise<{
   const origin = await ctx.serving.origin();
   const path = `${ctx.serving.base()}/page?session=${encodeURIComponent(sessionId)}`;
   return origin ? { url: `${origin}${path}`, relative: false } : { url: path, relative: true };
+}
+
+/** The page on the host's check origin, when it reports one other than the reader's; null otherwise. 04 R6.7a */
+async function checkUrl(ctx: ServingContext, sessionId: string): Promise<string | null> {
+  const [origin, check] = await Promise.all([ctx.serving.origin(), ctx.serving.checkOrigin ? ctx.serving.checkOrigin() : Promise.resolve(null)]);
+  if (!origin || !check || check === origin) return null;
+  return `${check}${ctx.serving.base()}/page?session=${encodeURIComponent(sessionId)}`;
 }
 
 async function homeUrl(ctx: ServingContext): Promise<string> {
@@ -137,7 +145,8 @@ export function createCommands(ctx: ServingContext, options: CommandOptions = {}
       else if (seeded === "existing") state = "existing";
     }
     const { url, relative } = await pageUrl(ctx, record.id);
-    const lines = [INIT_LINES[state](located.path), `URL: ${url}`, `Root: ${located.root}`];
+    const local = await checkUrl(ctx, record.id);
+    const lines = [INIT_LINES[state](located.path), `URL: ${url}`, ...(local ? [INIT_LINES.local(local)] : []), `Root: ${located.root}`];
     if (relative) lines.push("The URL is a path on this host's own address; open it there.");
     if (state !== "existing" && record.clearedFromId) lines.push(`Cleared from: ${(await pageUrl(ctx, record.clearedFromId)).url}`);
     if (state === "existing") {

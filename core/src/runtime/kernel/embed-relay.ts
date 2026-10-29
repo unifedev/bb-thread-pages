@@ -2,6 +2,7 @@
 import { RESERVED_NAMESPACES } from "../../domain/capabilities/contributed.ts";
 import type { BridgeErrorCode } from "../../domain/errors.ts";
 import { LIMITS } from "../../domain/limits.ts";
+import type { FrameMark } from "../../domain/scope.ts";
 import { isRecord } from "../shared/protocol.ts";
 
 /** What the relay knows of one embed. */
@@ -23,10 +24,12 @@ export interface RelayDeps {
   now(): number;
   /** Answers through `pages.answer` under the embed's token; the manager keeps the cooldowns. */
   answer(embed: EmbedView, body: Record<string, unknown>): Promise<unknown>;
-  /** A `storage.*` or contributed call made as the embedded document, under the embed's answer token, in the document's scope. 02 R4.48 (U56) */
-  asEmbedded(embed: EmbedView, method: string, params: unknown, scope: string | null): Promise<unknown>;
+  /** A `storage.*`, contributed or (in the home's view) `pages.read` call made as the embedded document, under the embed's answer token, in the document's scope, with the mark of the `html` frame it came from. 02 R4.48 (U56), R4.48b */
+  asEmbedded(embed: EmbedView, method: string, params: unknown, scope: string | null, frame: FrameMark | null): Promise<unknown>;
   /** Whether the embedded document has its whole reach here: this page is the built-in home or of the embedded session. 02 R4.48 (U56) */
   whole(embed: EmbedView): Promise<boolean>;
+  /** Whether this page is the built-in home, so the embed is the home's view of a page. 02 R4.48b (B-0189) */
+  home(embed: EmbedView): Promise<boolean>;
 }
 
 export class RelayRefusal extends Error {
@@ -56,11 +59,12 @@ const AS_EMBEDDED: ReadonlySet<string> = new Set(["storage.get", "storage.set", 
 const KEPT: ReadonlySet<string> = new Set(["context.get", "sessions.snapshot", "sessions.openHost", "providers.list", "workspaces.list", "pages.open", "navigation.openExternal", "session.activity", "session.messages", "session.respond", "session.reply", "voice.captureAndTranscribe", ...AS_EMBEDDED]);
 export const GESTURE_WINDOW_MS = 5_000;
 
-/** What an embed lists: inside another session's page, its contributors' reads and no storage. 02 R4.48 (U56) */
-export function embeddedRoster(roster: Record<string, unknown>[], whole = true): Record<string, unknown>[] {
+/** What an embed lists: inside another session's page, its contributors' reads and no storage; in the home's view of a page, `pages.read` too, for its frames. 02 R4.48 (U56), R4.48b */
+export function embeddedRoster(roster: Record<string, unknown>[], whole = true, home = false): Record<string, unknown>[] {
   return roster.filter((entry) => {
     if (typeof entry.method !== "string") return false;
     if (entry.contributor !== undefined) return isContributed(entry.method) && (whole || entry.effect === "read");
+    if (entry.method === "pages.read") return home;
     return KEPT.has(entry.method) && (whole || !AS_EMBEDDED.has(entry.method));
   });
 }
@@ -77,12 +81,12 @@ function unavailable(message: string): never {
   throw new RelayRefusal("unavailable", message);
 }
 
-/** The relay table, one call; `scope` is the embedded document's (07 R5.81). Throws `RelayRefusal` or the embedding bridge's own error. */
-export async function relayCall(embed: EmbedView, method: string, params: unknown, deps: RelayDeps, scope: string | null = null): Promise<unknown> {
+/** The relay table, one call; `scope` is the embedded document's (07 R5.81), `frame` the mark of the `html` frame of that document it came from (02 R4.48b). Throws `RelayRefusal` or the embedding bridge's own error. */
+export async function relayCall(embed: EmbedView, method: string, params: unknown, deps: RelayDeps, scope: string | null = null, frame: FrameMark | null = null): Promise<unknown> {
   if (method === "context.get") {
     // As on its own URL: nothing, null or an empty object (03 §context.get).
     if (params !== null && params !== undefined && !(isRecord(params) && Object.keys(params).length === 0)) throw new RelayRefusal("invalid_params", "context.get takes no parameters");
-    return { protocolVersion: 1, session: { id: embed.sessionId, title: embed.title ?? "", workspaceId: embed.workspaceId ?? "" }, page: { revision: embed.revision, readOnly: embed.readOnly }, capabilities: embeddedRoster(await deps.roster(), await deps.whole(embed)) };
+    return { protocolVersion: 1, session: { id: embed.sessionId, title: embed.title ?? "", workspaceId: embed.workspaceId ?? "" }, page: { revision: embed.revision, readOnly: embed.readOnly }, capabilities: embeddedRoster(await deps.roster(), await deps.whole(embed), await deps.home(embed)) };
   }
   if (method === "session.activity") return activityOf(embed, deps);
   if (method === "session.messages") return deps.invoke("sessions.messages", { ...(isRecord(params) ? params : {}), sessionId: embed.sessionId });
@@ -106,6 +110,12 @@ export async function relayCall(embed: EmbedView, method: string, params: unknow
     return deps.invoke(method, params);
   }
   if (FORWARDED.has(method)) return deps.invoke(method, params);
+  // The home's view of a page reads and answers for its frames as that page, under the embed's token; another session's page inside it reads the transcript as here. 02 R4.48b; 03 R5.59a (B-0189)
+  if (method === "sessions.messages" && (await deps.home(embed))) return deps.invoke(method, params);
+  if ((method === "pages.read" || method === "pages.answer") && (await deps.home(embed))) {
+    if (!embed.answerToken) unavailable("This page is still loading; try again in a moment.");
+    return deps.asEmbedded(embed, method, params, scope, frame);
+  }
   // Its own storage and its contributors' calls, for the embedded session: the host takes the caller from the embed's answer token. 02 R4.48; 07 R5.49 (U56)
   if (AS_EMBEDDED.has(method) || isContributed(method)) {
     // Inside another session's page, only its contributors' reads; the host refuses the rest too. 02 R4.48 (U56)
@@ -115,7 +125,7 @@ export async function relayCall(embed: EmbedView, method: string, params: unknow
       if (entry && entry.effect !== "read") unavailable(READS_ONLY);
     }
     if (!embed.answerToken) unavailable("This page is still loading; try again in a moment.");
-    return deps.asEmbedded(embed, method, params, scope);
+    return deps.asEmbedded(embed, method, params, scope, frame);
   }
   if (method === "voice.captureAndTranscribe") unavailable("voice.captureAndTranscribe is not available inside an embedded page; the text-area Dictate control is.");
   return unavailable(`${method} is not available to a page shown inside another page.`);

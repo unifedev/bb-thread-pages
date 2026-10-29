@@ -3,7 +3,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { ServingHost } from "../../core/src/host/index.ts";
 import { mountRoutes } from "./mount.ts";
-import { createOrigin, createOwnOrigins } from "./origin.ts";
+import { createOrigin, createOwnOrigins, loopbackOrigin } from "./origin.ts";
 
 export function routeBase(pluginId: string): string {
   return `/api/v1/plugins/${pluginId}/http`;
@@ -16,5 +16,6 @@ export function createBbServingHost(bb: BbPluginApi): ServingHost {
     base: () => base,
     origin: createOrigin(bb),
     ownOrigins: createOwnOrigins(bb),
+    checkOrigin: async () => loopbackOrigin(bb), // 04 R6.7a: bb's loopback server opens the page with no sign-in (HOST_FACTS H-25)
   };
 }

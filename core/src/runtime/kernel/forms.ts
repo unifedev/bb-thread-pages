@@ -92,7 +92,7 @@ export function statusLine(form: HTMLFormElement): HTMLElement {
 interface FormStatus {
   readOnly: string | null;
   override: string | null;
-  /** A delivery outcome ("Sent", "Queued") goes when the session's state moves on; an error or a notice stands until the reader's next input in the form (review NS-8). */
+  /** A delivery outcome ("Sent", "Queued") goes when the session is next idle; an error or a notice stands until the reader's next input in the form (review NS-8). */
   transient: boolean;
   update: string | null;
   standing: string;
@@ -122,7 +122,7 @@ export function setStatus(form: HTMLFormElement, text: string): void {
   renderStatus(form);
 }
 
-/** A delivery outcome ("Sent", "Queued"): shown until the session's state next changes. 02 R4.8; U49 */
+/** A delivery outcome ("Sent", "Queued"): shown until the session is next idle. 02 R4.8; U49; 05 R2.24 */
 export function setDeliveryStatus(form: HTMLFormElement, text: string): void {
   const status = statusOf(form);
   status.override = text || null;
@@ -130,7 +130,7 @@ export function setDeliveryStatus(form: HTMLFormElement, text: string): void {
   renderStatus(form);
 }
 
-/** `transientOnly`: a state change clears delivery outcomes and leaves errors standing. */
+/** `transientOnly`: the session going idle clears delivery outcomes and leaves errors standing. */
 export function clearStatusOverride(form: HTMLFormElement, transientOnly = false): void {
   const status = statusOf(form);
   if (transientOnly && !status.transient) return;

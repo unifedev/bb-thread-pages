@@ -65,6 +65,8 @@ export interface BridgeRequestMessage {
   embed?: string;
   /** Set only by an embedding kernel on what an `html` frame sends: the bound its page gave it and its title. 02 R4.48a; 07 R5.83a, R5.84c (B-0154) */
   frame?: FrameMark;
+  /** Set only by the built-in home's kernel beside `embed`, on a call of another session's page shown inside the page its embed shows: that embed's answer token. 02 R4.48b; 05 R3.9 (B-0189) */
+  via?: string;
 }
 
 export type KernelMessage =
@@ -177,6 +179,8 @@ export interface KernelConfig {
   scope?: string;
   /** How many `html` frames this document sits inside, counted from the page: 1 for a frame the page made; absent on a page. 02 R4.42a */
   frameDepth?: number;
+  /** True in a frame inside a page (an `html` frame, a `{ sessionId }` frame, another session's page shown in a page); false on a page shown whole: its own URL or the built-in home's view of it. 07 R5.93 (B-0189) */
+  frame: boolean;
   /** Large media the shell fetches. 02 R4.25a */
   deferredFiles: string[];
   /** How long after the last keystroke a focused text control stops deferring a swap. 05 R2.21 (U49) */
@@ -320,10 +324,11 @@ export function isSubmitFile(value: unknown): value is SubmitFile {
 /** The shell checks every bridge request before it leaves the reader's browser. 05 R3.7, R3.9 */
 export function isBridgeRequest(value: unknown, pageRevision?: string): value is BridgeRequestMessage {
   if (!isRecord(value)) return false;
-  if (!hasKeys(value, ["v", "id", "method", "params", "pageRevision"], ["scope", "files", "embed", "frame"])) return false;
+  if (!hasKeys(value, ["v", "id", "method", "params", "pageRevision"], ["scope", "files", "embed", "frame", "via"])) return false;
   if ("frame" in value && !isFrameMark(value.frame)) return false;
   if ("scope" in value && !isCanonicalScope(value.scope)) return false;
   if ("embed" in value && !(typeof value.embed === "string" && value.embed.length > 0 && value.embed.length <= LIMITS.tokenChars)) return false;
+  if ("via" in value && !("embed" in value && typeof value.via === "string" && value.via.length > 0 && value.via.length <= LIMITS.tokenChars)) return false;
   if ("files" in value && !(Array.isArray(value.files) && value.files.every(isFileLike))) return false;
   return value.v === BRIDGE_VERSION && isValidRequestId(value.id) && typeof value.method === "string" && value.method.length >= 3 && value.method.length <= LIMITS.methodNameChars && METHOD_PATTERN.test(value.method) && typeof value.pageRevision === "string" && REVISION_PATTERN.test(value.pageRevision) && (pageRevision === undefined || value.pageRevision === pageRevision);
 }

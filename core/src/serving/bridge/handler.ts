@@ -16,6 +16,8 @@ export interface BridgeContext extends HandlerContext {
   readonly request: PagesRequest;
   /** For `sessions.start`, `sessions.send` and `session.reply`: the attachments `/attach` held for this approved call, in order; null when the call carries none. 05 R3.20a; DESIGN P29 */
   readonly attachments: readonly AttachmentRef[] | null;
+  /** A call an embedding kernel relayed under an embed's answer token: the session that token was issued to (the embedding page's, or the built-in home's). 02 R4.48, R4.48b */
+  readonly embeddedBy?: string;
 }
 
 export interface HandlerOutcome<R> {

@@ -1,6 +1,7 @@
 // sessions.* except messages/activity (DESIGN §B.1). One rule per member: the SDK call, the argument mapping,
 // the error mapping, and what cannot be done.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import path from "node:path";
 import { ProviderError, type AppliedSettings, type AttachmentRef, type ProviderHost, type ReplySettings, type SessionRecord } from "../../core/src/host/index.ts";
 import { activityItemsOf } from "./activity.ts";
 import { promptInput, type AttachmentStore } from "./attachments.ts";
@@ -268,7 +269,8 @@ export function createBbSessions(bb: BbPluginApi, deps: SessionsDeps): ProviderH
 
     async storage(id) {
       const location = await deps.locator.locate(id);
-      return { rootPath: location.rootPath, pathForAgent: (relative: string) => `$BB_THREAD_STORAGE/${relative}` };
+      // 06 R-P12: absolute, so every file tool takes it as it stands; a file tool took `$BB_THREAD_STORAGE/…` for a folder of that name (HOST_FACTS H-25).
+      return { rootPath: location.rootPath, pathForAgent: (relative: string) => (relative === "" ? path.join(location.rootPath, path.sep) : path.join(location.rootPath, relative)) };
     },
   };
   return sessions;

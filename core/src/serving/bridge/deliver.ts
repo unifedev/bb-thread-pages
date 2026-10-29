@@ -106,8 +106,8 @@ export async function deliverReply(ctx: ServingContext, args: { target: string; 
  * identity-less form only on the revision it was written against and only
  * when it carries every field the submission names, never by position
  * across revisions — worded as 02 states with the earlier-version line when
- * the revision moved and the sent-from line when the sender is another
- * session, remembered under (target, "submit", submissionId) so a repeat
+ * the revision moved (never for an `html` frame's form) and the sent-from
+ * line when the sender is another session, remembered under (target, "submit", submissionId) so a repeat
  * replays the first outcome. `stale_page` only when no form matches.
  * 05 R2.32–R2.37, R-S11; 03 R5.61, R5.63; 02 R-K5, R-K6
  */
@@ -118,7 +118,8 @@ export async function deliverSubmission(ctx: ServingContext, args: { target: str
     // A form of an `html` frame is in no stored document: the page holds it, so it is answered against the page's current revision. 05 R2.32; 02 R4.48a
     const match = args.held ? { form: true, revision: args.held.revision } : await matchSubmissionForm(ctx.pages, target, args.path, { formId: submission.formId, formTitle: submission.formTitle, writtenAgainst: submission.writtenAgainst, fields: submission.answers.map((answer) => answer.name) });
     if (match.form === null) throw new PageError("stale_page", PUBLIC_MESSAGES.stalePage);
-    const revisionChanged = submission.writtenAgainst !== match.revision;
+    // An `html` frame's form is always sent from the version on screen, so there is no earlier one to have answered. 05 R2.32, R-S11
+    const revisionChanged = !args.held && submission.writtenAgainst !== match.revision;
     const pathForAgent =
       args.pathForAgent ??
       (

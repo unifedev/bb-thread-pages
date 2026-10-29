@@ -11,6 +11,7 @@ import { shellRoute } from "./shell-route.ts";
 import { submitRoute } from "./submit-route.ts";
 import { transcribeRoute } from "./transcribe-route.ts";
 import { uploadRoute } from "./upload-route.ts";
+import { manifestRoute } from "./web-app.ts";
 
 /**
  * Every route, relative to `base()`. The document route is `/page/*` in the
@@ -25,6 +26,7 @@ export function createRoutes(ctx: ServingContext, dispatcher: Dispatcher): Route
     document,
     { method: "GET", path: "/home", handler: homeRoute(ctx) },
     { method: "GET", path: "/home-document", handler: homeDocumentRoute(ctx) },
+    { method: "GET", path: "/manifest", handler: manifestRoute(ctx) },
     { method: "POST", path: "/submit", handler: submitRoute(ctx) },
     { method: "POST", path: "/upload", handler: uploadRoute(ctx) },
     { method: "POST", path: "/bridge", handler: bridgeRoute(ctx, dispatcher) },

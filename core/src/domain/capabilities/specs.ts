@@ -813,6 +813,8 @@ const pagesAnswerParams = s.refine(
         formTitle: s.optional(s.nullable(s.string({ max: 300, label: "Form title" }))),
         action: s.optional(s.nullable(s.string({ max: LIMITS.answerValueChars, label: "Action" }))),
         answers: s.array(submissionAnswer, LIMITS.answersPerSubmission, "Answers"),
+        /** From the built-in home only: the frame of the page its embed shows the form was answered in. 03 R5.61a (B-0189) */
+        frame: s.optional(s.object({ title: s.nullable(s.string({ max: 300, label: "Frame title" })), path: s.optional(documentPath) })),
       }),
     ),
     reply: s.optional(s.refine(s.object(replyShape), replyRule)),
@@ -832,7 +834,7 @@ export const pagesAnswer = spec({
   validateParams: params(pagesAnswerParams),
   validateResult: result(s.object({ delivery, duplicate: s.boolean(), matchedRevision: s.optional(revision) })),
   doc: {
-    params: "`{ answerToken, form }`, `{ answerToken, reply }` or `{ answerToken, respond }` — exactly one: `form: { submissionId, title, writtenAgainst, formId?, formTitle?, action?, answers: [{ name, label, value }] }` (`action` is the submit button's value, if one was used), `reply: { kind?, title?, mode?, result?, text?, idempotencyKey? }`, `respond: { id, answers }` (never a decision). The token comes with a `pages.read` of exactly that document.",
+    params: "`{ answerToken, form }`, `{ answerToken, reply }` or `{ answerToken, respond }` — exactly one: `form: { submissionId, title, writtenAgainst, formId?, formTitle?, action?, answers: [{ name, label, value }], frame? }` (`action` is the submit button's value, if one was used; `frame: { title, path? }`, taken only from the built-in home, names the frame of the page it shows the form was answered in), `reply: { kind?, title?, mode?, result?, text?, idempotencyKey? }`, `respond: { id, answers }` (never a decision). The token comes with a `pages.read` of exactly that document.",
     result: "`{ delivery, duplicate, matchedRevision? }`.",
     notes: "You do not call this: the kernel does, for forms, `session.reply` and `session.respond { answers }` inside an embed, worded by the host exactly as from that page's own URL plus one line naming this page's session. The first answer from this page into another session asks the reader once, in host chrome, naming both; the grant is remembered until revoked, and a declined one is `cancelled`. A form is matched by its identity in the target's current revision; `stale_page` only when no form matches.",
   },

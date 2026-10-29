@@ -106,7 +106,7 @@ interface Embed extends EmbedView {
   readonly created: boolean;
   onState: ((state: EmbedState) => void) | null;
   /** An `html` frame: the document the page holds, never read through `pages.read`. 02 R4.42a */
-  held: { html: string; scope: string | null } | null;
+  held: { html: string; scope: string | null; given: boolean } | null;
   /** An `html` frame's newer version, waiting while R4.46's holds stand. 02 R4.42a */
   waiting: HeldVersion | null;
   /** The flush asked before that version is taken: its nonce, while the frame flushes. */
@@ -150,8 +150,8 @@ interface HeldVersion {
   tooLarge: boolean;
 }
 
-/** `{ html, scope?, title? }` checked: a bad scope or title throws as a bad `sessionId` does; a text over the bound is a state. Its bound is the given scope, else this document's at the call, and lies within this document's own bound. 02 R4.42a (B-0154) */
-function heldOptions(wanted: EmbedOptions, here: { scope: string | null; bound: string | null }): { html: string; scope: string | null; title: string | null; tooLarge: boolean } {
+/** `{ html, scope?, title? }` checked: a bad scope or title throws as a bad `sessionId` does; a text over the bound is a state. Its bound is the given scope, else this document's at the call, and lies within this document's own bound; `given` says the page gave it. 02 R4.42a (B-0154, B-0159) */
+function heldOptions(wanted: EmbedOptions, here: { scope: string | null; bound: string | null }): { html: string; scope: string | null; given: boolean; title: string | null; tooLarge: boolean } {
   if (typeof wanted.html !== "string") throw new TypeError("threadPage.embed: html must be text");
   if (wanted.sessionId !== undefined || wanted.path !== undefined) throw new TypeError("threadPage.embed takes { html } or { sessionId }, not both");
   const given = checkScope(wanted.scope);
@@ -160,7 +160,7 @@ function heldOptions(wanted: EmbedOptions, here: { scope: string | null; bound: 
   if (!scopeWithin(scope, here.bound)) throw new TypeError(`threadPage.embed: this frame is bound to ${here.bound}; a frame it shows is bound to that folder or one below it`);
   if (wanted.title !== undefined && (typeof wanted.title !== "string" || wanted.title.length > 300)) throw new TypeError("threadPage.embed: title must be text of at most 300 characters");
   const title = wanted.title?.trim() || null;
-  return { html: wanted.html, scope, title, tooLarge: new TextEncoder().encode(wanted.html).length > LIMITS.pagesReadBytes };
+  return { html: wanted.html, scope, given: given.scope !== null, title, tooLarge: new TextEncoder().encode(wanted.html).length > LIMITS.pagesReadBytes };
 }
 
 export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedManagerDeps): EmbedManager {
@@ -456,14 +456,14 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     }
   }
 
-  /** The embedded document's own storage and contributed calls, as that document: its revision, its scope, the embed's answer token. 02 R4.48 (U56) */
-  async function asEmbedded(embed: Embed, method: string, params: unknown, scope: string | null): Promise<unknown> {
+  /** The embedded document's own storage and contributed calls (and, in the home's view of a page, its reads), as that document: its revision, its scope, the embed's answer token, the mark of its `html` frame they came from. 02 R4.48 (U56), R4.48b */
+  async function asEmbedded(embed: Embed, method: string, params: unknown, scope: string | null, frame: FrameMark | null): Promise<unknown> {
     if (!embed.answerToken || embed.revision === null) throw new RelayRefusal("unavailable", "This page is still loading; try again in a moment.");
     // Checked again as it leaves: calls that waited on the roster were not charged when they arrived. 02 R4.49
     if (atBound(embed)) throw new RelayRefusal("rate_limited", RATE_LIMITED);
     charge(embed);
     try {
-      return await deps.relay(method, params, { embed: embed.answerToken, pageRevision: embed.revision, scope });
+      return await deps.relay(method, params, { embed: embed.answerToken, pageRevision: embed.revision, scope, ...(frame ? { frame } : {}) });
     } catch (error) {
       // A token the host no longer takes is renewed by the next read, which costs nothing to the embed. 03 R5.60a
       if (isRecord(error) && error.code === "confirmation_invalid") soon();
@@ -488,14 +488,34 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       reply(embed, makeFailure(request.id, "rate_limited", RATE_LIMITED));
       return;
     }
+    if (request.embed !== undefined) {
+      await nested(embed, request);
+      return;
+    }
     try {
       const invoke = (method: string, params?: unknown): Promise<unknown> => {
         charge(embed);
         return deps.invoke(method, params);
       };
-      const result = await relayCall(embed, request.method, request.params, { invoke, roster: ownRoster, now: () => Date.now(), answer: (view, body) => answer(view as Embed, body), asEmbedded: (view, method, params, scope) => asEmbedded(view as Embed, method, params, scope), whole: async (view) => (await ownRoster(), ownSession === null || ownSession === view.sessionId) }, request.scope ?? null);
+      const result = await relayCall(embed, request.method, request.params, { invoke, roster: ownRoster, now: () => Date.now(), answer: (view, body) => answer(view as Embed, body), asEmbedded: (view, method, params, scope, frame) => asEmbedded(view as Embed, method, params, scope, frame), whole: async (view) => (await ownRoster(), ownSession === null || ownSession === view.sessionId), home: async () => (await ownRoster(), ownSession === null) }, request.scope ?? null, request.frame ?? null);
       reply(embed, { v: 1, id: request.id, ok: true, result });
     } catch (error) {
+      fail(embed, request.id, error);
+    }
+  }
+
+  /** A call of another session's page shown inside the home's view of a page, under that page's token for it: sent with this embed's beside it, so the host holds it to that page's rules for it. Elsewhere no embed relays one. 02 R4.48b; 05 R3.9 (B-0189) */
+  async function nested(embed: Embed, request: BridgeRequestMessage): Promise<void> {
+    try {
+      await ownRoster();
+      if (ownSession !== null) throw new RelayRefusal("unavailable", `${request.method} is not available to a page shown inside another page.`);
+      if (!embed.answerToken) throw new RelayRefusal("unavailable", "This page is still loading; try again in a moment.");
+      if (atBound(embed)) throw new RelayRefusal("rate_limited", RATE_LIMITED);
+      charge(embed);
+      const result = await deps.relay(request.method, request.params, { embed: request.embed!, via: embed.answerToken, pageRevision: request.pageRevision, scope: request.scope ?? null, ...(request.frame ? { frame: request.frame } : {}) });
+      reply(embed, { v: 1, id: request.id, ok: true, result });
+    } catch (error) {
+      if (isRecord(error) && error.code === "confirmation_invalid") soon();
       fail(embed, request.id, error);
     }
   }
@@ -508,7 +528,9 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       if (atBound(embed)) throw new RelayRefusal("rate_limited", RATE_LIMITED);
       // Uploads take the shell's token, which names the embedding page. 02 R4.51
       if (data.files.length > 0) throw new RelayRefusal("unavailable", EMBEDDED_FILES_REFUSAL);
-      const sent = (await answer(embed, { form: { submissionId, title: data.title, writtenAgainst: data.writtenAgainst, ...(data.formId !== null ? { formId: data.formId } : {}), ...(data.formTitle !== null ? { formTitle: data.formTitle } : {}), ...(data.action !== null ? { action: data.action } : {}), answers: data.answers } })) as { delivery?: unknown; matchedRevision?: unknown };
+      // A form of a frame of the page the home shows goes as from that frame on the page's own URL. 02 R4.48b; 03 R5.61a (B-0189)
+      const frame = data.frame && (await ownRoster(), ownSession === null) ? { frame: data.frame } : {};
+      const sent = (await answer(embed, { form: { submissionId, title: data.title, writtenAgainst: data.writtenAgainst, ...(data.formId !== null ? { formId: data.formId } : {}), ...(data.formTitle !== null ? { formTitle: data.formTitle } : {}), ...(data.action !== null ? { action: data.action } : {}), answers: data.answers, ...frame } })) as { delivery?: unknown; matchedRevision?: unknown };
       const delivery = sent.delivery === "queued" || sent.delivery === "steered" ? sent.delivery : "started";
       reply(embed, { kind: "thread-page:submit-result", submissionId, ok: true, delivery, ...(typeof sent.matchedRevision === "string" ? { matchedRevision: sent.matchedRevision, revisionChanged: sent.matchedRevision !== data.writtenAgainst } : {}) });
     } catch (error) {
@@ -564,7 +586,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     if (!("kind" in data)) {
       const request = data as BridgeRequestMessage;
       // A relayed call of the frame's own embed keeps that document's revision and token; the frame's own calls go under this page's revision. 02 R4.48
-      const { frame: inner, ...rest } = request;
+      const { frame: inner, via: _via, ...rest } = request;
       pass(embed, request.id, (id) => ({ ...rest, id, ...(request.embed === undefined ? { pageRevision: deps.config().pageRevision } : {}), ...(embed.held ? { frame: markOf(embed, inner) } : {}) }));
       return true;
     }
@@ -621,7 +643,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       return;
     }
     // A document frame's own calls are checked against the version it shows; a call its own embed relays carries that document's. 02 R-K1
-    if (!("kind" in data) && !embed.held && !(embed.own && (data as BridgeRequestMessage).embed !== undefined)) {
+    if (!("kind" in data) && !embed.held && (data as BridgeRequestMessage).embed === undefined) {
       const request = data as BridgeRequestMessage;
       if (embed.revision === null || request.pageRevision !== embed.revision) {
         reply(embed, makeFailure(request.id, "stale_page", "This page changed; reload it before responding."));
@@ -650,6 +672,11 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
         embed.scroll = data.state;
         return;
       case "thread-page:draft":
+        // A draft of a `{ sessionId }` frame inside the home's view of a page is that frame's document's; its kernel keeps it for the frame's next load. 02 R4.48b
+        if (data.embed !== undefined) {
+          if (!embed.held && data.embed.sessionId === embed.sessionId) deps.send(data);
+          return;
+        }
         // Kept for the embed's next load, and forwarded to the shell keyed by the embedded session; an `html` frame is no stored document, so its drafts stay here. 02 R-K4, R4.48a
         if (Object.keys(data.fields).length === 0) embed.drafts.delete(data.form.key);
         else embed.drafts.set(data.form.key, { form: data.form, fields: data.fields, focus: data.focus, savedAtMs: Date.now(), revision: embed.revision ?? "0".repeat(64) });
@@ -791,7 +818,7 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       placeholder(embed, "unavailable", HELD_TOO_DEEP);
       return;
     }
-    const config: KernelConfig = { ...page, embedded: true, frameDepth: depth, ...(held.scope !== null ? { scope: held.scope } : {}) };
+    const config: KernelConfig = { ...page, embedded: true, frame: true, frameDepth: depth, ...(held.scope !== null ? { scope: held.scope } : {}) };
     embed.status = "shown";
     load(embed, frameDocument(win, held.html, scripts, config));
     report(embed);
@@ -837,14 +864,14 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
     }
     // A form with neither id nor title is keyed by its place under the page's revision, which an `html` frame's versions share: its draft could land in another form. 02 R-K4
     for (const key of embed.drafts.keys()) if (key.startsWith("none:")) embed.drafts.delete(key);
-    embed.held = { html: version.html, scope: embed.held!.scope };
+    embed.held = { ...embed.held!, html: version.html };
     embed.waiting = null;
     embed.updateAvailable = false;
     if (version.tooLarge) placeholder(embed, "too_large", HELD_TOO_LARGE);
     else showHeld(embed);
   }
 
-  /** A call on the same frame with the same scope is a new version of its document, never shown under a reader who is typing, answering or mid-flow. 02 R4.42a, R4.46 */
+  /** A call on the same frame with the same scope, given in both calls, is a new version of its document, never shown under a reader who is typing, answering or mid-flow. 02 R4.42a, R4.46 */
   function newVersion(embed: Embed, version: HeldVersion, title: string | null, onState: ((state: EmbedState) => void) | null): () => void {
     embed.title = title;
     embed.onState = onState;
@@ -953,13 +980,14 @@ export function createEmbedManager(win: Window & typeof globalThis, deps: EmbedM
       if (wanted!.onState !== undefined && typeof wanted!.onState !== "function") throw new TypeError("threadPage.embed: onState must be a function");
       const { frame, created } = frameFor(target);
       const live = held && !created ? embeds.find((other) => !other.stopped && !other.inert && other.frame === frame) : undefined;
-      if (live?.held && live.held.scope === held!.scope) return newVersion(live, held!, held!.title, wanted!.onState ?? null);
+      // Only a frame the page gave a folder is one document across calls; without one each call is another document, as before 0.5.3 (Q-0060 A). 02 R4.42a (B-0159)
+      if (live?.held?.given && held!.given && live.held.scope === held!.scope) return newVersion(live, held!, held!.title, wanted!.onState ?? null);
       const embed: Embed = {
         frame,
         created,
         sessionId: held ? "" : wanted!.sessionId!,
         onState: wanted!.onState ?? null,
-        held: held ? { html: held.html, scope: held.scope } : null,
+        held: held ? { html: held.html, scope: held.scope, given: held.given } : null,
         waiting: null,
         taking: null,
         own: held !== null,

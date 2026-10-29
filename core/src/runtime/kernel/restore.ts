@@ -42,8 +42,15 @@ export function createRestorer(win: Window & typeof globalThis, deps: RestoreDep
   function run(message: RestoreMessage): void {
     deps.drafts.restore(message.drafts, message.clearedNotice);
     deps.scroll.restore(message.scroll);
-    // A frame put back into its document may have no viewport yet (Firefox: `innerHeight` 0 at DOMContentLoaded), where the scroll is clamped to the top: applied again once it has one. HOST_FACTS H-10
-    if (message.scroll && win.innerHeight === 0) win.addEventListener("resize", () => deps.scroll.restore(message.scroll), { once: true });
+    // A frame put back into its document may have no viewport yet (Firefox: `innerHeight` 0 at DOMContentLoaded), where the scroll is clamped to the top: applied again once it has one, so a resize that leaves it without a height waits on. HOST_FACTS H-10 (B-0158)
+    if (message.scroll && win.innerHeight === 0) {
+      const again = () => {
+        if (win.innerHeight === 0) return;
+        win.removeEventListener("resize", again);
+        deps.scroll.restore(message.scroll);
+      };
+      win.addEventListener("resize", again);
+    }
     // Two of this document's own frames: the engine has laid out, scrolled and produced a frame while hidden. M3
     raf(() =>
       raf(() => {

@@ -6,6 +6,7 @@ export interface ServingHost {
   base(): string;                                         // the path prefix the routes live under: leading slash, no trailing slash, or "" for the root
   origin(): Promise<string | null>;                       // the external origin with scheme, if known (06 R8.15); used by `init` and `status` only
   ownOrigins(): Promise<string[]>;                        // every further origin the host answers as its own (03 R5.32a)
+  checkOrigin?(): Promise<string | null>;                 // optional: an origin a browser on the agent's machine opens without signing in; `init` only (04 R6.7a)
                                                           // no reader() method: the host fills PagesRequest.reader before handler runs (R-S8, N-8)
   files?: {                                               // optional: serve the page root by URL on this origin (§Own files by URL)
     url(session: string, relativePath: string): string;   //   a path relative to base(), under /page/<id>/

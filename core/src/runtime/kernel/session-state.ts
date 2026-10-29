@@ -4,7 +4,7 @@ import { capturedForms, clearStatusOverride, formsReachedFrom, setStandingStatus
 export const SESSION_ATTRIBUTE = "data-thread-page-session";
 
 export interface SessionStateController {
-  /** From the shell's `session-state`; a change clears the forms' delivery notices so the standing text shows. */
+  /** From the shell's `session-state`; a change to idle clears the forms' delivery outcomes so the standing text shows. */
   apply(working: boolean, label: string): void;
   /** Marks forms added later. */
   prepare(root: ParentNode): void;
@@ -30,12 +30,12 @@ export function createSessionState(doc: Document): SessionStateController {
   mark();
   return {
     apply(nextWorking, nextLabel) {
-      const changed = known && nextWorking !== working;
+      const idled = known && working && !nextWorking;
       known = true;
       working = nextWorking;
       label = nextLabel;
-      // A delivery outcome ("Sent", "Queued") has had its say once the session's state moves on; an error stands (NS-8). U49
-      if (changed) for (const form of capturedForms(doc)) clearStatusOverride(form, true);
+      // A delivery outcome ("Sent", "Queued", "Steered") stands through the turn it started or waits behind and goes when the session is next idle; an error stands (NS-8). U49; 05 R2.24 (B-0186)
+      if (idled) for (const form of capturedForms(doc)) clearStatusOverride(form, true);
       mark();
     },
     prepare(root) {

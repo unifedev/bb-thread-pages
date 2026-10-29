@@ -44,8 +44,8 @@ export const SHELL_PERMISSIONS_POLICY = "microphone=(self), camera=(), geolocati
 
 /**
  * The shell's CSP, given the nonce of its one inline script: its own origin
- * only, no frames but its own documents, framed by nothing but itself.
- * spec 05 R3.5, R3.6, R3.27
+ * only, no frames but its own documents, framed by nothing but itself; its
+ * one manifest from its own origin. spec 05 R3.5, R3.6, R3.27, R2.14a
  */
 export function shellCsp(nonce: string): string {
   // `frame-src 'self' blob: data:`: the document frame loads from this origin, and WebKit checks a blob/data download the page builds against the parent's frame-src (02 R4.15d). DESIGN §F.2
@@ -57,6 +57,7 @@ export function shellCsp(nonce: string): string {
     "connect-src 'self'",
     "frame-src 'self' blob: data:",
     "media-src 'self' blob:",
+    "manifest-src 'self'",
     "frame-ancestors 'self'",
     "base-uri 'none'",
     "form-action 'none'",

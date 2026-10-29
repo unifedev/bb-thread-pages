@@ -1,10 +1,217 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 8f676d5): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` e3f3a9d): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.14.5 (bb plugin) — 2026-10-29
+
+The bb plugin's release of the 0.6.9 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.5`): an `html` frame given no folder starts fresh
+again on each `embed`, and a restored scroll survives a frame's late viewport, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.5.
+
+## 0.6.9 — 2026-10-29
+
+Only an `html` frame its page gave a folder is a new version of one document; one without starts fresh on each
+`embed`, as in 0.5.2. A restored scroll is applied again only once a frame has a height. In pages-core, so both hosts
+carry it (B-0159, B-0158): spec 02 R4.42a, R4.48a; 08 A207; fixture 15.
+
+`@unifedev/pages-core` 0.6.5, `@unifedev/claude-pages` 0.6.9, the bb plugin `@unifedev/thread-pages` 1.14.5.
+
+### Changed
+
+- **An `html` frame given no folder starts fresh on each `embed`, as in 0.5.2.** `threadPage.embed(iframe, { html })`
+  without `scope` (or with `null`) on an `<iframe>` that shows an `html` frame now shows a fresh frame: no drafts and
+  no scroll carried from the earlier document, and the frame's `setDirty(true)`, typing or answer in flight does not
+  hold the switch. 0.5.3 counted two calls without a `scope` as versions of one document, so a page switching one
+  frame between different snippets carried a form's text from one into the other and waited while the reader typed.
+  This holds also where the frame is bound to the page's own folder only because it was given none (0.5.4), and where
+  one of the two calls gives a `scope` and the other does not. A frame given the same `scope` in both calls keeps
+  0.5.3's behaviour: a new version that keeps the reader's typing and scroll and waits while they type. Tests:
+  `packages/pages-core/test/runtime/kernel/embed.test.ts`.
+
+### Fixed
+
+- **A restored scroll survives a resize that leaves the frame without a height.** A frame that gets its viewport late
+  (Firefox) has its scroll applied again on the first resize; a resize that changed only the width, with the height
+  still 0, used that up and the frame stayed at the top. Now the scroll is applied again on the first resize that
+  gives the frame a height. Test: `packages/pages-core/test/runtime/kernel/restore.test.ts`.
+
+## 0.6.8 — 2026-10-29
+
+On Claude Code, page answers that reach a session together are each delivered once (B-0185). `@unifedev/claude-pages`
+0.6.8; `@unifedev/pages-core` stays 0.6.4 and the bb plugin `@unifedev/thread-pages` 1.14.4: neither changes.
+
+## 1.14.4 (bb plugin) — 2026-10-29
+
+The bb plugin's release of the 0.6.7 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.4`): a page opened in the home shows its own
+frames as on its own address, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.4.
+
+## 0.6.7 — 2026-10-29
+
+A page opened in the home shows its own frames, as on its own address (B-0189). `@unifedev/pages-core` 0.6.4,
+`@unifedev/claude-pages` 0.6.7 and the bb plugin `@unifedev/thread-pages` 1.14.4: the same change on both hosts.
+Spec 02 R4.48b, R4.52; 03 R5.59a, R5.61a; 05 R3.9; 07 R5.93; 08 A213. No agent text changed.
+
+### Fixed
+
+- **A page opened in the home shows its own frames.** The home's view of a session's page had no `threadPage.embed`,
+  so a page that shows itself through frames of its own showed blank there: a Syns workspace opened from the home
+  without the agent's page inside it (or, with Syns 0.12, did not open at all). Now `embed` works in the home's view
+  as on the page's own address: `{ html }` frames and the session's own documents, their storage and plugin calls as
+  that page's, an app frame held to its folder with its plugin told the call came from it, their forms delivered as
+  from that frame, and inside them another session's page as it shows inside that page, answered under that page's
+  grant and framing line. Uploads, files in forms and large media stay out of the home's view and its frames.
+  Tests: `packages/pages-core/test/serving/home-view.test.ts`, `test/runtime/kernel/embed.test.ts`.
+
+## 1.14.3 (bb plugin) — 2026-10-29
+
+The bb plugin's release of the 0.6.6 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.3`): a form's *Sent* stands until the agent's turn
+ends, on the page and inside another page's embed of it.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.3.
+
+## 0.6.6 — 2026-10-29
+
+A form's delivery word (*Sent*, *Queued*, *Steered*) stands until the session is next idle (B-0186).
+`@unifedev/pages-core` 0.6.3, `@unifedev/claude-pages` 0.6.6 and the bb plugin `@unifedev/thread-pages` 1.14.3: the
+same change on both hosts. Spec 05 R2.24; 08 A212.
+
+### Fixed
+
+- **A form's *Sent* stays until the agent's turn ends.** Any change of the session's working state cleared a form's
+  delivery word, so the turn the answer started replaced *Sent* with the working text at once: inside another page's
+  `embed` of the page within one round trip, so the reader never saw *Sent*, and on the page itself after about 2 s.
+  When the turn ended the line went blank and nothing said the answer had arrived. Now *Sent*, *Queued* or *Steered*
+  stands through the turn it started or waits behind and goes when the session is next idle, or when the reader
+  types in that form again; the page's other forms show the working text as before, and an error still stands until
+  the reader types in its form. Test: `packages/pages-core/test/runtime/kernel/session-state.test.ts`.
+
+## 1.14.2 (bb plugin) — 2026-10-29
+
+The bb plugin's release of the 0.6.5 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.2`): an app's answer from a frame of the page no
+longer says it was given on an earlier version when only the page around it changed.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.2.
+
+## 0.6.5 — 2026-10-29
+
+An answer sent from an app shown in a frame of the agent's page no longer says it was given on an earlier version
+when only the page around it changed (B-0181). `@unifedev/pages-core` 0.6.2, `@unifedev/claude-pages` 0.6.5 and the
+bb plugin `@unifedev/thread-pages` 1.14.2: the same change on both hosts.
+
+### Fixed
+
+- **An app's answer no longer reads "Answered on an earlier version of the page" when the app did not change.** A
+  page can show an app in a frame (a Syns workspace app, or any frame the page gives its own HTML). When the agent
+  rewrote only its own page while the app stayed open, the app's next answer reached the agent with that line, as
+  if the reader had typed into an outdated form. The page holds that app's document and the answer is always sent
+  from what is on screen, so the line is now never added to it. Answers from the page's own forms and from a frame
+  showing another file of the page keep the line as before. Test: `packages/pages-core/test/serving/submit.test.ts`.
+
+### bb
+
+- The same fix: the bb plugin's server is the shared one.
+
+## 0.6.4 — 2026-10-29
+
+On Claude Code, the page server uses the Claude Code config folder its sessions use, and keeps its own internal
+settings to itself (B-0179, B-0182). `@unifedev/claude-pages` 0.6.4; `@unifedev/pages-core` stays 0.6.1 and the bb
+plugin `@unifedev/thread-pages` 1.14.1: neither changes.
+
+## 0.6.3 — 2026-10-29
+
+On Claude Code, the page server no longer takes on the settings of the session that started it, and a second stop
+request no longer cuts its stop short (B-0175, B-0176). `@unifedev/claude-pages` 0.6.3; `@unifedev/pages-core` stays
+0.6.1 and the bb plugin `@unifedev/thread-pages` 1.14.1: neither changes.
+
+## 0.6.2 — 2026-10-29
+
+On Claude Code, an update reaches the running daemon (B-0171). `@unifedev/claude-pages` 0.6.2; `@unifedev/pages-core`
+stays 0.6.1 and the bb plugin `@unifedev/thread-pages` 1.14.1: neither changes.
+
+## 1.14.1 (bb plugin) — 2026-10-29
+
+The bb plugin's release of the 0.6.1 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.1`): `bb pages init`, `bb pages status` and the
+answer wording for uploads give absolute paths, and with Connect on `init` also prints the page's loopback address
+for the agent's own check.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.1.
+
+## 0.6.1 — 2026-10-29
+
+On bb, `init` gives paths every file tool takes, and an address the agent can open itself (B-0165, B-0166): spec 02
+§The answer wording, 04 R6.7a, 05 §The serving host interface and R-S9, 06 R-P12; 08 A211.
+
+`@unifedev/pages-core` 0.6.1, `@unifedev/claude-pages` 0.6.1, the bb plugin `@unifedev/thread-pages` 1.14.1.
+
+### Changed
+
+- **bb: absolute paths for the agent.** `bb pages init` printed the page as `$BB_THREAD_STORAGE/index.html` and the
+  root as `Root: $BB_THREAD_STORAGE/`; `bb pages status` and the file lines of an answer with uploads used the same
+  form. Only a shell expands that variable: a file tool given it made a folder named `$BB_THREAD_STORAGE` in the
+  working directory, so the page was written where nobody reads it. They now give the thread's storage path as bb
+  reports it (`/…/index.html`, `Root: /…/`, `/…/uploads/<name>`). The folder is the same one, so pages already
+  written are where they were and nothing moves. The standing instruction still names the folder as "your thread
+  storage, `$BB_THREAD_STORAGE`"; that wording waits for the next guide batch. Tests:
+  `packages/bb-pages/test/provider/sessions.test.ts`, `packages/bb-pages/test/integration/fixtures.test.ts`.
+- **bb: a local address for the agent's own check.** With Connect paired, the URL `init` prints is the Connect
+  address, which a browser on this machine is refused without signing in. `init` now adds one line after it,
+  `Local: http://127.0.0.1:<port>/api/v1/plugins/thread-pages/http/page?session=<id> (this machine only, for your own
+  check)`. That address opens the page on this machine with no sign-in and carries no credential. Without Connect the
+  URL is already that address and there is no `Local:` line. In pages-core this is an optional
+  `ServingHost.checkOrigin()`, used by `init` only. The Claude Code host has none, by design: its agent does not
+  open the reader's page. Test: `packages/pages-core/test/agent/commands.test.ts`.
+
+## 1.14.0 (bb plugin) — 2026-10-29
+
+The bb plugin's release of the 0.6.0 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.0`): a shortcut or installed app of the home or a
+page carries the Syns mark and a sensible name, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.0.
+
+## 0.6.0 — 2026-10-29
+
+Shortcuts and installed apps carry the Syns mark and a sensible name, on bb and Claude Code alike, in pages-core
+(B-0130): spec 05 R2.14, R2.14a, §Routes; 08 A210. A new route and head; no agent text changed.
+
+`@unifedev/pages-core` 0.6.0, `@unifedev/claude-pages` 0.6.0, the bb plugin `@unifedev/thread-pages` 1.14.0.
+
+### Added
+
+- **A shortcut to the home or a page shows the Syns mark and a name.** Every page's outer document now carries the
+  Syns mark as the tab icon (the brand's adaptive mark, lighter in dark mode) and as the iPhone home-screen icon (the
+  blue mark on white), a name (the home: `Syns`; a page: its session's title), a one-line description (the home:
+  `Syns`; a page: its project's name), the bar colour in light and dark, and a link to the address's web app
+  manifest. On iPhone, Add to Home Screen makes the home an app named `Syns` and a page one named by its title; on
+  macOS, Safari's Add to Dock and Chrome's Install do the same, each address its own app. On iPhone they open without
+  Safari's bars, and on macOS each in a window of its own; over bb's remote address, a sign-in the app asks for is
+  finished inside the app and returns to its address. The tab title is
+  unchanged (the home's stays `Home`), nothing is drawn, no page can change the mark, and nothing is stored offline
+  (no service worker).
 
 ## 1.13.4 (bb plugin) — 2026-10-29
 

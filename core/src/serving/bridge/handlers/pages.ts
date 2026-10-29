@@ -2,6 +2,7 @@
 import type { PagesAnswerParams, PagesReadParams } from "../../../domain/capabilities/specs.ts";
 import { ENTRY_DOCUMENT, directoryOf, documentKey } from "../../../domain/document-path.ts";
 import { PageError, PUBLIC_MESSAGES, errorText } from "../../../domain/errors.ts";
+import { HOME_IDENTITY } from "../../../domain/ids.ts";
 import { injectKernel, type ContributorScript } from "../../../domain/html/document.ts";
 import { utf8Bytes, type JsonValue } from "../../../domain/json/strict-json.ts";
 import { LIMITS } from "../../../domain/limits.ts";
@@ -15,7 +16,7 @@ import type { LoadedPage } from "../../stores.d.ts";
 import { grantCooldownKey } from "../cooldown.ts";
 import { deliverReply, deliverSubmission, type Sender } from "../deliver.ts";
 import { grantSummary, recordGrant } from "../grants-request.ts";
-import { type BridgeContext, boundTitle, handler, refuseArchived, senderLabel } from "../handler.ts";
+import { type BridgeContext, boundTitle, handler, isHome, refuseArchived, senderLabel } from "../handler.ts";
 import { executeRespond, refuseRespond } from "./respond.ts";
 
 type ReadEntry = Record<string, JsonValue>;
@@ -86,9 +87,11 @@ async function resolveEntry(context: BridgeContext, wanted: PagesReadParams["pag
     if (wanted.ifNoneMatch === page.revision) return { entry: { ...shared, unchanged: true } };
     const baseHref = serving.strategy.siteRoot(sessionId, key);
     // A document of the page's own session is the page: uploads as on its own URL; another session's page has none. Neither embeds: a document of
-    // the page embedding one of the page would show the page inside itself without end. 02 R4.48, R4.48a
+    // the page embedding one of the page would show the page inside itself without end. The built-in home's view of a page is that page shown
+    // whole: it embeds its own frames, and only a frame inside a page says `frame: true`; read for the frames of that view, its own documents take no uploads. 02 R4.48, R4.48a, R4.48b; 07 R5.93 (B-0189)
     const own = sessionId === context.session.id;
-    const config: KernelConfig = { pageRevision: page.revision, stale: page.stale, archived, siteRoot: baseHref, embedded: true, uploads: own, documentPath: path, ownFilesByFrame: false, embedAvailable: false, deferredFiles: page.site.deferred.map((file) => file.path), swapIdleMs: LIMITS.swapIdleMs };
+    const view = isHome(context);
+    const config: KernelConfig = { pageRevision: page.revision, stale: page.stale, archived, siteRoot: baseHref, embedded: true, uploads: own && context.embeddedBy !== HOME_IDENTITY, documentPath: path, ownFilesByFrame: false, embedAvailable: view, frame: !view, deferredFiles: page.site.deferred.map((file) => file.path), swapIdleMs: LIMITS.swapIdleMs };
     // The embedded page's own contributors' scripts, asked for its session and document: the same pipeline. 07 R5.88
     return { shared, page, config, baseHref, scripts: serving.pageScripts.scriptsFor(sessionId, path) };
   } catch (error) {
@@ -173,6 +176,8 @@ async function grantHeld(context: BridgeContext, target: string): Promise<boolea
 export const pagesAnswer = handler<PagesAnswerParams, unknown>({
   method: "pages.answer",
   async refuse(params, context) {
+    // A form's frame is one of the page the built-in home shows, and only its kernel names it. 03 R5.61a (B-0189)
+    if (params.form?.frame !== undefined && !isHome(context)) throw new PageError("invalid_params", "form.frame is taken only from the built-in home's view of a page");
     const token = openToken(params, context);
     const target = await answerTarget(token, context);
     const held = await grantHeld(context, target.id);
@@ -193,12 +198,16 @@ export const pagesAnswer = handler<PagesAnswerParams, unknown>({
     const sender = senderOf(context);
     let result: { delivery: "started" | "queued" | "steered"; duplicate: boolean; matchedRevision?: string };
     if (params.form) {
+      // From a frame of the page the home shows: matched in that frame's document, or, for an `html` frame, in none, as on the page's own URL. 03 R5.61a; 05 R2.32 (B-0189)
+      const frame = params.form.frame;
+      const held = frame !== undefined && frame.path === undefined ? { held: { revision: (await serving.pages.load(target.id, token.path)).revision } } : {};
       const delivered = await deliverSubmission(serving, {
         target: target.id,
-        path: token.path,
+        path: frame?.path !== undefined ? documentKey(frame.path) : token.path,
         sender,
         requestId,
-        submission: { submissionId: params.form.submissionId, title: params.form.title, writtenAgainst: params.form.writtenAgainst, formId: params.form.formId ?? null, formTitle: params.form.formTitle ?? null, action: params.form.action ?? null, answers: params.form.answers, files: [] },
+        submission: { submissionId: params.form.submissionId, title: params.form.title, writtenAgainst: params.form.writtenAgainst, formId: params.form.formId ?? null, formTitle: params.form.formTitle ?? null, action: params.form.action ?? null, answers: params.form.answers, files: [], frame: frame?.title ?? null },
+        ...held,
       });
       result = { delivery: delivered.delivery, duplicate: delivered.duplicate, matchedRevision: delivered.matchedRevision };
     } else if (params.reply) {

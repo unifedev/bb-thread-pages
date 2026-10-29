@@ -100,6 +100,8 @@ async function eligibleRecord(ctx: ServingContext, session: string): Promise<Ses
 
 /** What an embedding kernel relays for an embedded document, as that document's own call. 02 R4.48 (U56) */
 const EMBED_RELAYED: ReadonlySet<string> = new Set(["storage.get", "storage.set", "storage.setMany"]);
+/** Relayed too for the built-in home's view of a page, as that page: its frames' reads and answers. 02 R4.48b (B-0189) */
+const HOME_VIEW_RELAYED: ReadonlySet<string> = new Set(["pages.read", "pages.answer"]);
 
 /** The built-ins that read a scope (07 R5.84a): with contributed calls, what an `html` frame's bound holds. 07 R5.83a */
 const SCOPED_STORAGE: ReadonlySet<string> = new Set(["storage.get", "storage.set", "storage.setMany"]);
@@ -269,11 +271,23 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
       let caller = { session: token.session, path: token.path };
       // Shown by the built-in home or by a page of its own session, the embedded document has its whole reach; shown by another session's page, only its contributors' reads: that page holds a token for any session it reads, and its own scripts can do what its embeds do (05 R3.26). 02 R4.48 (U56)
       let whole = true;
+      let embeddedBy: string | undefined;
+      // The session whose page the call comes from: the page's own, or, through the home's view, the page that view shows.
+      let pageSession = token.session;
       if (bridgeRequest.embed !== undefined) {
+        // Through the built-in home's view of a page, a call of another session's page shown in it: `via` is the home's embed, `embed` that page's token for the other. 02 R4.48b; 05 R3.9 (B-0189)
+        let relayer = token.session;
+        if (bridgeRequest.via !== undefined) {
+          const via = verifyAnswerToken(bridgeRequest.via, ctx.signingKey, ctx.now());
+          if (token.session !== HOME_IDENTITY || !via || via.issuedTo !== HOME_IDENTITY) throw new PageError("confirmation_invalid", "This embed's token was not issued to this page; read the page again");
+          relayer = via.target;
+          pageSession = via.target;
+        }
         const embed = verifyAnswerToken(bridgeRequest.embed, ctx.signingKey, ctx.now());
-        if (!embed || embed.issuedTo !== token.session) throw new PageError("confirmation_invalid", "This embed's token was not issued to this page; read the page again");
+        if (!embed || embed.issuedTo !== relayer) throw new PageError("confirmation_invalid", "This embed's token was not issued to this page; read the page again");
         caller = { session: embed.target, path: embed.path };
         whole = embed.issuedTo === embed.target || embed.issuedTo === HOME_IDENTITY;
+        embeddedBy = embed.issuedTo;
       }
       session = caller.session;
       const home = caller.session === HOME_IDENTITY;
@@ -281,12 +295,13 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
       const lookup = ctx.registry.get(canonicalMethod(bridgeRequest.method)) ? ctx.registry : combinedLookup(ctx.registry, await ctx.contributions.current());
       if (bridgeRequest.embed !== undefined) {
         const relayed = lookup.get(canonicalMethod(bridgeRequest.method));
-        if (relayed && !relayed.contributor && !EMBED_RELAYED.has(relayed.method)) throw new PageError("invalid_request", `${relayed.method} is not relayed for an embedded page`);
+        // The built-in home's view of a page also reads and answers as that page, for its frames. 02 R4.48b (B-0189)
+        if (relayed && !relayed.contributor && !EMBED_RELAYED.has(relayed.method) && !(HOME_VIEW_RELAYED.has(relayed.method) && embeddedBy === HOME_IDENTITY)) throw new PageError("invalid_request", `${relayed.method} is not relayed for an embedded page`);
         if (relayed && !whole && !(relayed.contributor && relayed.effect === "read")) throw new PageError("unavailable", PUBLIC_MESSAGES.embedReadsOnly);
       }
-      // 5b. The contributor is told of any marked call, whatever session it is for (07 R5.84c); an `html` frame's call in the page's own session, its own or one it relays under a token for that session, stays in the folder the page bound it to; another session's page inside it keeps its own rules. 02 R4.42a; 07 R5.83a (B-0154)
+      // 5b. The contributor is told of any marked call, whatever session it is for (07 R5.84c); an `html` frame's call in the page's own session, its own or one it relays under a token for that session, or one the built-in home's view of a page relays for that page's frame, stays in the folder the page bound it to; another session's page inside it keeps its own rules. 02 R4.42a, R4.48b; 07 R5.83a (B-0154, B-0189)
       const frame = bridgeRequest.frame ?? null;
-      if (frame && caller.session === token.session && !scopeWithin(scope, frame.scope)) {
+      if (frame && (caller.session === pageSession || embeddedBy === HOME_IDENTITY) && !scopeWithin(scope, frame.scope)) {
         const scoped = lookup.get(canonicalMethod(bridgeRequest.method));
         if (scoped && (scoped.contributor || SCOPED_STORAGE.has(scoped.method))) throw new PageError("invalid_params", `This frame is bound to ${frame.scope}: its calls stay in that folder or below`);
       }
@@ -310,7 +325,7 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
       // 10. Eligibility; an archived session proceeds read-only. U21
       const record = home ? null : await eligibleRecord(ctx, caller.session);
       if (record?.archived) page.archived = true;
-      const context: BridgeContext = { serving: ctx, session: record ?? HOME_SESSION, page, requestId: bridgeRequest.id, requestOrigins: requestOrigins(request.headers), scope, request, attachments: null };
+      const context: BridgeContext = { serving: ctx, session: record ?? HOME_SESSION, page, requestId: bridgeRequest.id, requestOrigins: requestOrigins(request.headers), scope, request, attachments: null, ...(embeddedBy !== undefined ? { embeddedBy } : {}) };
       const binding: ConfirmationBinding = { session: caller.session, revision: ownStop ? ANY_REVISION : page.revision, requestId: bridgeRequest.id, method: spec.method, params };
       // 10a. A retry of a call this challenge already approved: the original answer, nothing done again. 05 R3.19a
       const replay = replayOf(checked.confirmation, binding);

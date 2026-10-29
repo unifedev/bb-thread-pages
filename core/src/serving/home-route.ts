@@ -7,6 +7,7 @@ import { requireReader } from "./request.ts";
 import { loadPageView } from "./session-access.ts";
 import { renderShell } from "./shell-html.ts";
 import { buildShellConfig, shellNonce } from "./shell-route.ts";
+import { shellHead } from "./web-app.ts";
 
 /** The notice when a designation no longer resolves, written into the home document itself. 08 A61; U49 */
 export const STALE_HOME_NOTICE = "Home pointed at a session that no longer exists — this is the built-in home page";
@@ -43,7 +44,7 @@ export function homeRoute(ctx: ServingContext) {
       const config = await buildShellConfig(ctx, request, { access: HOME_ACCESS, path: null, query: "", view, title: HOME_TITLE });
       const nonce = shellNonce(ctx);
       const headers = shellHeaders(nonce);
-      return htmlResponse(200, renderShell({ nonce, config }), { csp: headers.get("content-security-policy")!, permissionsPolicy: headers.get("permissions-policy")! });
+      return htmlResponse(200, renderShell({ nonce, config, head: await shellHead(ctx, HOME_ACCESS) }), { csp: headers.get("content-security-policy")!, permissionsPolicy: headers.get("permissions-policy")! });
     } catch (error) {
       return failure(error, ctx.log, "GET /home", true);
     }

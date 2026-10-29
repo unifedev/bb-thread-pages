@@ -24,6 +24,8 @@ export interface BridgeRequest {
   readonly embed?: string;
   /** The embedding kernel's mark of an `html` frame: the bound its page gave it and its title. 02 R4.42a, R4.48a; 05 R3.9 (B-0154) */
   readonly frame?: FrameMark;
+  /** From the built-in home only, beside `embed`: its embed's answer token, whose page carries a call of another session's page shown inside it. 02 R4.48b; 05 R3.9 (B-0189) */
+  readonly via?: string;
 }
 
 export interface BridgeSuccess {
@@ -82,10 +84,11 @@ export function decodeBridgeRequest(input: unknown): BridgeRequest {
   const value = checked.value;
   if (!isJsonObject(value)) throw new PageError("invalid_request", "Bridge request must be an object");
   if ("files" in value) throw new PageError("invalid_request", "Files never travel in the bridge envelope");
-  const keys = Object.keys(value).filter((key) => key !== "embed" && key !== "scope" && key !== "frame").sort().join(",");
+  const keys = Object.keys(value).filter((key) => key !== "embed" && key !== "scope" && key !== "frame" && key !== "via").sort().join(",");
   if (keys !== "id,method,pageRevision,params,v") throw new PageError("invalid_request", "Bridge request has the wrong shape");
   if ("embed" in value && !(typeof value.embed === "string" && value.embed.length > 0 && value.embed.length <= LIMITS.tokenChars)) throw new PageError("invalid_request", "The bridge request's embed is not a token");
   if ("frame" in value && !isFrameMark(value.frame)) throw new PageError("invalid_request", "The bridge request's frame is not a frame's mark");
+  if ("via" in value && !("embed" in value && typeof value.via === "string" && value.via.length > 0 && value.via.length <= LIMITS.tokenChars)) throw new PageError("invalid_request", "The bridge request's via is not a token beside an embed");
   if (value.v !== BRIDGE_PROTOCOL_VERSION) throw new PageError("unsupported_version", "Unsupported bridge protocol version");
   if (!isRequestId(value.id)) throw new PageError("invalid_request", "Invalid request id");
   if (!isMethodName(value.method)) throw new PageError("invalid_request", "Invalid method name");
@@ -94,7 +97,7 @@ export function decodeBridgeRequest(input: unknown): BridgeRequest {
   // A scope that could name anything outside the session's folder is refused before anything else. 07 R5.83
   if ("scope" in value && !isCanonicalScope(value.scope)) throw new PageError("invalid_params", `Invalid scope: ${scopeProblem(value.scope)}`);
   const base = { v: 1 as const, id: value.id, method: value.method, params: value.params as JsonValue, pageRevision: value.pageRevision };
-  return { ...base, ...("scope" in value ? { scope: value.scope as string } : {}), ...("embed" in value ? { embed: value.embed as string } : {}), ...("frame" in value ? { frame: value.frame as unknown as FrameMark } : {}) };
+  return { ...base, ...("scope" in value ? { scope: value.scope as string } : {}), ...("embed" in value ? { embed: value.embed as string } : {}), ...("frame" in value ? { frame: value.frame as unknown as FrameMark } : {}), ...("via" in value ? { via: value.via as string } : {}) };
 }
 
 export function safeRequestId(value: unknown): string {

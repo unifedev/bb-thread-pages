@@ -2,7 +2,7 @@
 import { RESERVED_NAMESPACES } from "../../domain/capabilities/contributed.ts";
 import type { BridgeErrorCode } from "../../domain/errors.ts";
 import { LIMITS } from "../../domain/limits.ts";
-import { checkScope, scopeWithin } from "../../domain/scope.ts";
+import { checkScope, scopeWithin, type FrameMark } from "../../domain/scope.ts";
 import { BRIDGE_VERSION, isBridgeResponse, type BridgeRequestMessage, type BridgeResponseMessage } from "../shared/protocol.ts";
 
 /** How an embedding kernel relays an embedded document's call: as that document, under that embed's answer token. 02 R4.48 (U56) */
@@ -10,6 +10,10 @@ export interface RelayedAs {
   embed: string;
   pageRevision: string;
   scope: string | null;
+  /** The mark of the `html` frame of that document the call came from, kept by the home's view of a page. 02 R4.48b (B-0189) */
+  frame?: FrameMark;
+  /** The home's embed whose page carries this call of another session's page shown inside it. 02 R4.48b; 05 R3.9 (B-0189) */
+  via?: string;
 }
 
 export interface BridgeClient {
@@ -94,7 +98,7 @@ export function createBridgeClient(deps: BridgeClientDeps): BridgeClient {
         if (extracted.length > 0) files = extracted;
       }
       const id = deps.nextId();
-      const request: BridgeRequestMessage = { v: BRIDGE_VERSION, id, method, params: sent === undefined ? null : sent, pageRevision: as ? as.pageRevision : deps.pageRevision, ...(scopeAt !== null ? { scope: scopeAt } : {}), ...(files ? { files } : {}), ...(as ? { embed: as.embed } : {}) };
+      const request: BridgeRequestMessage = { v: BRIDGE_VERSION, id, method, params: sent === undefined ? null : sent, pageRevision: as ? as.pageRevision : deps.pageRevision, ...(scopeAt !== null ? { scope: scopeAt } : {}), ...(files ? { files } : {}), ...(as ? { embed: as.embed } : {}), ...(as?.frame ? { frame: as.frame } : {}), ...(as?.via ? { via: as.via } : {}) };
       pending.set(id, { resolve, reject });
       if (!deps.send(request)) {
         pending.delete(id);

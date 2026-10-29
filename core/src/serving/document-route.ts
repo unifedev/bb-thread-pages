@@ -143,6 +143,8 @@ export async function serveDocument(ctx: ServingContext, request: PagesRequest, 
     documentPath: path ?? ENTRY_DOCUMENT,
     ownFilesByFrame: false,
     embedAvailable: true,
+    // A page shown whole, on its own URL or as the built-in home. 07 R5.93 (B-0189)
+    frame: false,
     deferredFiles: view.deferredFiles,
     swapIdleMs: LIMITS.swapIdleMs,
   };
