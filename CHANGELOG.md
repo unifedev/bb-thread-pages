@@ -1,10 +1,44 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 4f03cb7): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 0034a17): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.14.8 (bb plugin) — 2026-10-29
+
+The bb plugin's release of the 0.6.15 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.8`): an older session the home reopens after a
+reload comes back with its state and its questions, from pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.8.
+
+## 0.6.15 — 2026-10-29
+
+An older session the home reopens after a reload comes back with its state and its questions, however deep it is in
+its workspace. In pages-core's built-in home, so both hosts carry it (B-0221): spec 08 A201.
+
+`@unifedev/pages-core` 0.6.8, `@unifedev/claude-pages` 0.6.15, the bb plugin `@unifedev/thread-pages` 1.14.8.
+
+### Fixed
+
+- **An older session reopened after a reload shows its real state.** When the home could not find the session where
+  it saved it (it had moved, or the host no longer took that place), it looked only at the newest 150 sessions of its
+  workspace, from the top each time. A session deeper than that stayed open under its title but never refreshed: it
+  showed as working, its menu offered Stop the turn, and a question or approval it asked never showed. Now each look
+  carries on where the last one stopped, to the end of the workspace; once found, the session joins the list with its
+  state, its questions and its page, and later looks read only the page it was found on. A session the host still
+  keeps but lists nowhere shows no state and no Stop, and is looked for every 5 minutes instead of every 30 seconds.
+  Test: `packages/pages-core/test/agent/home.test.ts`.
+
+## 0.6.14 — 2026-10-29
+
+On Claude Code, a page that sent answers just before you typed `/clear` now reads them as delivered (B-0217).
+`@unifedev/claude-pages` 0.6.14; `@unifedev/pages-core` stays 0.6.7 and the bb plugin `@unifedev/thread-pages`
+1.14.7: neither changes.
 
 ## 1.14.7 (bb plugin) — 2026-10-29
 

@@ -620,13 +620,18 @@
   const foundAt = new Map();
   /** The workspace of a session the home reopened after a reload before the list holds its row. B-0214 */
   const restoredIn = new Map();
-  /** Asks the host whether a session the list no longer shows still exists, at most every 30 s. A row search read
-   *  past the list is read again on its page (and the next, for rows that moved down), so the open session's row stays
-   *  fresh: its state, its wait, its page. Only where that misses it does the general check run. U57; B-0205 */
+  /** Per session the general check has not found yet: where its next pass reads on (its active rows, then all of them).
+   *  Listed nowhere: the sessions the host keeps but lists in no row, asked about every 5 minutes. A pass at a time. B-0221 */
+  const scans = new Map(), unlisted = new Set(), scanning = new Set();
+  /** Asks the host whether a session the list no longer shows still exists, at most every 30 s (5 min once it is listed
+   *  nowhere). A row search read past the list is read again on its page (and the next, for rows that moved down), so the
+   *  open session's row stays fresh: its state, its wait, its page. Only where that misses it does the general check
+   *  run. U57; B-0205 */
   function checkGone(id) {
-    if (Date.now() - (goneChecked.get(id) || 0) < 30000) return;
+    if (Date.now() - (goneChecked.get(id) || 0) < (unlisted.has(id) ? 300000 : 30000)) return;
     goneChecked.set(id, Date.now());
     const fresh = (row) => {
+      unlisted.delete(id);
       if (!byId.has(id)) {
         // Reopened after a reload and found: it joins the list as the open session, as a pick does. B-0214
         if (!restoredIn.has(id) || goneIds.has(id) || view.kind !== "session" || view.id !== id) return;
@@ -666,7 +671,10 @@
       checkHost(id, fresh);
     })();
   }
-  /** The general check: the host's transcript says whether it exists, its workspace's archived rows whether it is archived. */
+  /** The general check: the host's transcript says whether it exists; its workspace (the one list for a session in
+   *  none) where it is. Each pass reads 3 pages on from where the last stopped: first the active rows, where a hit
+   *  saves its place, so later passes read that page; then every row, where an archived one shows as archived. Read
+   *  to the end and not there: listed nowhere, so the home claims no state for it. B-0221 */
   function checkHost(id, fresh) {
     const drop = () => {
       sessions = sessions.filter((session) => session.id !== id);
@@ -675,31 +683,53 @@
       renderSidebar();
       if (refresh) refresh();
     };
+    if (scanning.has(id)) return;
+    scanning.add(id);
     call("sessions.messages", { sessionId: id, limit: 1 }).then(async () => {
-      // Still there: archived in the host, perhaps. Its workspace's archived rows say so; then it stays open, read-only.
-      const workspaceId = (byId.get(id) || {}).workspaceId || restoredIn.get(id);
-      if (!workspaceId) return;
-      let cursor = null;
+      const known = byId.get(id);
+      const workspaceId = known ? known.workspaceId : restoredIn.get(id);
+      if (typeof workspaceId !== "string") return;
+      let scan = scans.get(id);
+      if (!scan || scan.workspaceId !== workspaceId) { scan = { workspaceId, all: false, cursor: null }; scans.set(id, scan); }
+      const scope = workspaceId ? { workspaceId } : {};
       for (let page = 0; page < 3; page += 1) {
-        const found = await readPage({ includeArchived: true, includeChildren: true, workspaceId }, cursor).catch(() => null);
-        if (!found || found === SWITCHED) return;
-        const hit = found.sessions.find((session) => session.id === id);
+        const cursor = scan.cursor;
+        let found;
+        try { found = await readPage(scan.all ? { includeArchived: true, includeChildren: true, ...scope } : listParams(scope), cursor); }
+        catch (error) {
+          // A cursor the host no longer takes: the next pass reads from the top. A page that does not validate: this
+          // part is read as far as it can be. Anything else: the next pass tries the same page again.
+          if (["not_found", "invalid_params"].includes(error.code)) { scans.delete(id); return; }
+          if (error.code !== "invalid_result") return;
+          found = SWITCHED;
+        }
+        if (scans.get(id) !== scan) return;
+        if (!found) continue;
+        const hit = found === SWITCHED ? null : found.sessions.find((session) => session.id === id);
         if (hit) {
-          if (!hit.archived) { fresh(hit); return; }
+          scans.delete(id);
+          if (!hit.archived) { if (!scan.all) foundAt.set(id, { workspaceId: workspaceId || null, cursor }); fresh(hit); return; }
           archived = archived || [];
           if (!archived.some((session) => session.id === id)) archived.unshift(hit);
           goneIds.add(id);
           drop();
           return;
         }
-        cursor = found.nextCursor;
-        if (!cursor) return;
+        scan.cursor = found === SWITCHED ? null : found.nextCursor;
+        if (scan.cursor) continue;
+        if (!scan.all) { scan.all = true; continue; }
+        // Read to the end: the host keeps it and lists it nowhere. No state, no Stop; asked again in 5 minutes.
+        scans.delete(id);
+        if (known && (known.state !== null || known.waiting)) fresh({ ...known, state: null, waiting: null });
+        unlisted.add(id);
+        if (refresh) refresh();
+        return;
       }
     }, (error) => {
       if (error.code !== "not_found") return;
       goneIds.add(id);
       drop();
-    });
+    }).finally(() => scanning.delete(id));
   }
   function listFailed(error) {
     if (!loadedAt) loadFailed = true;
@@ -710,6 +740,8 @@
   function applySessions(list, atMs) {
     const seen = new Set();
     const next = list.filter((session) => (seen.has(session.id) ? false : (seen.add(session.id), true)));
+    // Listed again: what the general check knew of it no longer holds. B-0221
+    for (const id of [...unlisted, ...scans.keys()]) if (seen.has(id)) { unlisted.delete(id); scans.delete(id); }
     // The open session stays while the list misses it; only the host saying it is gone closes it.
     const open = view.kind === "session" ? view.id : null;
     if (open && !seen.has(open) && byId.has(open) && !goneIds.has(open)) { next.push(byId.get(open)); checkGone(open); }
@@ -1146,7 +1178,7 @@
     if (view.kind !== "session") return { kind: view.kind, atMs: Date.now() };
     const row = lookup(view.id);
     const at = foundAt.get(view.id) || view.at || null;
-    return { kind: "session", id: view.id, atMs: Date.now(), title: row ? row.title : view.title || null, workspaceId: row ? row.workspaceId : view.workspaceId || null, at };
+    return { kind: "session", id: view.id, atMs: Date.now(), title: row ? row.title : view.title || null, workspaceId: row ? row.workspaceId : typeof view.workspaceId === "string" ? view.workspaceId : null, at };
   }
   function go(next, options) {
     dismiss();
@@ -1442,6 +1474,8 @@
     const update = () => {
       const current = lookup(id);
       if (!current) {
+        // Listed nowhere: its state is not known, so it claims none. B-0221
+        if (unlisted.has(id)) session.state = null;
         if (!loadedAt) return;
         // Reopened after a reload with nowhere saved to read it (saved before B-0214): a new session, as before.
         if (options && options.restore && !restoredIn.has(id) && !foundAt.has(id)) { go({ kind: "new" }); return; }
@@ -2014,7 +2048,7 @@
     const at = start.at && typeof start.at === "object" && (start.at.cursor === null || typeof start.at.cursor === "string") && (start.at.workspaceId === null || typeof start.at.workspaceId === "string") ? { workspaceId: start.at.workspaceId, cursor: start.at.cursor } : null;
     if (at) foundAt.set(start.id, at);
     if (typeof start.workspaceId === "string") restoredIn.set(start.id, start.workspaceId);
-    go({ kind: "session", id: start.id, title: typeof start.title === "string" ? start.title : null, workspaceId: restoredIn.get(start.id) || null, at }, { restore: true });
+    go({ kind: "session", id: start.id, title: typeof start.title === "string" ? start.title : null, workspaceId: restoredIn.has(start.id) ? restoredIn.get(start.id) : null, at }, { restore: true });
   } else go({ kind: ["drafts", "permissions"].includes(start.kind) ? start.kind : "new" }, { restore: true });
   watchSessions();
 })();
