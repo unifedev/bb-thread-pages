@@ -2,6 +2,7 @@
 import { checkAnswer, decisionSummary, type RespondPayloadLike } from "../../../domain/capabilities/waiting.ts";
 import { PageError, PUBLIC_MESSAGES, mapProviderError } from "../../../domain/errors.ts";
 import type { RespondPayload, SessionRecord } from "../../../host/provider.ts";
+import type { HostBound } from "../../action-request.ts";
 import type { ServingContext } from "../../context.ts";
 import { decisionCooldownKey, grantCooldownKey } from "../cooldown.ts";
 import type { Sender } from "../deliver.ts";
@@ -41,10 +42,12 @@ export function decisionRequest(target: SessionRecord, params: RespondParams): D
 }
 
 /** The provider's `respond`, errors mapped, the free text noted in the ledger so the question row can carry `from: page`. DESIGN §E.7 step 8 */
-export async function executeRespond(ctx: ServingContext, target: string, params: RespondParams, sender: Sender, requestId: string): Promise<{ answered: true }> {
+export async function executeRespond(ctx: ServingContext, target: string, params: RespondParams, sender: Sender, requestId: string, bound?: HostBound): Promise<{ answered: true }> {
   const respond = ctx.provider.sessions.respond;
   if (!respond) throw new PageError("unknown_method", "This host does not answer waits from a page");
   const payload: RespondPayload = params.decision !== undefined ? { decision: params.decision } : { answers: params.answers ?? {} };
+  // Not sent once the call was answered `timeout` (the target's read before it settled late). 05 R2.38b
+  bound?.check();
   try {
     await respond.call(ctx.provider.sessions, target, params.id, payload);
   } catch (error) {

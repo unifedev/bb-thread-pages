@@ -4,7 +4,7 @@ import { handler } from "../handler.ts";
 
 export const storageGet = handler<{ key: string }, unknown>({
   method: "storage.get",
-  async execute(params, { serving, session, scope }) {
+  async execute(params, { serving, session, scope, bound }) {
     const found = await serving.storage.get(session.id, scope, params.key);
     return { result: found.found ? { found: true, value: found.value as JsonValue } : { found: false } };
   },
@@ -12,16 +12,16 @@ export const storageGet = handler<{ key: string }, unknown>({
 
 export const storageSet = handler<{ key: string; value: JsonValue }, unknown>({
   method: "storage.set",
-  async execute(params, { serving, session, scope }) {
-    await serving.storage.set(session.id, scope, [{ key: params.key, value: params.value }]);
+  async execute(params, { serving, session, scope, bound }) {
+    await serving.storage.set(session.id, scope, [{ key: params.key, value: params.value }], () => bound?.check());
     return { result: { stored: true } };
   },
 });
 
 export const storageSetMany = handler<{ entries: { key: string; value: JsonValue }[] }, unknown>({
   method: "storage.setMany",
-  async execute(params, { serving, session, scope }) {
-    const stored = await serving.storage.set(session.id, scope, params.entries);
+  async execute(params, { serving, session, scope, bound }) {
+    const stored = await serving.storage.set(session.id, scope, params.entries, () => bound?.check());
     return { result: { stored: stored.stored } };
   },
 });

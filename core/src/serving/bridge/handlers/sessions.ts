@@ -327,7 +327,7 @@ export const sessionsRespond = handler<SessionsRespondParams, unknown>({
   async execute(params, context) {
     const target = await respondTarget(params, context);
     const { sessionId: _target, ...rest } = params;
-    const result = await executeRespond(context.serving, target.id, rest, { id: context.session.id, label: senderLabel(context) }, context.requestId);
+    const result = await executeRespond(context.serving, target.id, rest, { id: context.session.id, label: senderLabel(context) }, context.requestId, context.bound);
     if (params.answers !== undefined) await context.serving.grants.touch(context.session.id, target.id);
     return { result };
   },

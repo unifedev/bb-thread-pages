@@ -4,7 +4,7 @@ import { PageError } from "../domain/errors.ts";
 import { mintActionToken } from "../domain/tokens/action-token.ts";
 import type { PagesRequest, PagesResponse } from "../host/serving.ts";
 import { isDocumentSessionBody, type DocumentSessionResponse } from "../runtime/shared/envelopes.ts";
-import { acquireBudget, requireActionToken, requireSessionToken } from "./action-request.ts";
+import { acquireBudget, boundHostWork, requireActionToken, requireSessionToken } from "./action-request.ts";
 import type { ServingContext } from "./context.ts";
 import { documentUrlFor } from "./document-route.ts";
 import { failure, json } from "./responses.ts";
@@ -25,23 +25,26 @@ export function documentSessionRoute(ctx: ServingContext) {
       const query = checkDocumentQuery(body.query);
       if (!query.ok) throw new PageError("invalid_params", `That link's query cannot be carried: ${query.message}.`);
       release = acquireBudget(ctx, token);
-      const access = await ctx.sessionFor(session);
-      requirePageSession(access);
-      const view = await loadPageView(ctx.pages, access, path);
-      const minted = mintActionToken({ session, revision: view.revision, path, now: ctx.now() }, ctx.signingKey);
-      const answer: DocumentSessionResponse = {
-        ok: true,
-        actionToken: minted.token,
-        pageRevision: view.revision,
-        expiresAt: minted.payload.exp,
-        documentUrl: documentUrlFor(ctx, access, path, query.query, view.revision),
-        path: path ?? ENTRY_DOCUMENT,
-        query: query.query,
-        source: view.source,
-        empty: view.empty,
-        deferredFiles: view.deferredFiles,
-      };
-      return json(200, answer);
+      // From the slot on, under the bridge timeout. 05 R2.38b
+      return await boundHostWork(ctx, () => `POST /document-session ${session}`, async () => {
+        const access = await ctx.sessionFor(session);
+        requirePageSession(access);
+        const view = await loadPageView(ctx.pages, access, path);
+        const minted = mintActionToken({ session, revision: view.revision, path, now: ctx.now() }, ctx.signingKey);
+        const answer: DocumentSessionResponse = {
+          ok: true,
+          actionToken: minted.token,
+          pageRevision: view.revision,
+          expiresAt: minted.payload.exp,
+          documentUrl: documentUrlFor(ctx, access, path, query.query, view.revision),
+          path: path ?? ENTRY_DOCUMENT,
+          query: query.query,
+          source: view.source,
+          empty: view.empty,
+          deferredFiles: view.deferredFiles,
+        };
+        return json(200, answer);
+      });
     } catch (error) {
       return failure(error, ctx.log, "POST /document-session", false);
     } finally {

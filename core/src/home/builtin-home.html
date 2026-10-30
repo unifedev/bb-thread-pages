@@ -527,10 +527,20 @@
     }
     if (waiting.length && tokens < 1 && !wake) wake = setTimeout(() => { wake = null; pump(); }, Math.ceil(((1 - tokens) * 60000) / RATE));
   }
+  // A read the host has not answered in 60 s fails as `unavailable`: its slot is freed, a late answer is dropped, and a
+  // watch or the general check tries again, so a host call that never answers costs a minute, not the tab. A write
+  // waits as long as the host takes: one given up on may still land, and trying it again could do it twice. B-0228
+  const READ_MS = 60000, READS = new Set(["context.get", "storage.get", "workspaces.list", "providers.list", "sessions.snapshot", "sessions.messages"]);
+  function bounded(method, answer) {
+    if (!READS.has(method)) return answer;
+    let timer = null;
+    const late = new Promise((_, fail) => { timer = setTimeout(() => fail(Object.assign(new Error("The host did not answer in time."), { code: "unavailable" })), READ_MS); });
+    return Promise.race([answer, late]).finally(() => clearTimeout(timer));
+  }
   /** One capability call under the hub's budget; `urgent` for what the reader just did. */
   function call(method, params, urgent) {
     return new Promise((resolve, reject) => {
-      const entry = { urgent: !!urgent, run: () => (params === undefined ? tp.invoke(method) : tp.invoke(method, params)).then(resolve, reject) };
+      const entry = { urgent: !!urgent, run: () => bounded(method, params === undefined ? tp.invoke(method) : tp.invoke(method, params)).then(resolve, reject) };
       const at = urgent ? waiting.findIndex((one) => !one.urgent) : -1;
       if (at >= 0) waiting.splice(at, 0, entry); else waiting.push(entry);
       pump();
@@ -569,13 +579,18 @@
   $("[data-perms]").addEventListener("click", () => go({ kind: "permissions" }));
 
   // The hub's view state lives in its own storage namespace; nothing about the reader is kept. 03 R5.18a
+  // It is written only once it was read: a read the host did not answer (05 R2.38b) leaves the reader's saved view
+  // unknown, and the defaults must not replace it on every device. B-0228 review F2
+  let prefsRead = false;
   try {
     const stored = await call("storage.get", { key: "hub.v1" });
     if (stored.found && stored.value && typeof stored.value === "object") prefs = { ...prefs, ...stored.value };
+    prefsRead = true;
   } catch (error) { if (error.code !== "unavailable" && error.code !== "unknown_method") handle(error); }
   for (const key of ["modes", "groups", "open", "compose"]) if (!prefs[key] || typeof prefs[key] !== "object") prefs[key] = {};
   let saveTimer = null;
   function savePrefs() {
+    if (!prefsRead) return;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       const modes = Object.entries(prefs.modes);

@@ -6,6 +6,7 @@ import { formatPromptMessage, formatReplyMessage, formatSubmissionMessage, type 
 import type { Answer, SubmissionFile } from "../../domain/submissions/parse.ts";
 import type { AppliedSettings, AttachmentRef, ReplySettings } from "../../host/provider.ts";
 import { matchSubmissionForm } from "../../pages/forms.ts";
+import type { HostBound } from "../action-request.ts";
 import type { ServingContext } from "../context.ts";
 
 /** Who sends: the page's session (or the built-in home) and the label a framing line names. 02 §Framing lines */
@@ -87,13 +88,15 @@ async function send(ctx: ServingContext, target: string, text: string, mode: "qu
  * A `session.reply` into `target`, worded by kind, framed when the sender
  * is another session, remembered under (target, "reply", key). 03 R5.16–R5.17, R-C8, R5.61
  */
-export async function deliverReply(ctx: ServingContext, args: { target: string; sender: Sender; reply: ReplyToDeliver; requestId: string; attachments?: readonly AttachmentRef[] | null }): Promise<Delivered> {
+export async function deliverReply(ctx: ServingContext, args: { target: string; sender: Sender; reply: ReplyToDeliver; requestId: string; attachments?: readonly AttachmentRef[] | null; bound?: HostBound | undefined }): Promise<Delivered> {
   const { reply, target, sender } = args;
   const framing = framingFor(sender, target);
   const text = reply.kind === "prompt" ? formatPromptMessage(reply.text ?? "", framing) : formatReplyMessage(reply.title, reply.result, framing);
   const attachments = args.attachments ?? undefined;
   const settings = reply.settings && Object.values(reply.settings).some((value) => value !== undefined) ? reply.settings : undefined;
   const print = fingerprint({ kind: reply.kind, title: reply.title ?? null, mode: reply.mode, result: reply.result ?? null, text: reply.text ?? null, attachments: attachments ? attachments.map((item) => item.attachmentId) : null, settings: settings ? { model: settings.model ?? null, reasoningLevel: settings.reasoningLevel ?? null, permissionMode: settings.permissionMode ?? null } : null });
+  // Not started once the call was answered `timeout`; once started, a retry under the same id joins it. 05 R2.38b, R2.33
+  args.bound?.check();
   const remembered = ctx.idempotency.remember({ session: target, kind: "reply", id: replyIdempotencyId(reply.idempotencyKey, args.requestId) }, print, () => send(ctx, target, text, reply.mode, sender, args.requestId, attachments, settings), ctx.now());
   if (remembered.kind === "conflict") throw new PageError("conflict", "This idempotency key was already used with a different reply");
   const outcome = await remembered.outcome;
@@ -111,7 +114,7 @@ export async function deliverReply(ctx: ServingContext, args: { target: string; 
  * replays the first outcome. `stale_page` only when no form matches.
  * 05 R2.32–R2.37, R-S11; 03 R5.61, R5.63; 02 R-K5, R-K6
  */
-export async function deliverSubmission(ctx: ServingContext, args: { target: string; path: string | null; sender: Sender; submission: SubmissionToDeliver; requestId: string; pathForAgent?: (relative: string) => string; held?: { revision: string } }): Promise<DeliveredSubmission> {
+export async function deliverSubmission(ctx: ServingContext, args: { target: string; path: string | null; sender: Sender; submission: SubmissionToDeliver; requestId: string; pathForAgent?: (relative: string) => string; held?: { revision: string }; bound?: HostBound | undefined }): Promise<DeliveredSubmission> {
   const { submission, target, sender } = args;
   const print = fingerprint({ writtenAgainst: submission.writtenAgainst, title: submission.title, formId: submission.formId, formTitle: submission.formTitle, action: submission.action, answers: submission.answers as unknown as JsonValue, files: submission.files.map((file) => ({ field: file.field, name: file.name, path: file.path, sizeBytes: file.sizeBytes })), frame: submission.frame ?? null });
   const deliver = async (): Promise<{ delivery: "started" | "queued" | "steered"; matchedRevision: string; revisionChanged: boolean }> => {
@@ -131,6 +134,8 @@ export async function deliverSubmission(ctx: ServingContext, args: { target: str
     const sent = await send(ctx, target, text, "queue", sender, args.requestId);
     return { delivery: sent.delivery, matchedRevision: match.revision, revisionChanged };
   };
+  // Not started once the call was answered `timeout`; once started, a retry under the same id joins it. 05 R2.38b, R2.33
+  args.bound?.check();
   const remembered = ctx.idempotency.remember({ session: target, kind: "submit", id: submission.submissionId }, print, deliver, ctx.now());
   if (remembered.kind === "conflict") throw new PageError("conflict", "This submission id was already used with different answers");
   const outcome = await remembered.outcome;

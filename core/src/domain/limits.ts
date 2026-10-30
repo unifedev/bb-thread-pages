@@ -34,6 +34,10 @@ export const LIMITS = Object.freeze({
   contributedPayloadMaxBytes: 1024 * 1024,
   /** One contributed call, then `unavailable`. 07 R5.51 */
   contributedCallMs: 30_000,
+  /** The host's answer to a request that holds a budget slot, then `unavailable` / `timeout` and the slot freed; the folder picker and voice are exempt, the file routes bounded by `fileCallMs`. 05 R2.38b */
+  bridgeCallMs: 30_000,
+  /** The host's answer to `/upload` or `/attach`, counted from the slot, then `unavailable` / `timeout` and the slot freed; above the reference host's own 75 s per host call, so it cuts no single host call that would succeed. 05 R2.38b */
+  fileCallMs: 90_000,
   /** How long a contributor's declarations are reused before they are read again. 07 §Discovery per host */
   contributionsTtlMs: 10_000,
   /** A contributor's page script, UTF-8; refused whole above, never cut. 07 R5.90 */

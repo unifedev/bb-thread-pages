@@ -35,7 +35,7 @@ export interface PageStore {
 export interface StorageStore {
   get(identity: string, scope: string | null, key: string): Promise<{ found: boolean; value?: JsonValue }>;
   /** All or none; throws `invalid_params`, `request_too_large`. */
-  set(identity: string, scope: string | null, entries: readonly { key: string; value: JsonValue | null }[]): Promise<{ stored: number }>;
+  set(identity: string, scope: string | null, entries: readonly { key: string; value: JsonValue | null }[], guard?: () => void): Promise<{ stored: number }>;
   forget(identity: string): Promise<void>;
 }
 

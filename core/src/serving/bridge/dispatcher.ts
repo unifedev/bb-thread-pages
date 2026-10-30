@@ -12,12 +12,13 @@ import { boundIssue, isJsonObject, parseStrictJson, type JsonValue, type Validat
 import { LIMITS } from "../../domain/limits.ts";
 import { EMPTY_REVISION, sha256Hex } from "../../domain/revision.ts";
 import { scopeWithin } from "../../domain/scope.ts";
-import { verifyActionToken } from "../../domain/tokens/action-token.ts";
+import { verifyActionToken, type ActionToken } from "../../domain/tokens/action-token.ts";
 import { verifyAnswerToken } from "../../domain/tokens/answer-token.ts";
 import { challengeId, challengeMatches, mintChallenge, openChallenge, paramsFingerprint, type ChallengeKind, type ConfirmationBinding } from "../../domain/tokens/confirmation.ts";
 import { isRecord, openToken } from "../../domain/tokens/mac.ts";
 import type { AttachmentRef, SessionRecord } from "../../host/provider.ts";
 import type { PagesRequest, PagesResponse } from "../../host/serving.ts";
+import { boundHostWork, type HostBound } from "../action-request.ts";
 import type { BridgeEnvelope, CapabilityHandler, Dispatcher, ServingContext } from "../context.ts";
 import { combinedLookup } from "../contributions.ts";
 import { requestOrigins } from "../request.ts";
@@ -102,6 +103,9 @@ async function eligibleRecord(ctx: ServingContext, session: string): Promise<Ses
 const EMBED_RELAYED: ReadonlySet<string> = new Set(["storage.get", "storage.set", "storage.setMany"]);
 /** Relayed too for the built-in home's view of a page, as that page: its frames' reads and answers. 02 R4.48b (B-0189) */
 const HOME_VIEW_RELAYED: ReadonlySet<string> = new Set(["pages.read", "pages.answer"]);
+
+/** The built-ins that wait on the reader, not just the host: the bridge timeout does not cut them. 05 R2.38b */
+const READER_PACED: ReadonlySet<string> = new Set(["workspaces.browse"]);
 
 /** The built-ins that read a scope (07 R5.84a): with contributed calls, what an `html` frame's bound holds. 07 R5.83a */
 const SCOPED_STORAGE: ReadonlySet<string> = new Set(["storage.get", "storage.set", "storage.setMany"]);
@@ -248,7 +252,6 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
   async function run(request: PagesRequest, envelope: BridgeEnvelope, trace: ApprovalTrace): Promise<PagesResponse> {
     let requestId: unknown;
     let release: (() => void) | null = null;
-    let contributedWrite: ContributedSpec | null = null;
     let session = "?";
     try {
       // 1. The reader. 05 R-S8
@@ -267,153 +270,176 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
       // 5. The budget: charged from here on; a call refused by the budget charges nothing. 05 R2.38a; DR-30
       release = ctx.budget.acquire({ session: token.session, document: token.path ?? ENTRY_DOCUMENT, scope }, ctx.now());
       if (!release) throw new PageError("rate_limited", PUBLIC_MESSAGES.rateLimited);
-      // 5a. A call an embedding kernel relays for an embedded document is that document's: the caller, its storage and its document are the embed's answer token's target, which must have been issued to this page. 02 R4.48; 03 R5.62; 07 R5.49 (U56)
-      let caller = { session: token.session, path: token.path };
-      // Shown by the built-in home or by a page of its own session, the embedded document has its whole reach; shown by another session's page, only its contributors' reads: that page holds a token for any session it reads, and its own scripts can do what its embeds do (05 R3.26). 02 R4.48 (U56)
-      let whole = true;
-      let embeddedBy: string | undefined;
-      // The session whose page the call comes from: the page's own, or, through the home's view, the page that view shows.
-      let pageSession = token.session;
-      if (bridgeRequest.embed !== undefined) {
-        // Through the built-in home's view of a page, a call of another session's page shown in it: `via` is the home's embed, `embed` that page's token for the other. 02 R4.48b; 05 R3.9 (B-0189)
-        let relayer = token.session;
-        if (bridgeRequest.via !== undefined) {
-          const via = verifyAnswerToken(bridgeRequest.via, ctx.signingKey, ctx.now());
-          if (token.session !== HOME_IDENTITY || !via || via.issuedTo !== HOME_IDENTITY) throw new PageError("confirmation_invalid", "This embed's token was not issued to this page; read the page again");
-          relayer = via.target;
-          pageSession = via.target;
-        }
-        const embed = verifyAnswerToken(bridgeRequest.embed, ctx.signingKey, ctx.now());
-        if (!embed || embed.issuedTo !== relayer) throw new PageError("confirmation_invalid", "This embed's token was not issued to this page; read the page again");
-        caller = { session: embed.target, path: embed.path };
-        whole = embed.issuedTo === embed.target || embed.issuedTo === HOME_IDENTITY;
-        embeddedBy = embed.issuedTo;
-      }
-      session = caller.session;
-      const home = caller.session === HOME_IDENTITY;
-      // 6–8. Lookup (aliases, the registry, then the contributions), the stale check, the bound and the parameters. 03 R5.2, R5.6; 05 R2.13
-      const lookup = ctx.registry.get(canonicalMethod(bridgeRequest.method)) ? ctx.registry : combinedLookup(ctx.registry, await ctx.contributions.current());
-      if (bridgeRequest.embed !== undefined) {
-        const relayed = lookup.get(canonicalMethod(bridgeRequest.method));
-        // The built-in home's view of a page also reads and answers as that page, for its frames. 02 R4.48b (B-0189)
-        if (relayed && !relayed.contributor && !EMBED_RELAYED.has(relayed.method) && !(HOME_VIEW_RELAYED.has(relayed.method) && embeddedBy === HOME_IDENTITY)) throw new PageError("invalid_request", `${relayed.method} is not relayed for an embedded page`);
-        if (relayed && !whole && !(relayed.contributor && relayed.effect === "read")) throw new PageError("unavailable", PUBLIC_MESSAGES.embedReadsOnly);
-      }
-      // 5b. The contributor is told of any marked call, whatever session it is for (07 R5.84c); an `html` frame's call in the page's own session, its own or one it relays under a token for that session, or one the built-in home's view of a page relays for that page's frame, stays in the folder the page bound it to; another session's page inside it keeps its own rules. 02 R4.42a, R4.48b; 07 R5.83a (B-0154, B-0189)
-      const frame = bridgeRequest.frame ?? null;
-      if (frame && (caller.session === pageSession || embeddedBy === HOME_IDENTITY) && !scopeWithin(scope, frame.scope)) {
-        const scoped = lookup.get(canonicalMethod(bridgeRequest.method));
-        if (scoped && (scoped.contributor || SCOPED_STORAGE.has(scoped.method))) throw new PageError("invalid_params", `This frame is bound to ${frame.scope}: its calls stay in that folder or below`);
-      }
-      const page = await loadPageState(ctx, caller.session, caller.path);
-      // A stop of the page's own session means the same whatever the page shows, and the reader presses it most while the agent saves: no `stale_page`, and its challenge is bound without the revision. 03 R5.28; 05 R2.13, R3.19 (B-0120)
-      const ownStop = !home && canonicalMethod(bridgeRequest.method) === "sessions.stop" && isJsonObject(bridgeRequest.params) && bridgeRequest.params.sessionId === caller.session;
-      let invocation = resolveParams(bridgeRequest, lookup, ownStop ? bridgeRequest.pageRevision : page.revision);
-      // 8a. A link to the host's own page address is that page, opened as `pages.open` with its refusals and no dialog. 03 R5.32b
-      if (invocation.spec.method === "navigation.openExternal") {
-        const target = await hostPageParams((invocation.params as OpenExternalParams).url, ctx, request);
-        if (target) invocation = resolveParams({ ...bridgeRequest, method: "pages.open", params: target }, lookup, page.revision);
-      }
-      const spec = invocation.spec;
-      const contributed = spec.contributor ? (spec as ContributedSpec) : null;
-      const entry = contributed ? null : byMethod.get(spec.method);
-      if (!contributed && !entry) throw new PageError("unknown_method", unknownMethodMessage(bridgeRequest.method));
-      const params = invocation.params as JsonValue;
-      // 9. The built-in home has no session. 05 R-S12; 07 R5.85
-      if (home && SESSIONLESS_CAPABILITIES.has(spec.method)) throw new PageError("unknown_method", PUBLIC_MESSAGES.homeNoSession);
-      if (home && contributed && scope !== null) throw new PageError("invalid_params", "The built-in home page has no session folder to scope to");
-      // 10. Eligibility; an archived session proceeds read-only. U21
-      const record = home ? null : await eligibleRecord(ctx, caller.session);
-      if (record?.archived) page.archived = true;
-      const context: BridgeContext = { serving: ctx, session: record ?? HOME_SESSION, page, requestId: bridgeRequest.id, requestOrigins: requestOrigins(request.headers), scope, request, attachments: null, ...(embeddedBy !== undefined ? { embeddedBy } : {}) };
-      const binding: ConfirmationBinding = { session: caller.session, revision: ownStop ? ANY_REVISION : page.revision, requestId: bridgeRequest.id, method: spec.method, params };
-      // 10a. A retry of a call this challenge already approved: the original answer, nothing done again. 05 R3.19a
-      const replay = replayOf(checked.confirmation, binding);
-      if (replay) return replay;
-      // 11. Cheap refusals: nothing here shows a dialog.
-      await entry?.refuse?.(params, context);
-      // 12. Archived read-only: only what writes into that session. 02 R-K8; DR-9
-      if (page.archived && writesIntoOwnSession(spec)) throw new PageError("unavailable", PUBLIC_MESSAGES.archived, { reason: "archived" });
-      // 13. An offline copy takes no effect. 05 R2.29
-      if (page.stale && spec.effect !== "read" && spec.effect !== "navigation") throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy, { reason: "offline" });
-      // 14. Confirmed by the recording bar: the shell gets the validated parameters; no challenge is ever minted or accepted. 03 R5.68
-      if (entry?.confirmedBy === "recording-bar") {
-        if (checked.confirmation !== null) throw new PageError("confirmation_invalid", "This capability is confirmed in the recording bar, not by a challenge");
-        return jsonResponse(401, { record: { requestId: bridgeRequest.id, params: params as { language?: string; prompt?: string; maxDurationSeconds: number; keepAudio: boolean } } } satisfies BridgeTransport);
-      }
-      // 15. Confirm per call, once per pair, or per decision. 05 R3.17–R3.22a; 03 R5.64, R-C7
-      let attachments: AttachmentRef[] | null = null;
-      let approvedCall: ApprovedCall | null = null;
-      if (entry && spec.confirmed && spec.confirmedFor === undefined) {
-        const summary = (await entry.summarize?.(params, context)) ?? spec.description;
-        const approval = await approve(checked, binding, "confirm", summary, trace);
-        if (approval.kind === "challenge") return jsonResponse(401, approval.body);
-        attachments = approval.attachments;
-        approvedCall = approval.approved;
-      } else if (entry?.grant) {
-        const grant = await entry.grant(params, context);
-        if (grant) {
-          const approval = await approve(checked, binding, "grant", grant.summary, trace, { grant: grant.target });
-          if (approval.kind === "challenge") return jsonResponse(401, approval.body);
-          await grant.record();
-        }
-      }
-      if (entry?.decision) {
-        const decision = await entry.decision(params, context);
-        if (decision) {
-          const approval = await approve(checked, { ...binding, summary: decision.summary }, "decision", decision.summary, trace);
-          if (approval.kind === "challenge") return jsonResponse(401, approval.body);
-        }
-      }
-      // A confirmed call that named files must bring their attachments; an own-session reply's ride on /attach under the token alone. 05 R3.20a; DESIGN P29
-      if (entry && FILE_METHODS.has(spec.method) && isJsonObject(params)) {
-        const fileParams = params as FileParams;
-        if (spec.method === "session.reply" && Array.isArray(fileParams.attachments)) {
-          const approved: ApprovedCall = { session: token.session, revision: page.revision, requestId: bridgeRequest.id, method: spec.method, paramsHash: EMPTY_REVISION };
-          const held = heldAttachments(ctx, approved, fileParams.attachments);
-          if (!held) throw new PageError("confirmation_invalid", "The attachments named are not the files uploaded for this request");
-          attachments = held.attachments;
-          approvedCall = approved;
-        } else if (Array.isArray(fileParams.attachments) && attachments === null) {
-          throw new PageError("confirmation_invalid", "The attachments named were not uploaded under this confirmation");
-        }
-      }
-      const executeContext: BridgeContext = attachments ? { ...context, attachments } : context;
-      // 16. Execute.
-      let outcome: { result: unknown; navigate?: { kind: "page" | "host" | "external"; url: string } };
-      try {
-        if (contributed) {
-          contributedWrite = contributed.effect === "contributed-write" ? contributed : null;
-          const result = await ctx.contributions.invoke(contributed, params, { sessionId: home ? null : caller.session, scope, ...(frame ? { frame } : {}) }, bridgeRequest.id);
-          // Nothing else records a write no dialog saw. 07 R5.55
-          if (contributedWrite) ctx.log.info(`contributed write ${contributed.method} for ${writer(caller.session, token.session)}: ok`);
-          outcome = { result };
-        } else {
-          outcome = await entry!.execute(params, executeContext);
-        }
-      } catch (error) {
-        if (contributedWrite) ctx.log.info(`contributed write ${contributedWrite.method} for ${writer(caller.session, token.session)}: ${PageError.is(error) ? error.code : "failed"}`);
-        if (PageError.is(error)) throw error;
-        throw mapProviderError(error, ctx.log, `bridge ${spec.method}`);
-      }
-      if (approvedCall) ctx.attachGrants.forget(approvedCall);
-      // 17. Project and bound. 03 R5.3; 07 R5.47
-      const response = completeInvocation(invocation, outcome.result);
-      if (!response.ok && response.error.code === "invalid_result") ctx.log.error(`bridge ${spec.method}: ${response.error.message}`);
-      const status = response.ok ? 200 : STATUS_BY_CODE[response.error.code];
-      // 18. Answer.
-      return jsonResponse(status, outcome.navigate && response.ok ? { response, navigate: outcome.navigate } : { response });
+      // 5a–18 under the bridge timeout: a host call that never answers is `unavailable` / `timeout`, and the `finally` frees the slot at once; a late answer is what a retry of an approved call gets. 05 R2.38b, R3.19a
+      const id = requestId;
+      return await boundHostWork(ctx, () => `bridge ${session} ${bridgeRequest.method}`, (bound) => serve(request, checked, token, bridgeRequest, scope, trace, bound, (caller) => {
+        session = caller;
+      }), (late) => keepOutcome(trace, late.status === "fulfilled" ? late.value : answerFailure(late.reason, id, session)));
     } catch (error) {
-      if (PageError.is(error)) {
-        if (error.cause !== undefined) ctx.log.warn(`bridge ${session}: ${error.code}: ${errorText(error.cause)}`);
-        const code = isBridgeErrorCode(error.code) ? error : error.code === "forbidden" || error.code === "unauthenticated" ? error : new PageError(error.code === "page_too_large" ? "unavailable" : "not_found", error.message, { status: error.status, cause: error.cause, ...(error.reason !== undefined ? { reason: error.reason } : {}) });
-        return errorResponse(requestId, code);
-      }
-      ctx.log.warn(`bridge ${session}: ${errorText(error)}`);
-      return errorResponse(requestId, new PageError("handler_error", PUBLIC_MESSAGES.handler, { cause: error }));
+      return answerFailure(error, requestId, session);
     } finally {
       release?.();
     }
+  }
+
+  /** The answer for a failed call: a bridge code as it is, a route code on its own terms, anything else `handler_error` with the cause logged. 03 R5.38, R5.41 */
+  function answerFailure(error: unknown, requestId: unknown, session: string): PagesResponse {
+    if (PageError.is(error)) {
+      if (error.cause !== undefined) ctx.log.warn(`bridge ${session}: ${error.code}: ${errorText(error.cause)}`);
+      const code = isBridgeErrorCode(error.code) ? error : error.code === "forbidden" || error.code === "unauthenticated" ? error : new PageError(error.code === "page_too_large" ? "unavailable" : "not_found", error.message, { status: error.status, cause: error.cause, ...(error.reason !== undefined ? { reason: error.reason } : {}) });
+      return errorResponse(requestId, code);
+    }
+    ctx.log.warn(`bridge ${session}: ${errorText(error)}`);
+    return errorResponse(requestId, new PageError("handler_error", PUBLIC_MESSAGES.handler, { cause: error }));
+  }
+
+  /** Steps 5a–18 of one call, after its budget slot: the caller, lookup, eligibility, confirmation, execute, project, answer. DESIGN §E.1 */
+  async function serve(request: PagesRequest, checked: CheckedEnvelope, token: ActionToken, bridgeRequest: BridgeRequest, scope: string | null, trace: ApprovalTrace, bound: HostBound, serving: (session: string) => void): Promise<PagesResponse> {
+    let contributedWrite: ContributedSpec | null = null;
+    // 5a. A call an embedding kernel relays for an embedded document is that document's: the caller, its storage and its document are the embed's answer token's target, which must have been issued to this page. 02 R4.48; 03 R5.62; 07 R5.49 (U56)
+    let caller = { session: token.session, path: token.path };
+    // Shown by the built-in home or by a page of its own session, the embedded document has its whole reach; shown by another session's page, only its contributors' reads: that page holds a token for any session it reads, and its own scripts can do what its embeds do (05 R3.26). 02 R4.48 (U56)
+    let whole = true;
+    let embeddedBy: string | undefined;
+    // The session whose page the call comes from: the page's own, or, through the home's view, the page that view shows.
+    let pageSession = token.session;
+    if (bridgeRequest.embed !== undefined) {
+      // Through the built-in home's view of a page, a call of another session's page shown in it: `via` is the home's embed, `embed` that page's token for the other. 02 R4.48b; 05 R3.9 (B-0189)
+      let relayer = token.session;
+      if (bridgeRequest.via !== undefined) {
+        const via = verifyAnswerToken(bridgeRequest.via, ctx.signingKey, ctx.now());
+        if (token.session !== HOME_IDENTITY || !via || via.issuedTo !== HOME_IDENTITY) throw new PageError("confirmation_invalid", "This embed's token was not issued to this page; read the page again");
+        relayer = via.target;
+        pageSession = via.target;
+      }
+      const embed = verifyAnswerToken(bridgeRequest.embed, ctx.signingKey, ctx.now());
+      if (!embed || embed.issuedTo !== relayer) throw new PageError("confirmation_invalid", "This embed's token was not issued to this page; read the page again");
+      caller = { session: embed.target, path: embed.path };
+      whole = embed.issuedTo === embed.target || embed.issuedTo === HOME_IDENTITY;
+      embeddedBy = embed.issuedTo;
+    }
+    serving(caller.session);
+    const home = caller.session === HOME_IDENTITY;
+    // 6–8. Lookup (aliases, the registry, then the contributions), the stale check, the bound and the parameters. 03 R5.2, R5.6; 05 R2.13
+    const lookup = ctx.registry.get(canonicalMethod(bridgeRequest.method)) ? ctx.registry : combinedLookup(ctx.registry, await ctx.contributions.current());
+    if (bridgeRequest.embed !== undefined) {
+      const relayed = lookup.get(canonicalMethod(bridgeRequest.method));
+      // The built-in home's view of a page also reads and answers as that page, for its frames. 02 R4.48b (B-0189)
+      if (relayed && !relayed.contributor && !EMBED_RELAYED.has(relayed.method) && !(HOME_VIEW_RELAYED.has(relayed.method) && embeddedBy === HOME_IDENTITY)) throw new PageError("invalid_request", `${relayed.method} is not relayed for an embedded page`);
+      if (relayed && !whole && !(relayed.contributor && relayed.effect === "read")) throw new PageError("unavailable", PUBLIC_MESSAGES.embedReadsOnly);
+    }
+    // 5b. The contributor is told of any marked call, whatever session it is for (07 R5.84c); an `html` frame's call in the page's own session, its own or one it relays under a token for that session, or one the built-in home's view of a page relays for that page's frame, stays in the folder the page bound it to; another session's page inside it keeps its own rules. 02 R4.42a, R4.48b; 07 R5.83a (B-0154, B-0189)
+    const frame = bridgeRequest.frame ?? null;
+    if (frame && (caller.session === pageSession || embeddedBy === HOME_IDENTITY) && !scopeWithin(scope, frame.scope)) {
+      const scoped = lookup.get(canonicalMethod(bridgeRequest.method));
+      if (scoped && (scoped.contributor || SCOPED_STORAGE.has(scoped.method))) throw new PageError("invalid_params", `This frame is bound to ${frame.scope}: its calls stay in that folder or below`);
+    }
+    const page = await loadPageState(ctx, caller.session, caller.path);
+    // A stop of the page's own session means the same whatever the page shows, and the reader presses it most while the agent saves: no `stale_page`, and its challenge is bound without the revision. 03 R5.28; 05 R2.13, R3.19 (B-0120)
+    const ownStop = !home && canonicalMethod(bridgeRequest.method) === "sessions.stop" && isJsonObject(bridgeRequest.params) && bridgeRequest.params.sessionId === caller.session;
+    let invocation = resolveParams(bridgeRequest, lookup, ownStop ? bridgeRequest.pageRevision : page.revision);
+    // 8a. A link to the host's own page address is that page, opened as `pages.open` with its refusals and no dialog. 03 R5.32b
+    if (invocation.spec.method === "navigation.openExternal") {
+      const target = await hostPageParams((invocation.params as OpenExternalParams).url, ctx, request);
+      if (target) invocation = resolveParams({ ...bridgeRequest, method: "pages.open", params: target }, lookup, page.revision);
+    }
+    const spec = invocation.spec;
+    const contributed = spec.contributor ? (spec as ContributedSpec) : null;
+    const entry = contributed ? null : byMethod.get(spec.method);
+    if (!contributed && !entry) throw new PageError("unknown_method", unknownMethodMessage(bridgeRequest.method));
+    const params = invocation.params as JsonValue;
+    // 9. The built-in home has no session. 05 R-S12; 07 R5.85
+    if (home && SESSIONLESS_CAPABILITIES.has(spec.method)) throw new PageError("unknown_method", PUBLIC_MESSAGES.homeNoSession);
+    if (home && contributed && scope !== null) throw new PageError("invalid_params", "The built-in home page has no session folder to scope to");
+    // 10. Eligibility; an archived session proceeds read-only. U21
+    const record = home ? null : await eligibleRecord(ctx, caller.session);
+    if (record?.archived) page.archived = true;
+    const context: BridgeContext = { serving: ctx, session: record ?? HOME_SESSION, page, requestId: bridgeRequest.id, requestOrigins: requestOrigins(request.headers), scope, request, attachments: null, bound, ...(embeddedBy !== undefined ? { embeddedBy } : {}) };
+    const binding: ConfirmationBinding = { session: caller.session, revision: ownStop ? ANY_REVISION : page.revision, requestId: bridgeRequest.id, method: spec.method, params };
+    // 10a. A retry of a call this challenge already approved: the original answer, nothing done again. 05 R3.19a
+    const replay = replayOf(checked.confirmation, binding);
+    if (replay) return replay;
+    // 11. Cheap refusals: nothing here shows a dialog.
+    await entry?.refuse?.(params, context);
+    // 12. Archived read-only: only what writes into that session. 02 R-K8; DR-9
+    if (page.archived && writesIntoOwnSession(spec)) throw new PageError("unavailable", PUBLIC_MESSAGES.archived, { reason: "archived" });
+    // 13. An offline copy takes no effect. 05 R2.29
+    if (page.stale && spec.effect !== "read" && spec.effect !== "navigation") throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy, { reason: "offline" });
+    // 14. Confirmed by the recording bar: the shell gets the validated parameters; no challenge is ever minted or accepted. 03 R5.68
+    if (entry?.confirmedBy === "recording-bar") {
+      if (checked.confirmation !== null) throw new PageError("confirmation_invalid", "This capability is confirmed in the recording bar, not by a challenge");
+      return jsonResponse(401, { record: { requestId: bridgeRequest.id, params: params as { language?: string; prompt?: string; maxDurationSeconds: number; keepAudio: boolean } } } satisfies BridgeTransport);
+    }
+    // From here on every step is an effect or more host work: none starts after the call was answered `timeout`. 05 R2.38b
+    bound.check();
+    // 15. Confirm per call, once per pair, or per decision. 05 R3.17–R3.22a; 03 R5.64, R-C7
+    let attachments: AttachmentRef[] | null = null;
+    let approvedCall: ApprovedCall | null = null;
+    if (entry && spec.confirmed && spec.confirmedFor === undefined) {
+      const summary = (await entry.summarize?.(params, context)) ?? spec.description;
+      bound.check();
+      const approval = await approve(checked, binding, "confirm", summary, trace);
+      if (approval.kind === "challenge") return jsonResponse(401, approval.body);
+      attachments = approval.attachments;
+      approvedCall = approval.approved;
+    } else if (entry?.grant) {
+      const grant = await entry.grant(params, context);
+      if (grant) {
+        bound.check();
+        const approval = await approve(checked, binding, "grant", grant.summary, trace, { grant: grant.target });
+        if (approval.kind === "challenge") return jsonResponse(401, approval.body);
+        bound.check();
+        await grant.record();
+      }
+    }
+    if (entry?.decision) {
+      const decision = await entry.decision(params, context);
+      if (decision) {
+        bound.check();
+        const approval = await approve(checked, { ...binding, summary: decision.summary }, "decision", decision.summary, trace);
+        if (approval.kind === "challenge") return jsonResponse(401, approval.body);
+      }
+    }
+    // A confirmed call that named files must bring their attachments; an own-session reply's ride on /attach under the token alone. 05 R3.20a; DESIGN P29
+    if (entry && FILE_METHODS.has(spec.method) && isJsonObject(params)) {
+      const fileParams = params as FileParams;
+      if (spec.method === "session.reply" && Array.isArray(fileParams.attachments)) {
+        const approved: ApprovedCall = { session: token.session, revision: page.revision, requestId: bridgeRequest.id, method: spec.method, paramsHash: EMPTY_REVISION };
+        const held = heldAttachments(ctx, approved, fileParams.attachments);
+        if (!held) throw new PageError("confirmation_invalid", "The attachments named are not the files uploaded for this request");
+        attachments = held.attachments;
+        approvedCall = approved;
+      } else if (Array.isArray(fileParams.attachments) && attachments === null) {
+        throw new PageError("confirmation_invalid", "The attachments named were not uploaded under this confirmation");
+      }
+    }
+    const executeContext: BridgeContext = attachments ? { ...context, attachments } : context;
+    // 16. Execute. The folder picker waits on the reader and a contributed call runs under `contributedCallMs`: the bridge timeout cuts neither. 05 R2.38b; 07 R5.51
+    bound.check();
+    if (contributed || READER_PACED.has(spec.method)) bound.lift();
+    let outcome: { result: unknown; navigate?: { kind: "page" | "host" | "external"; url: string } };
+    try {
+      if (contributed) {
+        contributedWrite = contributed.effect === "contributed-write" ? contributed : null;
+        const result = await ctx.contributions.invoke(contributed, params, { sessionId: home ? null : caller.session, scope, ...(frame ? { frame } : {}) }, bridgeRequest.id);
+        // Nothing else records a write no dialog saw. 07 R5.55
+        if (contributedWrite) ctx.log.info(`contributed write ${contributed.method} for ${writer(caller.session, token.session)}: ok`);
+        outcome = { result };
+      } else {
+        outcome = await entry!.execute(params, executeContext);
+      }
+    } catch (error) {
+      if (contributedWrite) ctx.log.info(`contributed write ${contributedWrite.method} for ${writer(caller.session, token.session)}: ${PageError.is(error) ? error.code : "failed"}`);
+      if (PageError.is(error)) throw error;
+      throw mapProviderError(error, ctx.log, `bridge ${spec.method}`);
+    }
+    if (approvedCall) ctx.attachGrants.forget(approvedCall);
+    // 17. Project and bound. 03 R5.3; 07 R5.47
+    const response = completeInvocation(invocation, outcome.result);
+    if (!response.ok && response.error.code === "invalid_result") ctx.log.error(`bridge ${spec.method}: ${response.error.message}`);
+    const status = response.ok ? 200 : STATUS_BY_CODE[response.error.code];
+    // 18. Answer.
+    return jsonResponse(status, outcome.navigate && response.ok ? { response, navigate: outcome.navigate } : { response });
   }
 
   return { dispatch };

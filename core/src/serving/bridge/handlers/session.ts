@@ -64,7 +64,7 @@ export const sessionReply = handler<SessionReplyParams, unknown>({
   },
   async execute(params, context) {
     const record = own(context);
-    const delivered = await deliverReply(context.serving, { target: record.id, sender: { id: record.id, label: senderLabel(context) }, reply: params, requestId: context.requestId, attachments: context.attachments });
+    const delivered = await deliverReply(context.serving, { target: record.id, sender: { id: record.id, label: senderLabel(context) }, reply: params, requestId: context.requestId, attachments: context.attachments, bound: context.bound });
     return { result: delivered };
   },
 });

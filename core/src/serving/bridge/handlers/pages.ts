@@ -208,12 +208,13 @@ export const pagesAnswer = handler<PagesAnswerParams, unknown>({
         requestId,
         submission: { submissionId: params.form.submissionId, title: params.form.title, writtenAgainst: params.form.writtenAgainst, formId: params.form.formId ?? null, formTitle: params.form.formTitle ?? null, action: params.form.action ?? null, answers: params.form.answers, files: [], frame: frame?.title ?? null },
         ...held,
+        bound: context.bound,
       });
       result = { delivery: delivered.delivery, duplicate: delivered.duplicate, matchedRevision: delivered.matchedRevision };
     } else if (params.reply) {
-      result = await deliverReply(serving, { target: target.id, sender, reply: params.reply, requestId });
+      result = await deliverReply(serving, { target: target.id, sender, reply: params.reply, requestId, bound: context.bound });
     } else if (params.respond) {
-      await executeRespond(serving, target.id, params.respond, sender, requestId);
+      await executeRespond(serving, target.id, params.respond, sender, requestId, context.bound);
       result = { delivery: "started", duplicate: false };
     } else {
       throw new PageError("invalid_params", "Give exactly one of form, reply, respond");

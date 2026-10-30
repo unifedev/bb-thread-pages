@@ -6,6 +6,7 @@ import { LIMITS } from "../../domain/limits.ts";
 import { oneLine, quotable } from "../../domain/quotable.ts";
 import type { AttachmentRef, SessionRecord } from "../../host/provider.ts";
 import type { PagesRequest } from "../../host/serving.ts";
+import type { HostBound } from "../action-request.ts";
 import type { CapabilityHandler, DecisionRequest, GrantRequest, HandlerContext, HomeSession } from "../context.ts";
 
 export type { DecisionRequest, GrantRequest, HandlerContext, HomeSession };
@@ -18,6 +19,8 @@ export interface BridgeContext extends HandlerContext {
   readonly attachments: readonly AttachmentRef[] | null;
   /** A call an embedding kernel relayed under an embed's answer token: the session that token was issued to (the embedding page's, or the built-in home's). 02 R4.48, R4.48b */
   readonly embeddedBy?: string;
+  /** The call's bridge timeout: a delivery checks it before it starts. 05 R2.38b */
+  readonly bound?: HostBound;
 }
 
 export interface HandlerOutcome<R> {

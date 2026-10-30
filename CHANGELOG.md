@@ -1,10 +1,129 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 0034a17): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` ebe805a): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.14.9 (bb plugin) — 2026-10-30
+
+The bb plugin's release of the 0.6.26 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.9`): the page server stops waiting on a host call
+after 30 seconds (90 for a file upload), and the home recovers on its own from a call that never answers, both from
+pages-core.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.9.
+
+## 0.6.26 — 2026-10-30
+
+When the host never answers a call, the page server now stops waiting after 30 seconds, tells the page the host did
+not answer, and frees the call's place, so a page or the home keeps working instead of being refused everything after
+eight such calls (B-0232); file uploads get the same after 90 seconds (B-0238). The home also recovers on its own when
+one of its reads never comes back (B-0228). All three are in pages-core, so both hosts carry them.
+
+`@unifedev/pages-core` 0.6.9, `@unifedev/claude-pages` 0.6.26, the bb plugin `@unifedev/thread-pages` 1.14.9.
+
+### Fixed
+
+- **A host call that never answers no longer uses up a page's calls.** The page server waited for the host as long as
+  it took, and each call still waiting held one of the eight a page may have in flight. After eight that never came
+  back, every call from that page was refused as rate limited, sends included, until the host gave up on those calls
+  (bb does after 75 seconds) or the server restarted; for the home those eight are shared by every home tab on every
+  device, so a reload did not help. Now the server stops waiting after 30 seconds, answers `unavailable` with reason
+  `timeout` ("The host did not answer within 30 seconds"), and the call's place is free again at once. A send or
+  another write may still go through later: a form answer or a confirmed action tried again is not done a second
+  time, and once the host answers, the retry gets that answer. A call that was still waiting for an earlier step when
+  it was answered does nothing more. The folder picker and voice transcription are not cut off, and calls to other
+  plugins keep their own 30-second limit. Test: `packages/pages-core/test/serving/bridge-timeout.test.ts`.
+- **A file upload the host never takes no longer uses up a page's calls.** A form's file upload and a file attached to
+  a prompt waited for the host as long as it took, in one of the page's eight places. Now the server stops waiting 90
+  seconds after the upload took its place, and the form shows "The host did not answer within 90 seconds". 90 seconds
+  is above the 75 seconds after which bb itself gives up on a host call, and a 24 MiB file took under a second on bb
+  on the same machine, so no host call that would succeed is cut on its own. An attachment the host takes after that
+  is not added to the prompt; an upload that lands late stays in the page's `uploads/` folder, named by no answer.
+  Test: `packages/pages-core/test/serving/file-timeout.test.ts`.
+- **A host call that never answers no longer freezes the home.** The home waited for every read as long as the host
+  took. A read that never came back kept an older session reopened after a reload from ever refreshing, stopped the
+  session list or the open chat from updating, and four of them stopped every call the home makes, sends included,
+  until the tab was reloaded. Now a read that has no answer after 60 seconds fails in the home itself (the server's
+  30-second answer above usually comes first; this covers an answer lost on the way back), and the home tries again
+  as it would after any failed read. Sending, answering, stopping and the other actions still wait for the server.
+  If the home cannot read your saved view settings when it starts, it no longer saves its defaults over them.
+  Test: `packages/pages-core/test/agent/home.test.ts`.
+
+## 0.6.25 — 2026-10-30
+
+On Claude Code under LXCFS (LXD, Incus, some Kubernetes nodes), the page server now says in its log why it drops its
+notes of the processes it pushed answers to, where 0.6.24 dropped them without a word (B-0257).
+`@unifedev/claude-pages` 0.6.25; `@unifedev/pages-core` stays 0.6.8 and the bb plugin `@unifedev/thread-pages`
+1.14.8: neither changes.
+
+## 0.6.24 — 2026-10-30
+
+On Claude Code, a page answer you stopped with Esc in one terminal now runs in the other terminal you opened the
+conversation in, at once, instead of waiting until the first terminal closes (B-0250, a regression in 0.6.22). Two
+narrower cases of one conversation open in two terminals are fixed with it (B-0252, B-0253). On Linux, the page
+server's check of the processes it pushed answers to now also works in Alpine and Debian slim containers, and its
+log says when it cannot check (B-0254, B-0256).
+`@unifedev/claude-pages` 0.6.24; `@unifedev/pages-core` stays 0.6.8 and the bb plugin `@unifedev/thread-pages`
+1.14.8: neither changes.
+
+## 0.6.23 — 2026-10-30
+
+On Claude Code, an answer taken across a `/clear` now runs once and reads delivered even when the page server
+restarted in between (B-0244), and a terminal that lost its page to another terminal no longer reports the
+conversation ended when it leaves it (B-0249). `@unifedev/claude-pages` 0.6.23; `@unifedev/pages-core` stays 0.6.8
+and the bb plugin `@unifedev/thread-pages` 1.14.8: neither changes.
+
+## 0.6.22 — 2026-10-30
+
+On Claude Code, with one conversation open in two terminals, an answer from the page now runs once, in one terminal
+(B-0239), and typing in a terminal while its own turn runs takes the page back to it (B-0241). A background session
+you remove with `claude rm` leaves the home, and the "Untitled session" rows the agent view left before 0.6.20 are
+cleared (B-0240). `@unifedev/claude-pages` 0.6.22; `@unifedev/pages-core` stays 0.6.8 and the bb plugin
+`@unifedev/thread-pages` 1.14.8: neither changes.
+
+## 0.6.21 — 2026-10-30
+
+On Claude Code, a page answer that runs after a `/clear` now reads "delivered" and runs only once, also when the page
+server was away at that moment, or when you typed `/clear` and then `/branch` or `/resume` quickly (B-0234, B-0236).
+`@unifedev/claude-pages` 0.6.21; `@unifedev/pages-core` stays 0.6.8 and the bb plugin `@unifedev/thread-pages` 1.14.8:
+neither changes.
+
+## 0.6.20 — 2026-10-30
+
+On Claude Code, opening the agent view no longer adds an "Untitled session" to the home (B-0233).
+`@unifedev/claude-pages` 0.6.20; `@unifedev/pages-core` stays 0.6.8 and the bb plugin `@unifedev/thread-pages`
+1.14.8: neither changes.
+
+## 0.6.19 — 2026-10-29
+
+On Claude Code, a conversation open in two terminals at once no longer makes its page flicker: the page follows the
+terminal you last typed in (B-0230). `@unifedev/claude-pages` 0.6.19; `@unifedev/pages-core` stays 0.6.8 and the bb
+plugin `@unifedev/thread-pages` 1.14.8: neither changes.
+
+## 0.6.18 — 2026-10-29
+
+On Claude Code, a page answer that runs after two quick `/clear`s now reads "delivered" on the page it came from, and
+runs only once (B-0231). `@unifedev/claude-pages` 0.6.18; `@unifedev/pages-core` stays 0.6.8 and the bb plugin
+`@unifedev/thread-pages` 1.14.8: neither changes.
+
+## 0.6.17 — 2026-10-29
+
+On Claude Code, a page answer that runs after you type `/resume` or `/branch` now reads "delivered" on the page it came
+from, and runs only once (B-0229). `@unifedev/claude-pages` 0.6.17; `@unifedev/pages-core` stays 0.6.8 and the bb
+plugin `@unifedev/thread-pages` 1.14.8: neither changes.
+
+## 0.6.16 — 2026-10-29
+
+On Claude Code, a conversation you resume or branch inside a session gets its own page (B-0222), the page of a session
+you left stays ended (B-0224), and an answer run after a `/clear` is reported delivered even when the new session
+reaches the page server late, without running a second time when you go back to the old conversation (B-0225).
+`@unifedev/claude-pages` 0.6.16; `@unifedev/pages-core` stays 0.6.8 and the bb plugin `@unifedev/thread-pages`
+1.14.8: neither changes.
 
 ## 1.14.8 (bb plugin) — 2026-10-29
 

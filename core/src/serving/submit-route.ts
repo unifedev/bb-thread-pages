@@ -4,7 +4,7 @@ import { PageError, PUBLIC_MESSAGES } from "../domain/errors.ts";
 import { LIMITS } from "../domain/limits.ts";
 import { parseSubmission } from "../domain/submissions/parse.ts";
 import type { PagesRequest, PagesResponse } from "../host/serving.ts";
-import { acquireBudget, requireActionToken, requireSessionToken } from "./action-request.ts";
+import { acquireBudget, boundHostWork, requireActionToken, requireSessionToken } from "./action-request.ts";
 import { deliverSubmission } from "./bridge/deliver.ts";
 import { sessionLabel } from "./bridge/handler.ts";
 import type { ServingContext } from "./context.ts";
@@ -31,22 +31,26 @@ export function submitRoute(ctx: ServingContext) {
       const token = requireActionToken(ctx, submission.actionToken);
       const session = requireSessionToken(token, "The built-in home page has no session to answer.");
       release = acquireBudget(ctx, token);
-      const access = await ctx.sessionFor(session);
-      requirePageSession(access);
-      if (access.archived) throw new PageError("unavailable", PUBLIC_MESSAGES.archived, { reason: "archived" });
-      const page = await ctx.pages.load(session, token.path);
-      if (page.stale) throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy, { reason: "offline" });
-      // From a frame of the page's own session: matched in that frame's document of this session, or, for an `html` frame, in none. 05 R2.32; 02 R4.48a
-      const frame = submission.frame;
-      const delivered = await deliverSubmission(ctx, {
-        target: session,
-        path: frame?.path ? documentKey(frame.path) : token.path,
-        sender: { id: session, label: sessionLabel(access.record.title) },
-        requestId: submission.submissionId,
-        submission: { submissionId: submission.submissionId, title: submission.title, writtenAgainst: submission.writtenAgainst, formId: submission.formId, formTitle: submission.formTitle, action: submission.action, answers: submission.answers, files: submission.files, frame: frame?.title ?? null },
-        ...(frame && !frame.path ? { held: { revision: page.revision } } : {}),
+      // From the slot on, under the bridge timeout; a retry with this submission id joins the delivery still pending. 05 R2.38b, R2.33
+      return await boundHostWork(ctx, () => `POST /submit ${session}`, async (bound) => {
+        const access = await ctx.sessionFor(session);
+        requirePageSession(access);
+        if (access.archived) throw new PageError("unavailable", PUBLIC_MESSAGES.archived, { reason: "archived" });
+        const page = await ctx.pages.load(session, token.path);
+        if (page.stale) throw new PageError("unavailable", PUBLIC_MESSAGES.staleCopy, { reason: "offline" });
+        // From a frame of the page's own session: matched in that frame's document of this session, or, for an `html` frame, in none. 05 R2.32; 02 R4.48a
+        const frame = submission.frame;
+        const delivered = await deliverSubmission(ctx, {
+          target: session,
+          path: frame?.path ? documentKey(frame.path) : token.path,
+          sender: { id: session, label: sessionLabel(access.record.title) },
+          requestId: submission.submissionId,
+          submission: { submissionId: submission.submissionId, title: submission.title, writtenAgainst: submission.writtenAgainst, formId: submission.formId, formTitle: submission.formTitle, action: submission.action, answers: submission.answers, files: submission.files, frame: frame?.title ?? null },
+          ...(frame && !frame.path ? { held: { revision: page.revision } } : {}),
+          bound,
+        });
+        return json(200, { ok: true, ...delivered });
       });
-      return json(200, { ok: true, ...delivered });
     } catch (error) {
       return failure(error, ctx.log, "POST /submit", false);
     } finally {

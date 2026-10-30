@@ -87,11 +87,11 @@ export function createStorageStore(kv: ProviderHost["kv"], options: { log?: Logg
       if (!Object.prototype.hasOwnProperty.call(document, key)) return { found: false };
       return { found: true, value: document[key] as JsonValue };
     },
-    async set(identity, scope, entries) {
+    async set(identity, scope, entries, guard) {
       if (entries.length > LIMITS.storageSetManyEntries) throw new PageError("invalid_params", `At most ${LIMITS.storageSetManyEntries} entries in one call`);
       const keys = entries.map((entry) => entry.key);
       if (new Set(keys).size !== keys.length) throw new PageError("invalid_params", "A key appears twice in one call");
-      return serial(identity, () => write(identity, scope, entries));
+      return serial(identity, () => write(identity, scope, entries, guard));
     },
     forget(identity) {
       return serial(identity, async () => {
@@ -103,7 +103,7 @@ export function createStorageStore(kv: ProviderHost["kv"], options: { log?: Logg
     },
   };
 
-  async function write(identity: string, scope: string | null, entries: readonly { key: string; value: JsonValue | null }[]): Promise<{ stored: number }> {
+  async function write(identity: string, scope: string | null, entries: readonly { key: string; value: JsonValue | null }[], guard?: () => void): Promise<{ stored: number }> {
     const scopeKey = scope ?? "";
     const next = { ...(await readDocument(identity, scope)) };
     for (const entry of entries) {
@@ -121,6 +121,8 @@ export function createStorageStore(kv: ProviderHost["kv"], options: { log?: Logg
     for (const [other, bytes] of byScope) if (other !== scopeKey) total += bytes;
     if (total > pageBytes) throw new PageError("request_too_large", `A page's storage is at most ${kibibytes(pageBytes)} across its scopes; this write would make it ${kibibytes(total)}`);
     const index = await readIndex(identity);
+    // The reads are done: a write whose call was answered `timeout` meanwhile stops here, before it changes anything. 05 R2.38b
+    guard?.();
     if (own === 0) {
       await kv.delete(storageDocumentKey(identity, scope));
       if (index.includes(scopeKey)) await kv.set(storageIndexKey(identity), JSON.stringify(index.filter((item) => item !== scopeKey)));
