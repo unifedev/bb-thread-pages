@@ -146,6 +146,8 @@ export const PUBLIC_MESSAGES = Object.freeze({
   notStarted: "This page's agent has not started yet; the reader's first message starts it.",
   startNeedsReader: "Nothing was started: the agent starts only when the reader sends the first message from the page themselves.",
   notStartedFiles: "Files can be attached once the agent has started; send the first message without them.",
+  untrustedWorkspace: "This folder is not trusted yet: open it once in the agent's own app and accept, then send again.",
+  notSubmitted: "The agent did not take this message, so it was not sent.",
 });
 
 /** A new-session page whose session has not started: `unavailable` with reason `not_started`. 03 R5.41a, R-C11, R-C12 */
@@ -157,6 +159,8 @@ const PROVIDER_REASON_MESSAGES: Readonly<Record<string, string>> = Object.freeze
   archived: PUBLIC_MESSAGES.archived,
   offline: PUBLIC_MESSAGES.staleCopy,
   summary_too_long: PUBLIC_MESSAGES.summaryTooLong,
+  untrusted_workspace: PUBLIC_MESSAGES.untrustedWorkspace,
+  not_submitted: PUBLIC_MESSAGES.notSubmitted,
 });
 
 /** The shape a provider member rejects with; declared in `src/host/provider.ts`, matched here structurally so the domain imports nothing from the host. 06 R-P9 */

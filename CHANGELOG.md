@@ -1,10 +1,37 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 5e97de1): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 17bda3d): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.14.11 (bb plugin) — 2026-11-08
+
+The bb plugin's release of the 0.6.29 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.11`): it carries pages-core 0.6.12, whose only
+change is the wording of two reasons bb never gives, so its pages work as in 1.14.10.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.11.
+
+## 0.6.29 — 2026-11-08
+
+Claude Code now offers the new-session page: every folder the page server lists has a page before its agent starts,
+and the reader's first message from it starts that agent (unife-claude-new-session-page). `unife-pages open
+--workspace [<folder>]` lands on the new-session page of a folder no agent has run in yet. A session the page server
+starts no longer takes its first prompt from `claude`'s command line, so a prompt that looks like an option stays
+text, and a page reply that begins with `/` is answered as not sent instead of being pushed again at every idle.
+
+`@unifedev/pages-core` 0.6.12, `@unifedev/claude-pages` 0.6.29, the bb plugin `@unifedev/thread-pages` 1.14.11. No
+agent text changed.
+
+### Added
+
+- **pages-core words two provider reasons for the page:** `untrusted_workspace` ("This folder is not trusted yet:
+  open it once in the agent's own app and accept, then send again.") and `not_submitted` ("The agent did not take
+  this message, so it was not sent."). Test: `packages/pages-core/test/domain/provider-reasons.test.ts`.
 
 ## 1.14.10 (bb plugin) — 2026-11-08
 
