@@ -93,6 +93,21 @@ export function createStorageStore(kv: ProviderHost["kv"], options: { log?: Logg
       if (new Set(keys).size !== keys.length) throw new PageError("invalid_params", "A key appears twice in one call");
       return serial(identity, () => write(identity, scope, entries, guard));
     },
+    put(identity, scope, document) {
+      return serial(identity, async () => {
+        const scopeKey = scope ?? "";
+        if (Object.keys(document).length === 0) return;
+        try {
+          await kv.set(storageDocumentKey(identity, scope), JSON.stringify(document));
+        } catch (error) {
+          if (isProviderTooLarge(error)) throw new PageError("request_too_large", `A page's storage is at most ${kibibytes(pageBytes)}`, { cause: error });
+          throw new PageError("unavailable", "The page's storage could not be written right now", { cause: error });
+        }
+        const index = await readIndex(identity);
+        if (!index.includes(scopeKey)) await kv.set(storageIndexKey(identity), JSON.stringify([...index, scopeKey]));
+        sizes.delete(identity);
+      });
+    },
     forget(identity) {
       return serial(identity, async () => {
         for (const scope of await readIndex(identity)) await kv.delete(storageDocumentKey(identity, scope === "" ? null : scope));

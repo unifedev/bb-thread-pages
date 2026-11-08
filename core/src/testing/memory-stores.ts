@@ -98,6 +98,9 @@ export function createMemoryStorageStore(options: { pageBytes?: number } = {}): 
       all.set(scope ?? "", next);
       return { stored: entries.length };
     },
+    async put(identity, scope, document) {
+      if (Object.keys(document).length > 0) scopes(identity).set(scope ?? "", { ...document });
+    },
     async forget(identity) {
       documents.delete(identity);
     },

@@ -18,7 +18,7 @@ export function filesProblem(files: readonly File[]): { code: "invalid_params" |
   return null;
 }
 
-export type AttachOutcome = { ok: true; attachmentIds: string[] } | { ok: false; code: "request_too_large" | "handler_error" | "unavailable"; message: string };
+export type AttachOutcome = { ok: true; attachmentIds: string[] } | { ok: false; code: "request_too_large" | "handler_error" | "unavailable"; message: string; reason?: string };
 
 /** Uploads exactly the approved files, in order; the first failure stops it, nothing is started or sent. 03 R5.79 */
 export async function attachFiles(fetchImpl: typeof fetch, config: ShellConfig, call: { requestId: string; method: string; challenge?: string }, files: readonly File[], onStatus: (text: string) => void): Promise<AttachOutcome> {
@@ -26,12 +26,12 @@ export async function attachFiles(fetchImpl: typeof fetch, config: ShellConfig, 
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index]!;
     onStatus(`Attaching ${index + 1} of ${files.length}…`);
-    let failure: { code: string; message: string } | null = null;
+    let failure: { code: string; message: string; reason?: string } | null = null;
     try {
       const body: AttachBody = { actionToken: config.actionToken, requestId: call.requestId, method: call.method, ...(call.challenge ? { challenge: call.challenge } : {}), index, name: file.name || "file", type: file.type || "", bytes: await encodeBase64(file) };
       const response = await fetchImpl(config.routes.attach, { method: "POST", credentials: "same-origin", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const answer = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-      if (!response.ok || !isRecord(answer) || answer.ok !== true || typeof answer.attachmentId !== "string") failure = { code: isRecord(answer) && typeof answer.code === "string" ? answer.code : "", message: isRecord(answer) && typeof answer.message === "string" && answer.message ? answer.message : `Upload failed (${response.status})` };
+      if (!response.ok || !isRecord(answer) || answer.ok !== true || typeof answer.attachmentId !== "string") failure = { code: isRecord(answer) && typeof answer.code === "string" ? answer.code : "", message: isRecord(answer) && typeof answer.message === "string" && answer.message ? answer.message : `Upload failed (${response.status})`, ...(isRecord(answer) && answer.reason === "not_started" ? { reason: "not_started" } : {}) };
       else attachmentIds.push((answer as unknown as Extract<AttachResponse, { ok: true }>).attachmentId);
     } catch (error) {
       failure = { code: "", message: error instanceof Error && error.message ? error.message : "Upload failed" };
@@ -39,7 +39,7 @@ export async function attachFiles(fetchImpl: typeof fetch, config: ShellConfig, 
     if (failure) {
       onStatus("");
       const code = failure.code === "request_too_large" ? "request_too_large" : failure.code === "unavailable" ? "unavailable" : "handler_error";
-      return { ok: false, code, message: `Could not attach “${file.name}”: ${failure.message.replace(/\.$/, "")}. Nothing was started or sent.` };
+      return { ok: false, code, message: `Could not attach “${file.name}”: ${failure.message.replace(/\.$/, "")}. Nothing was started or sent.`, ...(failure.reason ? { reason: failure.reason } : {}) };
     }
   }
   onStatus("");

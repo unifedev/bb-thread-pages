@@ -18,6 +18,11 @@ export interface FormMatch {
  */
 export async function matchSubmissionForm(pages: PageStore, session: string, path: string | null, wanted: WantedForm): Promise<FormMatch> {
   const { revision, forms } = await pages.forms(session, path);
+  return matchFormIn(forms, revision, wanted);
+}
+
+/** The same rule over the forms of one document already in hand: a new-session page's, which no store holds. 05 R-S11, R-S13 */
+export function matchFormIn(forms: readonly FormIdentity[], revision: string, wanted: WantedForm): FormMatch {
   let wantedIndex: number | undefined;
   if (!wanted.formId && !wanted.formTitle?.trim() && wanted.writtenAgainst === revision) {
     wantedIndex = forms.find((form) => form.id === null && form.title === null && wanted.fields.every((field) => form.fields.has(field)))?.index;

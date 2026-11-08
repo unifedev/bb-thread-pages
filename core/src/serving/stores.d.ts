@@ -36,6 +36,8 @@ export interface StorageStore {
   get(identity: string, scope: string | null, key: string): Promise<{ found: boolean; value?: JsonValue }>;
   /** All or none; throws `invalid_params`, `request_too_large`. */
   set(identity: string, scope: string | null, entries: readonly { key: string; value: JsonValue | null }[], guard?: () => void): Promise<{ stored: number }>;
+  /** One scope's whole document, as a new-session page held it, written for the session it started; bounded by the caller. 03 R-C13 */
+  put(identity: string, scope: string | null, document: Readonly<Record<string, JsonValue>>): Promise<void>;
   forget(identity: string): Promise<void>;
 }
 
@@ -135,7 +137,8 @@ export interface Contributions {
   /** Re-read when older than `contributionsTtlMs`; never rejects. */
   current(): Promise<ContributionSet>;
   cached(): ContributionSet;
-  invoke(spec: ContributedSpec, params: JsonValue, caller: { sessionId: string | null; scope: string | null; frame?: { scope: string | null; title: string | null } }, requestId: string): Promise<JsonValue>;
+  /** `workspace`: a new-session page's, given where there is no session to ask the host about (07 R5.84b). */
+  invoke(spec: ContributedSpec, params: JsonValue, caller: { sessionId: string | null; scope: string | null; frame?: { scope: string | null; title: string | null }; workspace?: { id: string; path: string; machine: string | null } }, requestId: string): Promise<JsonValue>;
   /** The server reinjects the instruction on change (DR-33). */
   onChange(listener: (set: ContributionSet) => void): () => void;
 }

@@ -4,7 +4,7 @@ import { createRegistry } from "../domain/capabilities/registry.ts";
 import { ALL_CAPABILITIES } from "../domain/capabilities/specs.ts";
 import type { CapabilityDescriptor } from "../domain/capabilities/contract.ts";
 import { errorText } from "../domain/errors.ts";
-import { HOME_IDENTITY } from "../domain/ids.ts";
+import { HOME_IDENTITY, isNewSessionIdentity } from "../domain/ids.ts";
 import { LIMITS, type Limits } from "../domain/limits.ts";
 import { createPageBudget } from "../domain/rate-limit.ts";
 import { EMPTY_REVISION } from "../domain/revision.ts";
@@ -25,6 +25,7 @@ import { createGrantStore } from "./grants.ts";
 import { createRedeemedStore } from "./redeemed-store.ts";
 import { createStorageStore } from "./storage-store.ts";
 import { createHomeDesignation } from "./home-designation.ts";
+import { newSessionDocument } from "./new-session.ts";
 import { createRoutes } from "./routes.ts";
 import { loadUnlessUnwritten, createSessionAccess, homePage } from "./session-access.ts";
 import { loadSigningKey } from "./signing-key.ts";
@@ -134,6 +135,10 @@ export async function mountPages(serving: ServingHost, provider: ProviderHost, o
     sessionFor,
     async currentRevision(session, path) {
       if (session === HOME_IDENTITY) return homePage().revision;
+      if (isNewSessionIdentity(session)) {
+        const access = await sessionFor(session);
+        if (access.kind === "new-session") return (await newSessionDocument(ctx, access.workspace)).revision;
+      }
       if (path === null) return (await loadUnlessUnwritten(pages, session))?.revision ?? EMPTY_REVISION;
       return (await pages.load(session, path)).revision;
     },

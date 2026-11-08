@@ -1,7 +1,7 @@
 // Re-exports of the pure domain.
 export { LIMITS, mebibytes, kibibytes, type Limits } from "./limits.ts";
 export { BRIDGE_ERROR_CODES, STATUS_BY_CODE, PUBLIC_MESSAGES, PageError, boundedMessage, errorText, isBridgeErrorCode, mapProviderError, type BridgeErrorCode, type PageErrorCode, type LogSink } from "./errors.ts";
-export { HOME_IDENTITY, isSessionId, isSessionIdentity, isEntityId, isRequestId, isMethodName, isRevision, isOpaqueToken, isStorageKey, isSubmissionId } from "./ids.ts";
+export { HOME_IDENTITY, NEW_SESSION_PREFIX, isNewSessionIdentity, newSessionIdentity, newSessionWorkspaceOf, isOpening, isSessionId, isSessionIdentity, isEntityId, isRequestId, isMethodName, isRevision, isOpaqueToken, isStorageKey, isSubmissionId } from "./ids.ts";
 export { revisionOf, sha256Hex, EMPTY_REVISION, etagFor, ifNoneMatchMatches } from "./revision.ts";
 export { validateJson, parseStrictJson, utf8Bytes, boundIssue, isJsonObject, type JsonValue, type JsonObject, type Validation, type Issue } from "./json/strict-json.ts";
 export { canonicalJson, fingerprint } from "./json/canonical.ts";

@@ -7,9 +7,10 @@ import { oneLine, quotable } from "../../domain/quotable.ts";
 import type { AttachmentRef, SessionRecord } from "../../host/provider.ts";
 import type { PagesRequest } from "../../host/serving.ts";
 import type { HostBound } from "../action-request.ts";
-import type { CapabilityHandler, DecisionRequest, GrantRequest, HandlerContext, HomeSession } from "../context.ts";
+import type { CapabilityHandler, DecisionRequest, GrantRequest, HandlerContext, HomeSession, NewSessionCaller, NewSessionWorkspace } from "../context.ts";
+import type { StartBlock, StartedTransport } from "../new-session.ts";
 
-export type { DecisionRequest, GrantRequest, HandlerContext, HomeSession };
+export type { DecisionRequest, GrantRequest, HandlerContext, HomeSession, NewSessionCaller };
 
 /** What the dispatcher hands a handler beyond the frozen `HandlerContext` of DESIGN §E.3. */
 export interface BridgeContext extends HandlerContext {
@@ -21,11 +22,15 @@ export interface BridgeContext extends HandlerContext {
   readonly embeddedBy?: string;
   /** The call's bridge timeout: a delivery checks it before it starts. 05 R2.38b */
   readonly bound?: HostBound;
+  /** Beside a new-session page's first message: what the shell sent with it. 05 R-S13; 02 R-K11 */
+  readonly start?: StartBlock;
 }
 
 export interface HandlerOutcome<R> {
   readonly result: R;
   readonly navigate?: NavigationDirective;
+  /** A new-session page's session started: for the shell only. 05 R-S13 */
+  readonly started?: StartedTransport;
 }
 
 /** A handler written against `BridgeContext`; assignable to `CapabilityHandler`, which the dispatcher consumes. DESIGN §E.3 */
@@ -48,6 +53,11 @@ export const HOME_SESSION: HomeSession = Object.freeze({ id: HOME_IDENTITY, titl
 
 export function isHome(context: HandlerContext): boolean {
   return context.session.id === HOME_IDENTITY;
+}
+
+/** The workspace of a new-session page, or null on any other page. 05 R-S13 */
+export function newSessionOf(context: HandlerContext): NewSessionWorkspace | null {
+  return "newSession" in context.session ? context.session.newSession : null;
 }
 
 /** A session's title as a framing line or a ledger entry names it: bounded, on one line, controls and bidi characters removed, quotation marks kept. 02 §Framing lines (T-22) */

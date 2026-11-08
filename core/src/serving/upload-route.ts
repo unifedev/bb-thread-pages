@@ -1,5 +1,6 @@
 // `POST /upload`: JSON + base64 envelope, bounds, host-generated name, `provider.files.write` (02 R4.19–R4.24; DESIGN §C.3, DR-1, DR-42).
-import { PageError, PUBLIC_MESSAGES, mapProviderError } from "../domain/errors.ts";
+import { PageError, PUBLIC_MESSAGES, mapProviderError, notStarted } from "../domain/errors.ts";
+import { isNewSessionIdentity } from "../domain/ids.ts";
 import { LIMITS, mebibytes } from "../domain/limits.ts";
 import type { PagesRequest, PagesResponse } from "../host/serving.ts";
 import { uploadFileName, uploadPath } from "../pages/layout.ts";
@@ -31,6 +32,8 @@ export function uploadRoute(ctx: ServingContext) {
       if (!isJsonRecord(body) || !isUploadBody(body, Number.MAX_SAFE_INTEGER)) throw new PageError("invalid_request", "Invalid upload envelope");
       const token = requireActionToken(ctx, body.actionToken);
       const session = requireSessionToken(token, "The built-in home page has no session to attach files to.");
+      // An upload is stored in the session's page root, which a new-session page does not have yet. 02 R-K10; 05 R-S13
+      if (isNewSessionIdentity(session)) throw notStarted(PUBLIC_MESSAGES.notStartedFiles);
       release = acquireBudget(ctx, token);
       const answer = await boundHostWork(
         ctx,

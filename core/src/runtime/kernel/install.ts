@@ -28,6 +28,8 @@ export const UPDATE_ATTRIBUTE = "data-thread-page-update";
 export const UPDATE_EVENT = "thread-page:update";
 /** The home page's events: the lists it is handed, and the reader's acts it forwards. 05 R-S12 */
 export const DRAFTS_EVENT = "thread-page:drafts";
+/** Fired once on a new-session page's document when its session started and the page became that session's. 02 R-K11 */
+export const SESSION_EVENT = "thread-page:session";
 export const DRAFT_DISCARD_EVENT = "thread-page:draft-discard";
 export const GRANTS_EVENT = "thread-page:grants";
 export const GRANT_REVOKE_EVENT = "thread-page:grant-revoke";
@@ -64,6 +66,8 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
   const fileRequests = new Map<string, (answer: Extract<ShellMessage, { kind: "thread-page:file" }>) => void>();
   const rootUrl = rootUrlOf(config.siteRoot, config.documentPath);
   let voiceAvailable = false;
+  /** A new-session page's session started: told once. 02 R-K11 */
+  let sessionStarted = false;
   let shown = false;
   let embedDirty = false;
   let updateAvailable = false;
@@ -128,8 +132,12 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       })
     : null;
 
+  // Read live: a new-session page gains uploads once its session starts. 02 R-K1, R-K11
+  const uploadDeps = { uploads: config.uploads !== false };
   const textAreas = createTextAreaControls(win, {
-    uploads: config.uploads !== false,
+    get uploads() {
+      return uploadDeps.uploads;
+    },
     isReadOnly: () => readOnly.isReadOnly(),
     dictate: (prompt, fromControl) => recorder.request("dictate", { prompt, fromControl }),
     primitives: prim,
@@ -137,13 +145,22 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       dirty.touch(form);
     },
   });
-  installAudioInputs(win, { uploads: config.uploads !== false, voiceAvailable: () => voiceAvailable, record: () => recorder.request("audio") });
+  installAudioInputs(win, {
+    get uploads() {
+      return uploadDeps.uploads;
+    },
+    voiceAvailable: () => voiceAvailable,
+    record: () => recorder.request("audio"),
+  });
 
   // The page's own `fetch` of a relative file goes through the shell where the file route refuses the frame; inside another session's page the embedding kernel refuses it. 05 R-S7a; 02 R4.48a
+  const ownFetchDeps = { rootUrl };
   if (!config.ownFilesByFrame) {
     installOwnFetch(win, {
       documentPath: config.documentPath,
-      rootUrl,
+      get rootUrl() {
+        return ownFetchDeps.rootUrl;
+      },
       request: (path, method) =>
         new Promise((resolve) => {
           const id = channel.nextId("f");
@@ -445,6 +462,17 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
         return;
       case "thread-page:draft-notice":
         notice(null, message.text);
+        return;
+      case "thread-page:session":
+        // A new-session page's session started: the session's page root and uploads, once, and the event; the document stays. 02 R-K1, R-K11
+        if (sessionStarted || embedded) return;
+        sessionStarted = true;
+        config.siteRoot = message.siteRoot;
+        config.uploads = message.uploads;
+        uploadDeps.uploads = message.uploads;
+        ownFetchDeps.rootUrl = rootUrlOf(message.siteRoot, config.documentPath);
+        textAreas.update();
+        announce(SESSION_EVENT, null);
         return;
       default:
         return;

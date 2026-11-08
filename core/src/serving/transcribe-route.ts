@@ -1,6 +1,6 @@
 // `POST /transcribe`: `provider.voice.transcribe` with the server ceiling (03 R5.72, R5.74; 05 R3.34; DESIGN §C.3, DR-1).
 import { PageError, PUBLIC_MESSAGES, errorText } from "../domain/errors.ts";
-import { HOME_IDENTITY } from "../domain/ids.ts";
+import { HOME_IDENTITY, isNewSessionIdentity } from "../domain/ids.ts";
 import { LIMITS } from "../domain/limits.ts";
 import type { PagesRequest, PagesResponse } from "../host/serving.ts";
 import { isTranscribeBody, type TranscribeResponse } from "../runtime/shared/envelopes.ts";
@@ -32,7 +32,8 @@ export function transcribeRoute(ctx: ServingContext) {
       if (body.prompt !== undefined && body.prompt.length > LIMITS.voicePromptChars) throw new PageError("invalid_params", `The context must be at most ${LIMITS.voicePromptChars} characters`);
       if (body.language !== undefined && !LANGUAGE.test(body.language)) throw new PageError("invalid_params", "Invalid language tag");
       release = acquireBudget(ctx, token);
-      if (token.session !== HOME_IDENTITY) {
+      // Dictation works on a new-session page as on any page: a transcript delivers nothing. 03 R-C11
+      if (token.session !== HOME_IDENTITY && !isNewSessionIdentity(token.session)) {
         const access = await ctx.sessionFor(token.session);
         requirePageSession(access);
         // An offline copy answers nothing; the revision is not checked, since a transcript delivers nothing. 05 R2.29

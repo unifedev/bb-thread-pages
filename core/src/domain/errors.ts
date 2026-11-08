@@ -143,7 +143,15 @@ export const PUBLIC_MESSAGES = Object.freeze({
   summaryTooLong: "The decision's summary is too long to show; decide in the host's own interface.",
   homeNoSession: "The built-in home page has no session.",
   settingsUnsupported: "This session cannot take those settings here; send the reply without them.",
+  notStarted: "This page's agent has not started yet; the reader's first message starts it.",
+  startNeedsReader: "Nothing was started: the agent starts only when the reader sends the first message from the page themselves.",
+  notStartedFiles: "Files can be attached once the agent has started; send the first message without them.",
 });
+
+/** A new-session page whose session has not started: `unavailable` with reason `not_started`. 03 R5.41a, R-C11, R-C12 */
+export function notStarted(message: string = PUBLIC_MESSAGES.notStarted): PageError {
+  return new PageError("unavailable", message, { reason: "not_started" });
+}
 
 const PROVIDER_REASON_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
   archived: PUBLIC_MESSAGES.archived,

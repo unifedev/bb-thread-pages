@@ -24,7 +24,15 @@ export interface PagesSettings {
   audioInputDeviceId: string | null;
 }
 
-export type SessionAccess = { kind: "session"; record: SessionRecord; eligible: boolean; archived: boolean } | { kind: "home" };
+/** A new-session page's workspace: as `workspaces.list` names it, and the folder the provider names for a new session there (host → server → contributor only, never a page). 06 R-P17; 07 R5.84b */
+export interface NewSessionWorkspace {
+  id: string;
+  name: string;
+  path: string;
+  machine: string | null;
+}
+
+export type SessionAccess = { kind: "session"; record: SessionRecord; eligible: boolean; archived: boolean } | { kind: "home" } | { kind: "new-session"; identity: string; workspace: NewSessionWorkspace };
 
 /** Everything a route or handler needs, built once by `mountPages`. DESIGN §B.9 */
 export interface ServingContext {
@@ -67,9 +75,18 @@ export interface HomeSession {
   workspaceId: null;
 }
 
+/** A new-session page as a handler sees it: no session yet, its workspace instead. 03 R-C11; 05 R-S13 */
+export interface NewSessionCaller {
+  id: string;
+  title: string;
+  archived: false;
+  workspaceId: null;
+  newSession: NewSessionWorkspace;
+}
+
 export interface HandlerContext {
   serving: ServingContext;
-  session: SessionRecord | HomeSession;
+  session: SessionRecord | HomeSession | NewSessionCaller;
   page: { revision: string; stale: boolean; archived: boolean; path: string | null };
   requestId: string;
   /** From Host / X-Forwarded-Host / Origin, for 03 R5.32a. */
@@ -101,7 +118,7 @@ export interface CapabilityHandler<P = unknown, R = unknown> {
   grant?(params: P, ctx: HandlerContext): Promise<GrantRequest | null>;
   /** `session.respond` / `sessions.respond` with a decision. 03 R-C7 */
   decision?(params: P, ctx: HandlerContext): Promise<DecisionRequest | null>;
-  execute(params: P, ctx: HandlerContext): Promise<{ result: R; navigate?: NavigationDirective }>;
+  execute(params: P, ctx: HandlerContext): Promise<{ result: R; navigate?: NavigationDirective; started?: unknown }>;
 }
 
 /** The body of `POST /bridge`. DESIGN §C.3 */
@@ -109,6 +126,8 @@ export interface BridgeEnvelope {
   actionToken: string;
   request: unknown;
   confirmation?: string | null;
+  /** Beside a new-session page's first message only: the opening, the reader's gesture, the held storage. 05 R-S13; 02 R-K11 */
+  newSession?: unknown;
 }
 
 export interface Dispatcher {

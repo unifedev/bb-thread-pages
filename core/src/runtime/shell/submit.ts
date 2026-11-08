@@ -4,6 +4,7 @@ import type { SubmitBody, UploadBody } from "../shared/envelopes.ts";
 import { isBridgeErrorCode } from "../../domain/errors.ts";
 import { isRecord, type KernelMessage, type ShellConfig, type ShellMessage, type SubmitFile } from "../shared/protocol.ts";
 import { encodeBase64 } from "./base64.ts";
+import { isStartedTransport, type StartBlock, type StartedTransport } from "./new-session.ts";
 import type { Voice } from "./voice.ts";
 
 export type SubmitMessage = Extract<KernelMessage, { kind: "thread-page:submit" }>;
@@ -16,6 +17,8 @@ export interface SubmitDeps {
   voice: Voice | null;
   /** The answer went: the poll quickens. 05 R2.17a */
   onAnswered(): void;
+  /** A new-session page's form that starts its session: the block it carries, and the re-key before its result reaches the page. 05 R-S13; 02 R-K11 */
+  start?: { block: StartBlock; onStarted(started: StartedTransport): void };
 }
 
 interface StoredFile {
@@ -60,11 +63,12 @@ export async function relaySubmit(deps: SubmitDeps, post: (message: ShellMessage
       files[index]!.transcript = text === null ? null : shortenTranscript(text);
     }
     if (files.length > 0) post({ kind: "thread-page:submit-progress", submissionId, message: "Sending…" });
-    const body: SubmitBody = { actionToken: deps.token(), submissionId, writtenAgainst: message.writtenAgainst, formId: message.formId, formTitle: message.formTitle, title: message.title, action: message.action, answers: message.answers, files, ...(message.frame ? { frame: message.frame } : {}) };
+    const body: SubmitBody = { actionToken: deps.token(), submissionId, writtenAgainst: message.writtenAgainst, formId: message.formId, formTitle: message.formTitle, title: message.title, action: message.action, answers: message.answers, files, ...(message.frame ? { frame: message.frame } : {}), ...(deps.start ? { newSession: deps.start.block } : {}) };
     const response = await deps.fetchImpl(deps.config.routes.submit, { method: "POST", credentials: "same-origin", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const answer = (await response.json().catch(() => null)) as Record<string, unknown> | null;
     if (response.ok && isRecord(answer) && answer.ok === true) {
       deps.onAnswered();
+      if (deps.start && isStartedTransport(answer.started)) deps.start.onStarted(answer.started);
       const delivery = answer.delivery === "queued" || answer.delivery === "steered" ? answer.delivery : "started";
       post({ kind: "thread-page:submit-result", submissionId, ok: true, delivery, ...(typeof answer.matchedRevision === "string" ? { matchedRevision: answer.matchedRevision } : {}), revisionChanged: answer.revisionChanged === true });
       return;

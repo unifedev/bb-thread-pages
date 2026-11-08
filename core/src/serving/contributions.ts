@@ -100,7 +100,7 @@ export function createContributions(host: ContributorHost | undefined, options: 
         // The session's folder rides with its id, so a contributor asks no host for it (U44). A call the page was
         // already told timed out is never started.
         const call = (async () => {
-          let workspace: ContributorWorkspace | null = null;
+          let workspace: ContributorWorkspace | null = caller.workspace ?? null;
           if (caller.sessionId !== null) {
             try {
               workspace = await host.workspaceOf(caller.sessionId);
@@ -110,7 +110,8 @@ export function createContributions(host: ContributorHost | undefined, options: 
             }
           }
           if (late) throw new PageError("unavailable", `${spec.contributor.id} did not answer in time`);
-          return host.invoke(spec.contributor.id, { method: spec.method, params, caller: { ...caller, workspace }, requestId });
+          const { workspace: _given, ...rest } = caller;
+          return host.invoke(spec.contributor.id, { method: spec.method, params, caller: { ...rest, workspace }, requestId });
         })();
         call.catch(() => undefined);
         answer = await Promise.race([call, timeout]);

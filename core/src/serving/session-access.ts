@@ -1,17 +1,20 @@
 // `sessionFor(id)`: `not_found` for null, `ineligible` for an ineligible live session, `archived` marker for an archived one with a page; and the one page view every GET route shares (05 R2.5, U21; DESIGN §F.3).
 import { PageError, PUBLIC_MESSAGES } from "../domain/errors.ts";
-import { HOME_IDENTITY, isSessionId } from "../domain/ids.ts";
+import { HOME_IDENTITY, isNewSessionIdentity, isSessionId } from "../domain/ids.ts";
 import { EMPTY_REVISION, revisionOf } from "../domain/revision.ts";
 import type { ProviderHost } from "../host/provider.ts";
 import type { PageSource } from "../runtime/shared/envelopes.ts";
 import type { SessionAccess } from "./context.ts";
 import { BUILTIN_HOME_HTML } from "../generated/builtin-home.ts";
+import { newSessionAccess } from "./new-session.ts";
 import type { LoadedPage, PageStore } from "./stores.d.ts";
 
 /** Which session a request names: the home's identity, a live record with its eligibility, an archived record, or `not_found`. 05 R2.5; 01 §Eligibility */
 export function createSessionAccess(provider: ProviderHost): (id: string) => Promise<SessionAccess> {
   return async (id) => {
     if (id === HOME_IDENTITY) return { kind: "home" };
+    // A new-session page: its workspace, while the provider offers one there. 05 R-S13
+    if (isNewSessionIdentity(id)) return newSessionAccess(provider, id, provider.log);
     if (!isSessionId(id)) throw new PageError("not_found", PUBLIC_MESSAGES.notFound);
     const record = await provider.sessions.get(id);
     if (record === null) throw new PageError("not_found", PUBLIC_MESSAGES.deleted);
@@ -58,6 +61,7 @@ export async function loadUnlessUnwritten(pages: PageStore, session: string): Pr
 
 /** The view of one document of a session's page; another document than the entry must exist. 05 R2.5, R2.28; 02 R-K8 */
 export async function loadPageView(pages: PageStore, access: SessionAccess, path: string | null): Promise<PageView> {
+  if (access.kind === "new-session") throw new PageError("not_found", PUBLIC_MESSAGES.notFound);
   if (access.kind === "home") {
     const page = homePage();
     return { page, revision: page.revision, source: "live", empty: false, archived: false, stale: false, deferredFiles: [], working: false };

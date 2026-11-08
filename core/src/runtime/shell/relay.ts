@@ -6,6 +6,7 @@ import { attachFiles, describeFile, filesProblem } from "./attach.ts";
 import { DECISION_WORDING, GRANT_WORDING, type Confirmer } from "./confirm.ts";
 import { REFUSED_WITHOUT_ACTION, type GestureDecision } from "./gesture.ts";
 import type { Navigator } from "./navigate.ts";
+import { isStartedTransport, type StartBlock, type StartedTransport } from "./new-session.ts";
 import { recordingExtension, type Voice, type VoiceOutcome } from "./voice.ts";
 
 /** The frame a request came from, as the relay needs it. */
@@ -33,8 +34,15 @@ export interface RelayDeps {
   fetchImpl: typeof fetch;
 }
 
+/** A new-session page's first message: the block that rides with it, the re-key before its answer reaches the page, and its answer. 02 R-K11; 05 R-S13 */
+export interface StartHook {
+  block: StartBlock;
+  onStarted(started: StartedTransport): void;
+  onSettled(response: BridgeResponseMessage): void;
+}
+
 export interface Relay {
-  bridge(frame: FrameContext, request: BridgeRequestMessage): void;
+  bridge(frame: FrameContext, request: BridgeRequestMessage, start?: StartHook): void;
   record(frame: FrameContext, message: Extract<KernelMessage, { kind: "thread-page:record" }>): void;
 }
 
@@ -63,8 +71,8 @@ export function isReadCall(method: string, readMethods: readonly string[]): bool
 export function createRelay(deps: RelayDeps): Relay {
   const { config, confirmer, navigator } = deps;
 
-  async function postBridge(token: string, request: BridgeRequestMessage, confirmation?: string): Promise<unknown> {
-    const envelope: BridgeEnvelope = { actionToken: token, request: request as unknown as BridgeEnvelope["request"], ...(confirmation ? { confirmation } : {}) };
+  async function postBridge(token: string, request: BridgeRequestMessage, confirmation?: string, start?: StartHook): Promise<unknown> {
+    const envelope: BridgeEnvelope = { actionToken: token, request: request as unknown as BridgeEnvelope["request"], ...(confirmation ? { confirmation } : {}), ...(start ? { newSession: start.block } : {}) };
     const response = await deps.fetchImpl(config.routes.bridge, { method: "POST", credentials: "same-origin", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify(envelope) });
     return response.json().catch(() => null);
   }
@@ -79,7 +87,7 @@ export function createRelay(deps: RelayDeps): Relay {
     }
   }
 
-  function deliver(frame: FrameContext, request: BridgeRequestMessage, body: unknown): void {
+  function deliver(frame: FrameContext, request: BridgeRequestMessage, body: unknown, start?: StartHook): void {
     if (!isRecord(body) || !isBridgeResponse(body.response, request.id)) {
       navigator.release();
       frame.post(makeFailure(request.id, "invalid_response", "The bridge returned an invalid response"));
@@ -87,6 +95,8 @@ export function createRelay(deps: RelayDeps): Relay {
     }
     const response = body.response as BridgeResponseMessage;
     const directive = body.navigate === undefined ? null : directiveOf(body.navigate);
+    // The page is the session's before its call resolves. 02 R-K11
+    if (start && response.ok && isStartedTransport(body.started)) start.onStarted(body.started);
     frame.post(response);
     if (response.ok && directive) {
       if (directive.kind === "external") {
@@ -97,7 +107,7 @@ export function createRelay(deps: RelayDeps): Relay {
     navigator.release();
   }
 
-  async function relayBridge(frame: FrameContext, message: BridgeRequestMessage, gesture: GestureDecision): Promise<void> {
+  async function relayBridge(frame: FrameContext, message: BridgeRequestMessage, gesture: GestureDecision, start?: StartHook): Promise<void> {
     const files = message.files ?? [];
     let request: BridgeRequestMessage = message;
     if (message.files !== undefined) {
@@ -122,12 +132,12 @@ export function createRelay(deps: RelayDeps): Relay {
       if (files.length > 0 && request.method === "session.reply") {
         const attached = await attachFiles(deps.fetchImpl, { ...config, actionToken: frame.token() }, { requestId: request.id, method: request.method }, files, deps.onStatus);
         if (!attached.ok) {
-          frame.post(makeFailure(request.id, attached.code, attached.message));
+          frame.post(makeFailure(request.id, attached.code, attached.message, attached.reason));
           return;
         }
         request = withAttachments(attached.attachmentIds);
       }
-      const first = await postBridge(frame.token(), request);
+      const first = await postBridge(frame.token(), request, undefined, start);
       if (isRecord(first) && isRecord(first.record)) {
         await relayRecording(frame, request, first.record, gesture);
         return;
@@ -162,15 +172,15 @@ export function createRelay(deps: RelayDeps): Relay {
           }
           request = withAttachments(attached.attachmentIds);
         }
-        const second = await postBridge(frame.token(), request, confirm.challenge);
+        const second = await postBridge(frame.token(), request, confirm.challenge, start);
         const refusedChallenge = isRecord(second) && isRecord(second.response) && isRecord(second.response.error) && second.response.error.code === "confirmation_invalid";
         if (grant && isRecord(second) && isRecord(second.response) && !refusedChallenge) deps.onGranted(grant);
         if (ANSWERS.has(request.method) && isRecord(second) && isRecord(second.response) && second.response.ok === true) deps.onAnswered();
-        deliver(frame, request, second);
+        deliver(frame, request, second, start);
         return;
       }
       if (ANSWERS.has(request.method) && isRecord(first) && isRecord(first.response) && first.response.ok === true) deps.onAnswered();
-      deliver(frame, request, first);
+      deliver(frame, request, first, start);
     } catch (error) {
       navigator.release();
       frame.post(makeFailure(request.id, "unavailable", error instanceof Error && error.message ? error.message : "The bridge is unavailable"));
@@ -222,14 +232,26 @@ export function createRelay(deps: RelayDeps): Relay {
     frame.post({ kind: "thread-page:recorded", id, ok: true, ...outcome.value });
   }
 
+  /** The frame as a start's relay sees it: its answer, whatever path it took, settles the start. */
+  function settling(frame: FrameContext, id: string, start: StartHook): FrameContext {
+    return {
+      ...frame,
+      post(message) {
+        frame.post(message);
+        if (!("kind" in message) && message.id === id) start.onSettled(message);
+      },
+    };
+  }
+
   return {
-    bridge(frame, request) {
+    bridge(frame, request, start) {
+      const target = start ? settling(frame, request.id, start) : frame;
       // Reads may run while the frame loads behind the shown one; effects wait for the show. 05 R2.18a; DR-12
       if (frame.isShown() || isReadCall(request.method, frame.readMethods())) {
-        void relayBridge(frame, request, request.method === VOICE_METHOD ? deps.readerGesture() : REFUSED_WITHOUT_ACTION);
+        void relayBridge(target, request, request.method === VOICE_METHOD ? deps.readerGesture() : REFUSED_WITHOUT_ACTION, start);
         return;
       }
-      frame.whenShown(() => void relayBridge(frame, request, request.method === VOICE_METHOD ? deps.readerGesture() : REFUSED_WITHOUT_ACTION));
+      frame.whenShown(() => void relayBridge(target, request, request.method === VOICE_METHOD ? deps.readerGesture() : REFUSED_WITHOUT_ACTION, start));
     },
     record(frame, message) {
       // Only an embedded page's Dictate rides on `capability`; the kernel's own purposes come straight from the kernel.

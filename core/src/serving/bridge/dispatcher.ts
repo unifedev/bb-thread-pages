@@ -6,9 +6,9 @@ import { completeInvocation, decodeBridgeRequest, failure, resolveInvocation, ty
 import type { CapabilityLookup } from "../../domain/capabilities/registry.ts";
 import { SESSIONLESS_CAPABILITIES, type OpenExternalParams } from "../../domain/capabilities/specs.ts";
 import { ENTRY_DOCUMENT } from "../../domain/document-path.ts";
-import { PageError, PUBLIC_MESSAGES, STATUS_BY_CODE, errorText, isBridgeErrorCode, mapProviderError, type PageErrorCode } from "../../domain/errors.ts";
-import { HOME_IDENTITY, isMethodName, isRequestId, isRevision, isSessionIdentity } from "../../domain/ids.ts";
-import { boundIssue, isJsonObject, parseStrictJson, type JsonValue, type Validation } from "../../domain/json/strict-json.ts";
+import { PageError, PUBLIC_MESSAGES, STATUS_BY_CODE, errorText, isBridgeErrorCode, mapProviderError, notStarted, type PageErrorCode } from "../../domain/errors.ts";
+import { HOME_IDENTITY, isMethodName, isNewSessionIdentity, isRequestId, isRevision, isSessionIdentity } from "../../domain/ids.ts";
+import { boundIssue, isJsonObject, parseStrictJson, validateJson, type JsonValue, type Validation } from "../../domain/json/strict-json.ts";
 import { LIMITS } from "../../domain/limits.ts";
 import { EMPTY_REVISION, sha256Hex } from "../../domain/revision.ts";
 import { scopeWithin } from "../../domain/scope.ts";
@@ -19,7 +19,8 @@ import { isRecord, openToken } from "../../domain/tokens/mac.ts";
 import type { AttachmentRef, SessionRecord } from "../../host/provider.ts";
 import type { PagesRequest, PagesResponse } from "../../host/serving.ts";
 import { boundHostWork, type HostBound } from "../action-request.ts";
-import type { BridgeEnvelope, CapabilityHandler, Dispatcher, ServingContext } from "../context.ts";
+import type { BridgeEnvelope, CapabilityHandler, Dispatcher, ServingContext, SessionAccess } from "../context.ts";
+import { newSessionDocument, parseStartBlock, type StartBlock } from "../new-session.ts";
 import { combinedLookup } from "../contributions.ts";
 import { requestOrigins } from "../request.ts";
 import type { ApprovedCall } from "../stores.d.ts";
@@ -41,6 +42,8 @@ interface CheckedEnvelope {
   actionToken: string;
   request: unknown;
   confirmation: string | null;
+  /** A new-session page's first message only. 05 R-S13 */
+  newSession: StartBlock | null;
 }
 
 /** The params the dispatcher reads for files: the shell's list, or the attachment ids after upload. 05 R3.20a */
@@ -70,17 +73,19 @@ function resolveParams(request: BridgeRequest, lookup: CapabilityLookup, revisio
 /** Step 2: exact keys, a token string, an optional confirmation string, each within `tokenChars`. DESIGN §E.1 */
 function checkEnvelope(value: unknown): CheckedEnvelope {
   if (!isJsonObject(value)) throw new PageError("invalid_request", "The bridge envelope must be an object");
-  const keys = Object.keys(value).sort().join(",");
+  const keys = Object.keys(value).filter((key) => key !== "newSession").sort().join(",");
   if (keys !== "actionToken,request" && keys !== "actionToken,confirmation,request") throw new PageError("invalid_request", "The bridge envelope has the wrong shape");
   if (typeof value.actionToken !== "string" || value.actionToken.length === 0 || value.actionToken.length > LIMITS.tokenChars) throw new PageError("invalid_request", "The bridge envelope has no usable action token");
   const confirmation = value.confirmation;
   if (confirmation !== undefined && confirmation !== null && (typeof confirmation !== "string" || confirmation.length === 0 || confirmation.length > LIMITS.tokenChars)) throw new PageError("invalid_request", "The bridge envelope's confirmation is not a challenge");
-  return { actionToken: value.actionToken, request: value.request, confirmation: typeof confirmation === "string" ? confirmation : null };
+  return { actionToken: value.actionToken, request: value.request, confirmation: typeof confirmation === "string" ? confirmation : null, newSession: value.newSession !== undefined && value.newSession !== null ? parseStartBlock(value.newSession) : null };
 }
 
 /** The document's current state: the loaded page, or an unwritten one at `EMPTY_REVISION`; the built-in home's fixed revision. DESIGN §E.1 step 7 */
-async function loadPageState(ctx: ServingContext, session: string, path: string | null): Promise<PageState> {
+async function loadPageState(ctx: ServingContext, session: string, path: string | null, fresh: NewSessionAccess | null = null): Promise<PageState> {
   if (session === HOME_IDENTITY) return { revision: await ctx.currentRevision(HOME_IDENTITY, null), stale: false, archived: false, path: null };
+  // A new-session page: the document it was served, live. 05 R-S13
+  if (fresh) return { revision: (await newSessionDocument(ctx, fresh.workspace)).revision, stale: false, archived: false, path: null };
   try {
     const loaded = await ctx.pages.load(session, path);
     return { revision: loaded.revision, stale: loaded.stale, archived: loaded.archived, path };
@@ -98,6 +103,11 @@ async function eligibleRecord(ctx: ServingContext, session: string): Promise<Ses
   if (!record.visible || record.forkOfId !== null || record.parentSessionId !== null) throw new PageError("not_found", PUBLIC_MESSAGES.ineligible);
   return record;
 }
+
+type NewSessionAccess = Extract<SessionAccess, { kind: "new-session" }>;
+
+/** What a new-session page cannot do before its session starts: answer its own waits, read its usage, record a grant, keep storage on the host. 03 R-C11; 02 R-K10 */
+const NOT_STARTED: ReadonlySet<string> = new Set(["session.respond", "session.usage", "pages.answer", "storage.get", "storage.set", "storage.setMany"]);
 
 /** What an embedding kernel relays for an embedded document, as that document's own call. 02 R4.48 (U56) */
 const EMBED_RELAYED: ReadonlySet<string> = new Set(["storage.get", "storage.set", "storage.setMany"]);
@@ -320,6 +330,8 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
     }
     serving(caller.session);
     const home = caller.session === HOME_IDENTITY;
+    // A new-session page: its workspace, while the provider still offers one there; no session yet. 05 R-S13
+    const fresh = isNewSessionIdentity(caller.session) ? ((await ctx.sessionFor(caller.session)) as NewSessionAccess) : null;
     // 6–8. Lookup (aliases, the registry, then the contributions), the stale check, the bound and the parameters. 03 R5.2, R5.6; 05 R2.13
     const lookup = ctx.registry.get(canonicalMethod(bridgeRequest.method)) ? ctx.registry : combinedLookup(ctx.registry, await ctx.contributions.current());
     if (bridgeRequest.embed !== undefined) {
@@ -334,7 +346,7 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
       const scoped = lookup.get(canonicalMethod(bridgeRequest.method));
       if (scoped && (scoped.contributor || SCOPED_STORAGE.has(scoped.method))) throw new PageError("invalid_params", `This frame is bound to ${frame.scope}: its calls stay in that folder or below`);
     }
-    const page = await loadPageState(ctx, caller.session, caller.path);
+    const page = await loadPageState(ctx, caller.session, caller.path, fresh);
     // A stop of the page's own session means the same whatever the page shows, and the reader presses it most while the agent saves: no `stale_page`, and its challenge is bound without the revision. 03 R5.28; 05 R2.13, R3.19 (B-0120)
     const ownStop = !home && canonicalMethod(bridgeRequest.method) === "sessions.stop" && isJsonObject(bridgeRequest.params) && bridgeRequest.params.sessionId === caller.session;
     let invocation = resolveParams(bridgeRequest, lookup, ownStop ? bridgeRequest.pageRevision : page.revision);
@@ -351,10 +363,15 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
     // 9. The built-in home has no session. 05 R-S12; 07 R5.85
     if (home && SESSIONLESS_CAPABILITIES.has(spec.method)) throw new PageError("unknown_method", PUBLIC_MESSAGES.homeNoSession);
     if (home && contributed && scope !== null) throw new PageError("invalid_params", "The built-in home page has no session folder to scope to");
-    // 10. Eligibility; an archived session proceeds read-only. U21
-    const record = home ? null : await eligibleRecord(ctx, caller.session);
+    // 9a. The start block rides only beside a new-session page's own first message. 05 R-S13; 02 R-K11
+    if (checked.newSession && (!fresh || spec.method !== "session.reply" || bridgeRequest.embed !== undefined)) throw new PageError("invalid_request", "Only a new-session page's first message carries a start");
+    // 9b. Before its session starts, a new-session page answers as an idle agent with no messages; what needs the session is `not_started`. 03 R-C11
+    if (fresh && (NOT_STARTED.has(spec.method) || (spec.method === "sessions.respond" && isJsonObject(params) && params.answers !== undefined))) throw notStarted();
+    // 10. Eligibility; an archived session proceeds read-only. A new-session page has no session to be eligible. U21; 05 R-S13
+    const record = home || fresh ? null : await eligibleRecord(ctx, caller.session);
     if (record?.archived) page.archived = true;
-    const context: BridgeContext = { serving: ctx, session: record ?? HOME_SESSION, page, requestId: bridgeRequest.id, requestOrigins: requestOrigins(request.headers), scope, request, attachments: null, bound, ...(embeddedBy !== undefined ? { embeddedBy } : {}) };
+    const session = fresh ? { id: fresh.identity, title: fresh.workspace.name, archived: false as const, workspaceId: null, newSession: fresh.workspace } : (record ?? HOME_SESSION);
+    const context: BridgeContext = { serving: ctx, session, page, requestId: bridgeRequest.id, requestOrigins: requestOrigins(request.headers), scope, request, attachments: null, bound, ...(embeddedBy !== undefined ? { embeddedBy } : {}), ...(checked.newSession ? { start: checked.newSession } : {}) };
     const binding: ConfirmationBinding = { session: caller.session, revision: ownStop ? ANY_REVISION : page.revision, requestId: bridgeRequest.id, method: spec.method, params };
     // 10a. A retry of a call this challenge already approved: the original answer, nothing done again. 05 R3.19a
     const replay = replayOf(checked.confirmation, binding);
@@ -417,11 +434,12 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
     // 16. Execute. The folder picker waits on the reader and a contributed call runs under `contributedCallMs`: the bridge timeout cuts neither. 05 R2.38b; 07 R5.51
     bound.check();
     if (contributed || READER_PACED.has(spec.method)) bound.lift();
-    let outcome: { result: unknown; navigate?: { kind: "page" | "host" | "external"; url: string } };
+    let outcome: { result: unknown; navigate?: { kind: "page" | "host" | "external"; url: string }; started?: unknown };
     try {
       if (contributed) {
         contributedWrite = contributed.effect === "contributed-write" ? contributed : null;
-        const result = await ctx.contributions.invoke(contributed, params, { sessionId: home ? null : caller.session, scope, ...(frame ? { frame } : {}) }, bridgeRequest.id);
+        // A new-session page has no session: its workspace's folder rides instead. 07 R5.49, R5.84b
+        const result = await ctx.contributions.invoke(contributed, params, { sessionId: home || fresh ? null : caller.session, scope, ...(frame ? { frame } : {}), ...(fresh ? { workspace: { id: fresh.workspace.id, path: fresh.workspace.path, machine: fresh.workspace.machine } } : {}) }, bridgeRequest.id);
         // Nothing else records a write no dialog saw. 07 R5.55
         if (contributedWrite) ctx.log.info(`contributed write ${contributed.method} for ${writer(caller.session, token.session)}: ok`);
         outcome = { result };
@@ -439,6 +457,8 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
     if (!response.ok && response.error.code === "invalid_result") ctx.log.error(`bridge ${spec.method}: ${response.error.message}`);
     const status = response.ok ? 200 : STATUS_BY_CODE[response.error.code];
     // 18. Answer.
+    // The start's answer carries, for the shell only, the session's token and document address. 05 R-S13
+    if (outcome.started && response.ok) return jsonResponse(status, { response, started: outcome.started });
     return jsonResponse(status, outcome.navigate && response.ok ? { response, navigate: outcome.navigate } : { response });
   }
 
@@ -446,13 +466,37 @@ export function createDispatcher(ctx: ServingContext, handlers: readonly Capabil
 }
 
 /** Parses a `POST /bridge` body as the route hands it over: strict JSON within the envelope bound. DESIGN §E.1 step 2 */
-export function parseBridgeBody(bytes: Uint8Array): BridgeEnvelope {
+export function parseBridgeBody(bytes: Uint8Array, starts = false): BridgeEnvelope {
   const text = new TextDecoder().decode(bytes);
-  const parsed = parseStrictJson(text, { maxBytes: LIMITS.contributedPayloadMaxBytes + 1024 });
+  const tooLarge = (issue: { code: string; message: string } | undefined) => issue?.code === "too_large" || issue?.code === "too_deep" || issue?.code === "too_many_nodes";
+  const bound = LIMITS.contributedPayloadMaxBytes + 1024;
+  if (!starts) {
+    const parsed = parseStrictJson(text, { maxBytes: bound });
+    if (!parsed.ok) {
+      const issue = parsed.issues[0];
+      if (tooLarge(issue)) throw new PageError("request_too_large", issue!.message);
+      throw new PageError("invalid_json", PUBLIC_MESSAGES.invalidJson);
+    }
+    return checkEnvelope(parsed.value);
+  }
+  // Where the provider offers new-session pages, a first message also carries the storage the page held: room for
+  // that, and for that alone. Every other envelope keeps the bound and the answers it always had. 03 R-C13; 05 R3.9
+  const tooLargeBody = () => new PageError("request_too_large", `The request body is larger than ${bound} bytes`);
+  const parsed = parseStrictJson(text, { maxBytes: BRIDGE_START_BODY_BYTES, maxDepth: LIMITS.capabilityJsonDepth + 4, maxNodes: LIMITS.capabilityJsonNodes + LIMITS.storagePageBytes / 2 });
   if (!parsed.ok) {
+    if (bytes.byteLength > bound) throw tooLargeBody();
     const issue = parsed.issues[0];
-    if (issue?.code === "too_large" || issue?.code === "too_deep" || issue?.code === "too_many_nodes") throw new PageError("request_too_large", issue.message);
+    if (tooLarge(issue)) throw new PageError("request_too_large", issue!.message);
     throw new PageError("invalid_json", PUBLIC_MESSAGES.invalidJson);
   }
-  return checkEnvelope(parsed.value);
+  const value = parsed.value;
+  if (!isJsonObject(value) || value.newSession === undefined || value.newSession === null) {
+    if (bytes.byteLength > bound) throw tooLargeBody();
+    const checked = validateJson(value, { maxBytes: bound });
+    if (!checked.ok && tooLarge(checked.issues[0])) throw new PageError("request_too_large", checked.issues[0]!.message);
+  }
+  return checkEnvelope(value);
 }
+
+/** The bridge body's bound: the largest request, plus a new-session page's held storage beside its first message. 05 R3.9; 03 R-C13 */
+export const BRIDGE_START_BODY_BYTES = LIMITS.contributedPayloadMaxBytes + 1024 + LIMITS.storagePageBytes + 64 * 1024;

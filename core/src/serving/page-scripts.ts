@@ -15,8 +15,8 @@ const UNSAFE = /<\/script|<!--/i;
 const REPORTED_MAX = 512;
 
 export interface PageScripts {
-  /** The scripts for one document of `sessionId`'s page (null: the built-in home), in the host's contributor order. Never rejects; settles within `pageScriptMs`. 07 R5.88, R5.91 */
-  scriptsFor(sessionId: string | null, documentPath: string): Promise<ContributorScript[]>;
+  /** The scripts for one document of `sessionId`'s page (null: the built-in home, or a new-session page, whose `workspace` is given), in the host's contributor order. Never rejects; settles within `pageScriptMs`. 07 R5.88, R5.91 */
+  scriptsFor(sessionId: string | null, documentPath: string, workspace?: ContributorWorkspace | null): Promise<ContributorScript[]>;
 }
 
 export interface PageScriptsOptions {
@@ -77,7 +77,7 @@ export function createPageScripts(host: ContributorHost | undefined, contributio
   }
 
   return {
-    async scriptsFor(sessionId, documentPath) {
+    async scriptsFor(sessionId, documentPath, given = null) {
       // The cached declarations, refreshed behind: a serve never waits on the contributors' listing. 07 R5.87
       const askers = contributions.cached().contributors.filter((contributor) => contributor.pageScript);
       if (askers.length === 0) return [];
@@ -86,7 +86,8 @@ export function createPageScripts(host: ContributorHost | undefined, contributio
         timer = setTimeout(() => resolve("late"), askMs);
       });
       try {
-        let workspace: ContributorWorkspace | null = null;
+        // A new-session page has no session to ask about: the provider named its folder already. 07 R5.88, R5.84b
+        let workspace: ContributorWorkspace | null = sessionId === null ? given : null;
         if (sessionId !== null) {
           const found = await Promise.race([host.workspaceOf(sessionId).then((value) => ({ value }), (error: unknown) => ({ error })), deadline]);
           if (found === "late" || "error" in found) {

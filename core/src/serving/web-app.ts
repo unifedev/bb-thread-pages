@@ -7,6 +7,7 @@ import type { PagesRequest, PagesResponse } from "../host/serving.ts";
 import type { ServingContext, SessionAccess } from "./context.ts";
 import { baseHeaders, failure } from "./responses.ts";
 import { requireReader } from "./request.ts";
+import { newSessionAddress, requireNewSession } from "./new-session.ts";
 import { requirePageSession } from "./session-access.ts";
 
 /** The product's public name: what the home installs as and describes itself by. 05 R2.14a */
@@ -35,6 +36,7 @@ export interface ShellHead {
  */
 async function installsAsHome(ctx: ServingContext, access: SessionAccess): Promise<boolean> {
   if (access.kind === "home") return true;
+  if (access.kind === "new-session") return false;
   return (await ctx.home.get().catch(() => null)) === access.record.id;
 }
 
@@ -62,6 +64,11 @@ async function projectName(ctx: ServingContext, workspaceId: string): Promise<st
 export async function shellHead(ctx: ServingContext, access: SessionAccess): Promise<ShellHead & { start: string }> {
   if (await installsAsHome(ctx, access)) {
     return { appName: PUBLIC_NAME, description: PUBLIC_NAME, manifest: "manifest?home=1", start: "home", favicon: FAVICON_SVG, appleTouchIcon: APPLE_TOUCH_ICON_PNG, theme: THEME_COLOR };
+  }
+  if (access.kind === "new-session") {
+    // Named by its workspace, opening a fresh new-session page of it; not swapped at the start. 05 R-S13
+    const workspace = encodeURIComponent(access.workspace.id);
+    return { appName: appTitle(access.workspace.name), description: access.workspace.name.trim() || PUBLIC_NAME, manifest: `manifest?workspace=${workspace}`, start: `page?workspace=${workspace}`, favicon: FAVICON_SVG, appleTouchIcon: APPLE_TOUCH_ICON_PNG, theme: THEME_COLOR };
   }
   const session = access as Extract<SessionAccess, { kind: "session" }>;
   const id = encodeURIComponent(session.record.id);
@@ -128,6 +135,8 @@ export function manifestRoute(ctx: ServingContext) {
       let access: SessionAccess;
       if (request.query.get("home") === "1") {
         access = { kind: "home" };
+      } else if (!request.query.has("session") && request.query.has("workspace")) {
+        access = await requireNewSession(ctx, newSessionAddress(request.query));
       } else {
         const id = request.query.get("session");
         if (!isSessionId(id)) throw new PageError("invalid_request", PUBLIC_MESSAGES.invalidSession);

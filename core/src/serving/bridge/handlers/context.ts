@@ -2,7 +2,7 @@
 import { SESSIONLESS_CAPABILITIES } from "../../../domain/capabilities/specs.ts";
 import type { SessionRecord } from "../../../host/provider.ts";
 import { rosterOf } from "../../contributions.ts";
-import { boundTitle, handler, isHome } from "../handler.ts";
+import { boundTitle, handler, isHome, newSessionOf } from "../handler.ts";
 import { knownSettings } from "./settings.ts";
 
 export const contextGet = handler<null, unknown>({
@@ -11,10 +11,14 @@ export const contextGet = handler<null, unknown>({
     const { serving, session, page } = context;
     const roster = rosterOf(serving.registry, await serving.contributions.current());
     const capabilities = isHome(context) ? roster.filter((entry) => entry.contributor !== undefined || !SESSIONLESS_CAPABILITIES.has(entry.method)) : roster;
+    // A new-session page names its workspace as `workspaces.list` does, and nothing else does. 03 R-C11
+    const workspace = newSessionOf(context);
     return {
       result: {
         protocolVersion: 1,
-        session: session.workspaceId === null ? null : { id: session.id, title: boundTitle(session.title), workspaceId: session.workspaceId, ...settingsOf(session) },
+        session: session.workspaceId === null ? null : { id: session.id, title: boundTitle(session.title), workspaceId: session.workspaceId, ...settingsOf(session as SessionRecord) },
+        newSession: workspace !== null,
+        ...(workspace ? { workspace: { id: workspace.id, name: workspace.name } } : {}),
         page: { revision: page.revision, readOnly: page.stale || page.archived },
         capabilities,
       },

@@ -21,6 +21,7 @@ import { EMPTY_DOCUMENT } from "./empty-page.ts";
 import { baseHeaders, documentHeaders, failure, fileHeaders, json, noBody } from "./responses.ts";
 import { requireReader } from "./request.ts";
 import { loadPageView, requirePageSession, type PageView } from "./session-access.ts";
+import { newSessionAddress, newSessionDocument, newSessionDocumentUrl, requireNewSession } from "./new-session.ts";
 import { voiceAvailability } from "./voice.ts";
 
 /**
@@ -42,7 +43,19 @@ export function documentQueryFrom(params: URLSearchParams): string {
 }
 
 function identityOf(access: SessionAccess): string {
-  return access.kind === "home" ? HOME_IDENTITY : access.record.id;
+  return access.kind === "home" ? HOME_IDENTITY : access.kind === "new-session" ? access.identity : access.record.id;
+}
+
+/** A new-session page's view: its document as served, live, never stale; no page root, so no files. 05 R-S13 */
+export async function newSessionView(ctx: ServingContext, access: Extract<SessionAccess, { kind: "new-session" }>): Promise<PageView> {
+  const document = await newSessionDocument(ctx, access.workspace);
+  const page = document.authored === null ? null : { html: document.html, revision: document.revision, updatedAtMs: 0, path: null, stale: false, archived: false, site: { resolved: 0, skipped: [], deferred: [] } };
+  return { page, revision: document.revision, source: "live", empty: page === null, archived: false, stale: false, deferredFiles: [], working: false };
+}
+
+/** The view of the document a request names: a new-session page's own, or a session's page's (and the home's). */
+export function viewOf(ctx: ServingContext, access: SessionAccess, path: string | null): Promise<PageView> {
+  return access.kind === "new-session" ? newSessionView(ctx, access) : loadPageView(ctx.pages, access, path);
 }
 
 /** The host's own line in a host document: the built-in home's `[data-thread-page-notice]` element, filled when there is something to say. 08 A61; U49 */
@@ -96,6 +109,7 @@ export function documentUrlFor(ctx: ServingContext, access: SessionAccess, path:
   const session = identityOf(access);
   const render = mintRenderToken({ session, revision, path, now: ctx.now() }, ctx.signingKey).token;
   if (access.kind === "home") return `${ctx.serving.base()}/home-document?render=${encodeURIComponent(render)}`;
+  if (access.kind === "new-session") return newSessionDocumentUrl(ctx, access.workspace, revision);
   return ctx.strategy.documentUrl(session, path, query, render);
 }
 
@@ -118,7 +132,7 @@ export interface DocumentArgs {
 export async function serveDocument(ctx: ServingContext, request: PagesRequest, args: DocumentArgs): Promise<PagesResponse> {
   const { access, path, query } = args;
   const session = identityOf(access);
-  const view = await loadPageView(ctx.pages, access, path);
+  const view = await viewOf(ctx, access, path);
   const etag = etagFor(view.revision);
   if (request.headers.get(POLL_HEADER) === "1") {
     const headers = baseHeaders("application/json; charset=utf-8");
@@ -137,9 +151,10 @@ export async function serveDocument(ctx: ServingContext, request: PagesRequest, 
     pageRevision: view.revision,
     stale: view.stale,
     archived: view.archived,
-    siteRoot: access.kind === "home" ? null : ctx.strategy.siteRoot(session, path),
+    // A new-session page has no page root yet: the shell gives the kernel the session's at the start. 02 R-K1, R-K11
+    siteRoot: access.kind === "session" ? ctx.strategy.siteRoot(session, path) : null,
     embedded: false,
-    uploads: access.kind !== "home",
+    uploads: access.kind === "session",
     documentPath: path ?? ENTRY_DOCUMENT,
     ownFilesByFrame: false,
     embedAvailable: true,
@@ -149,10 +164,10 @@ export async function serveDocument(ctx: ServingContext, request: PagesRequest, 
     swapIdleMs: LIMITS.swapIdleMs,
   };
   // The contributors' page scripts follow the kernel, asked for this document. 07 R5.88, R5.92
-  const contributorScripts = await ctx.pageScripts.scriptsFor(access.kind === "home" ? null : session, path ?? ENTRY_DOCUMENT);
+  const contributorScripts = await ctx.pageScripts.scriptsFor(access.kind === "session" ? session : null, path ?? ENTRY_DOCUMENT, access.kind === "new-session" ? { id: access.workspace.id, path: access.workspace.path, machine: access.workspace.machine } : null);
   let page = view.page?.html ?? EMPTY_DOCUMENT;
   // The shell's fetch for `onPageUpdate`, by-url: the document stays, so a file changed under the same name needs a new address. 02 R4.66; 05 R2.18
-  if (view.page && access.kind !== "home" && ctx.strategy.kind === "by-url" && request.headers.get(HAND_OVER_HEADER) === "1") page = await versionOwnFiles(page, pageFileIo(ctx.provider, session), directoryOf(path));
+  if (view.page && access.kind === "session" && ctx.strategy.kind === "by-url" && request.headers.get(HAND_OVER_HEADER) === "1") page = await versionOwnFiles(page, pageFileIo(ctx.provider, session), directoryOf(path));
   // No `<base>` on a top-level load in either strategy: the document is served at its own path, or carries its files. 02 R4.2; DR-13
   const html = injectKernel(withNotice(page, args.notice ?? null), { kernel: KERNEL_RUNTIME, config, baseHref: null, contributorScripts });
   return { status: 200, headers: documentHeaders(view.revision), body: new TextEncoder().encode(html) };
@@ -286,6 +301,19 @@ export function prefixDocumentRoute(ctx: ServingContext) {
       return await serveDocument(ctx, request, { access, path: documentKey(tail), query: documentQueryFrom(request.query) });
     } catch (error) {
       return documentFailure(ctx, request, error, "GET /page/*");
+    }
+  };
+}
+
+/** `GET /new-session-document?workspace=<id>[&render=…]` — a new-session page's document and its poll, on every serving host, as `/home-document` is for the home. 05 §Routes, R-S13 */
+export function newSessionDocumentRoute(ctx: ServingContext) {
+  return async (request: PagesRequest): Promise<PagesResponse> => {
+    try {
+      requireReader(request);
+      const access = await requireNewSession(ctx, newSessionAddress(request.query, ["render"]));
+      return await serveDocument(ctx, request, { access, path: null, query: "" });
+    } catch (error) {
+      return documentFailure(ctx, request, error, "GET /new-session-document");
     }
   };
 }

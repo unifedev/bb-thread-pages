@@ -102,3 +102,48 @@ export function permissionModeSummary(record: SessionRecord, settings: ReplySett
   const holds = checked.scopes.permissionMode === "turn" ? "for this one answer" : "from now on, for the rest of the session";
   return `Set the permission mode of “${quotable(boundTitle(record.title)) || "untitled"}” (${record.id}) to ${label} ${holds}?`;
 }
+
+/**
+ * The first message of a new-session page names the new session's settings: each a value the default AI provider
+ * lists in `providers.list` — `model` among its models, `reasoningLevel` among the chosen model's levels where it lists
+ * them (else the provider's), `permissionMode` among its modes — whatever a running session may change; anything else
+ * is `settings_unsupported` before anything starts. 03 R-C12
+ */
+export async function checkStartSettings(ctx: ServingContext, settings: ReplySettings | undefined): Promise<{ permissionModeLabel: string | null } | null> {
+  const named = namedSettings(settings);
+  if (!settings || named.length === 0) return null;
+  const providers = ctx.provider.providers;
+  if (!providers) throw settingsUnsupported(named);
+  let choices: ProviderChoice[];
+  try {
+    choices = await providers.list();
+  } catch (error) {
+    throw mapProviderError(error, ctx.log, "providers.list");
+  }
+  const provider = choices.find((choice) => choice.default) ?? choices[0];
+  if (!provider) throw settingsUnsupported(named);
+  const unsupported: SettingField[] = [];
+  let permissionModeLabel: string | null = null;
+  for (const field of named) {
+    const value = settings[field]!;
+    let listed: boolean;
+    if (field === "model") listed = provider.models.some((model) => model.id === value);
+    else if (field === "permissionMode") {
+      const mode = provider.permissionModes?.find((candidate) => candidate.id === value);
+      listed = mode !== undefined;
+      permissionModeLabel = mode?.displayName ?? null;
+    } else {
+      const chosen = settings.model !== undefined ? provider.models.find((model) => model.id === settings.model) : undefined;
+      listed = (chosen?.reasoningLevels ?? provider.reasoningLevels ?? []).some((level) => level.id === value);
+    }
+    if (!listed) unsupported.push(field);
+  }
+  if (unsupported.length) throw settingsUnsupported(unsupported);
+  return { permissionModeLabel };
+}
+
+/** The decision challenge's words for the permission mode a new-session page's first message starts its session with. 03 R-C12, R-C9 */
+export function startPermissionSummary(workspaceName: string, mode: string, label: string | null): string {
+  const named = label && label !== mode ? `${quoted(label, 64)} (${quotable(mode, 64)})` : `“${quotable(mode, 64)}”`;
+  return `Start the new session in “${quotable(boundTitle(workspaceName)) || "untitled"}” with the permission mode ${named}, from now on, for the rest of the session?`;
+}

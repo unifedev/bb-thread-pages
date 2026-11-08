@@ -45,7 +45,8 @@ const settingScopes = s.object({ model: s.optional(settingScope), reasoningLevel
 const replySettings = s.object({ model: s.optional(safeName("Model id")), reasoningLevel: s.optional(safeName("Reasoning level", 64)), permissionMode: s.optional(safeName("Permission mode", 64)) }, "Settings");
 /** A session's current settings as the host knows them, on `context.get`'s `session` and on `sessions.snapshot` rows: the same ids a reply would name; a field absent where the host cannot tell. U50 */
 const sessionSettings = replySettings;
-const replyDeliveryResult = s.object({ delivery, duplicate: s.boolean(), settings: s.optional(settingScopes) });
+/** On a new-session page the first reply started the session: `sessionId` names it. 03 R-C8, R-C12 */
+const replyDeliveryResult = s.object({ delivery, duplicate: s.boolean(), settings: s.optional(settingScopes), sessionId: s.optional(entityId("Session id")) });
 
 export const DECISIONS = ["allow_once", "allow_for_session", "deny"] as const;
 export type Decision = (typeof DECISIONS)[number];
@@ -133,6 +134,9 @@ export const contextGet = spec({
     s.object({
       protocolVersion: s.literal([1]),
       session: s.nullable(s.object({ id: entityId("Session id"), title: title(), workspaceId: entityId("Workspace id"), settings: s.optional(sessionSettings) })),
+      // A new-session page alone has `newSession: true` and its workspace. 03 R-C11
+      newSession: s.optional(s.boolean()),
+      workspace: s.optional(s.object({ id: entityId("Workspace id"), name: title("Name") })),
       page: s.object({ revision, readOnly: s.boolean() }),
       capabilities: s.array(rosterEntry, 512),
     }),
@@ -162,10 +166,11 @@ export const sessionActivity = spec({
   validateParams: params(s.object({ limit: s.limit(LIMITS.activityMax, LIMITS.activityDefault) })),
   validateResult: result(
     s.object({
-      state: sessionState,
+      // `new` on a new-session page only, whose times are then null: no session exists yet. 03 R-C11
+      state: s.literal([...SESSION_STATES, "new"], "State"),
       waiting: s.nullable(waitingSchema),
-      updatedAtMs: timestamp,
-      startedAtMs: timestamp,
+      updatedAtMs: s.nullable(timestamp),
+      startedAtMs: s.nullable(timestamp),
       turnEndedAtMs: s.nullable(timestamp),
       items: s.array(activityItem, LIMITS.activityMax),
     }),
@@ -565,8 +570,16 @@ const pagesOpenParams = s.refine(
     // The text after `#`; as the address carries it (percent-encoded) and with its `#`, within the shell's bound. 01 R1.12f
     fragment: s.optional(s.refine(s.string({ min: 1, max: LIMITS.fragmentChars - 1, pattern: /^[^#\s\u0000-\u001f\u007f-\u009f]+$/, label: "Fragment" }), (value) => (new URL(`http://h/#${value}`).hash.length > LIMITS.fragmentChars ? `Fragment: at most ${LIMITS.fragmentChars} characters in the address, its \`#\` and percent-encoding included` : null))),
     home: s.optional(s.literal([true], "Home")),
+    // A fresh new-session page of a workspace. 03 R5.29c
+    workspaceId: s.optional(entityId("Workspace id")),
+    newSession: s.optional(s.boolean()),
   }),
-  (value) => exactlyOneOf("sessionId", "home")(value) ?? (value.home && (value.path !== undefined || value.fragment !== undefined) ? "path and fragment go with sessionId, not home" : null),
+  (value) =>
+    exactlyOneOf("sessionId", "home", "workspaceId")(value) ??
+    (value.home && (value.path !== undefined || value.fragment !== undefined) ? "path and fragment go with sessionId, not home" : null) ??
+    (value.workspaceId !== undefined && value.newSession !== true ? "workspaceId goes with newSession: true" : null) ??
+    (value.workspaceId === undefined && value.newSession !== undefined ? "newSession goes with workspaceId" : null) ??
+    (value.workspaceId !== undefined && (value.path !== undefined || value.fragment !== undefined) ? "path and fragment go with sessionId, not workspaceId" : null),
 );
 
 export const pagesOpen = spec({

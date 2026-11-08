@@ -1,10 +1,52 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` ebe805a): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 5e97de1): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.14.10 (bb plugin) — 2026-11-08
+
+The bb plugin's release of the 0.6.28 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.10`): it carries pages-core 0.6.11. bb offers no
+new-session page, so its pages work as in 1.14.9, and `context.get` also answers `newSession: false`.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.10.
+
+## 0.6.28 — 2026-11-08
+
+A page can now exist before its agent: on the reference server, `/page?workspace=<id>` opens the page of the agent
+that workspace would start next, and the reader's first message from it starts that agent and makes the page its own,
+with no reload (B-0259). Only pages-core's reference server offers it in this release; bb and Claude Code carry the
+new pages-core with no new-session page, so their pages work as before. There is no 0.6.27.
+
+`@unifedev/pages-core` 0.6.11, `@unifedev/claude-pages` 0.6.28, the bb plugin `@unifedev/thread-pages` 1.14.10. No
+agent text changed.
+
+### Added
+
+- **The new-session page, in pages-core.** `GET page?workspace=<id>`, for a workspace the provider lists and offers,
+  serves the shell around the operator's seed (`{title}` set to the workspace's name), or the host's "Not written
+  yet" document, with the kernel and the plugins' page scripts. Opening it creates nothing: no session, file, `kv`
+  key or grant. Until the first message, `context.get` answers `session: null`, `newSession: true` and
+  `workspace: { id, name }`, `session.activity` answers state `new` with no history, `storage.*` works and is held in
+  the open page (a reload before the first message drops it), and drafts belong to that tab. The first reply or form
+  answer the reader sends from the page with their own click or keypress starts one agent in the workspace, with no
+  dialog: the served seed and the held storage are written into its page, the reply answers
+  `{ delivery: "started", sessionId }`, the address becomes `page?session=<id>` without a reload, and the kernel
+  fires `thread-page:session`. A send with no reader gesture, a file upload or Attach, and the calls that need a
+  session answer `unavailable` with reason `not_started` and start nothing. Tests:
+  `packages/pages-core/test/serving/new-session.test.ts`, `test/runtime/shell/new-session.test.ts`,
+  `test/runtime/kernel/new-session.test.ts`; fixture 16.
+- **`pages.open { workspaceId, newSession: true }`, in pages-core,** and a link to `page?workspace=<id>` open a fresh
+  new-session page in place. A workspace the reader cannot see is `not_found`; one that offers no new-session page,
+  as on every bb and Claude Code workspace, `unavailable`.
+- **`newSession` on `context.get`, in pages-core:** `false` on every agent's page.
+- **`workspaces.newSession?(id)`, an optional pages-core provider member:** the folder and machine a new session in
+  that workspace would work in, or null where it offers no new-session page. The start itself is `sessions.start`.
 
 ## 1.14.9 (bb plugin) — 2026-10-30
 

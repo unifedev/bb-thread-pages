@@ -29,6 +29,7 @@ export interface ProviderHost {
     list(): Promise<{ id: string; name: string; kind: string; environments?: { id: string; name: string; isDefault: boolean }[] }[]>;   // folders (U7); R-P13
     browse?(): Promise<{ selection: unknown; display: string } | null>;   // the host's native folder picker; null when cancelled. `selection` is the provider's opaque record, held by the server and handed back to `create` unchanged; it never reaches a page (DR-5)
     create?(args: { selection: unknown; name?: string }): Promise<{ id: string }>;
+    newSession?(id: string): Promise<{ path: string; machine: string | null } | null>;   // R-P17: the folder a new session there would work in, or null where the workspace offers no new-session page; host → server → contributor only
   };
   kv: {                                                           // R-P11: per session and scope; the server namespaces
     get(key: string): Promise<string | null>;

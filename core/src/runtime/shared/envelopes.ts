@@ -48,6 +48,8 @@ export interface SubmitBody {
   files: { field: string; name: string; path: string; sizeBytes: number; transcript?: string | null }[];
   /** Sent from a frame of the page's own session. 05 R2.32; 02 R4.48a */
   frame?: SubmitFrame;
+  /** A new-session page's form that starts its session. 05 R-S13 */
+  newSession?: { opening: string; gesture: boolean; held: { scope: string | null; entries: Record<string, unknown> }[] };
 }
 
 export type SubmitResponse =
@@ -96,10 +98,15 @@ export interface TranscribeBody {
 export type TranscribeResponse = { ok: true; text: string } | { ok: false; code: PageErrorCode; message: string };
 
 /** `POST /bridge`. */
+/** The most scopes a new-session page's held storage may hold, the shell's store and the start alike. 03 R-C13 */
+export const HELD_SCOPES_MAX = 256;
+
 export interface BridgeEnvelope {
   actionToken: string;
   request: BridgeRequest;
   confirmation?: string | null;
+  /** A new-session page's first message only: the opening, the reader's gesture, the held storage. 05 R-S13; 02 R-K11 */
+  newSession?: { opening: string; gesture: boolean; held: { scope: string | null; entries: Record<string, unknown> }[] };
 }
 
 /** The reader declined a challenge: what the cooldown is keyed by (DR-10). */

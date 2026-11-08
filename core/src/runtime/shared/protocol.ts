@@ -139,6 +139,8 @@ export type ShellMessage =
   | { kind: "thread-page:voice"; available: boolean; reason: string | null }
   | RecordedMessage
   | { kind: "thread-page:draft-notice"; text: string }
+  /** A new-session page's session started: its page root and uploads, once; the kernel fires `thread-page:session`. 02 R-K1, R-K11 */
+  | { kind: "thread-page:session"; siteRoot: string | null; uploads: boolean }
   | BridgeResponseMessage;
 
 /** A draft a page's shell could not restore, kept for the reader on the home page. 02 R-K7; DESIGN §D.3 */
@@ -235,6 +237,8 @@ export interface ShellConfig {
   deferredFiles: string[];
   /** Every read-effect method a hidden frame may call now (DR-12). */
   readMethods: string[];
+  /** A new-session page: the page of the session its workspace would start next, until the start re-keys it. 05 R-S13; 02 R-K10 */
+  newSession?: boolean;
 }
 
 // --- wordings -------------------------------------------------------------------
@@ -490,6 +494,8 @@ export function isShellMessage(value: unknown): value is ShellMessage {
       return value.ok === false && hasExactKeys(value, ["kind", "id", "ok", "code", "message"]) && typeof value.code === "string" && ERROR_CODES.has(value.code) && isText(value.message, LIMITS.errorMessageChars);
     case "thread-page:draft-notice":
       return hasExactKeys(value, ["kind", "text"]) && isText(value.text, LIMITS.errorMessageChars);
+    case "thread-page:session":
+      return hasExactKeys(value, ["kind", "siteRoot", "uploads"]) && (value.siteRoot === null || isText(value.siteRoot, 4096)) && typeof value.uploads === "boolean";
     default:
       return false;
   }

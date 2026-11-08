@@ -1,6 +1,6 @@
 // `POST /chrome-action`: revokeGrant (from the home, any pair on the host), declined (the cooldown of DESIGN §E.1 step 15) — what the shell alone may ask (05 §Routes; 03 R5.65, R-C7; 02 R4.49; DR-10; U49: the bar's session actions are gone with the bar).
 import { PageError } from "../domain/errors.ts";
-import { HOME_IDENTITY } from "../domain/ids.ts";
+import { HOME_IDENTITY, isNewSessionIdentity } from "../domain/ids.ts";
 import { LIMITS } from "../domain/limits.ts";
 import type { PagesRequest, PagesResponse } from "../host/serving.ts";
 import { isChromeActionBody, type ChromeActionResponse } from "../runtime/shared/envelopes.ts";
@@ -36,6 +36,8 @@ export function chromeActionRoute(ctx: ServingContext) {
             break;
           case "revokeGrant": {
             if (body.from !== undefined && token.session !== HOME_IDENTITY) throw new PageError("forbidden", "Only the home page revokes another page's grants.");
+            // A new-session page holds no grant. 05 R-S13; 03 R-C11
+            if (isNewSessionIdentity(token.session)) throw new PageError("not_found", "This page holds no grant.");
             const from = body.from ?? token.session;
             bound.check();
             await ctx.grants.revoke(from, body.target);

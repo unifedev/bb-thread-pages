@@ -2,11 +2,13 @@
 import { checkDocumentQuery, documentFragment, ENTRY_DOCUMENT, isDocumentPath } from "../../domain/document-path.ts";
 import { HAND_OVER_HEADER, type ChromeActionBody, type DocumentSessionBody, type PageSource, type PollBody } from "../shared/envelopes.ts";
 import type { DraftRecord } from "../shared/drafts.ts";
-import { isKernelMessage, isReadyMessage, isRecord, type GrantSummary, type KernelMessage, type LeftoverDraft, type ShellConfig, type ShellMessage } from "../shared/protocol.ts";
+import { PUBLIC_MESSAGES } from "../../domain/errors.ts";
+import { isKernelMessage, isReadyMessage, isRecord, makeFailure, type BridgeRequestMessage, type GrantSummary, type KernelMessage, type LeftoverDraft, type ShellConfig, type ShellMessage } from "../shared/protocol.ts";
 import { createConfirmer, type Confirmer } from "./confirm.ts";
 import { addLeftover, createDraftStore, discardLeftover, leftoverLabel, LEFTOVERS_PREFIX, pruneDocumentLeftovers, readAllLeftovers, setDocumentLeftovers, type DraftStore, type LeftoverBound } from "./draft-store.ts";
 import { createReaderGesture } from "./gesture.ts";
 import { createNavigator } from "./navigate.ts";
+import { createNewSessionPage, HISTORY_OPENING, HISTORY_STARTS, type StartedTransport } from "./new-session.ts";
 import { createOwnFiles } from "./own-files.ts";
 import { createPoller, type Poller } from "./poll.ts";
 import { createRelay, type FrameContext } from "./relay.ts";
@@ -75,7 +77,9 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   /** Storage is the one source of leftovers; the per-session bound counts the drafts too. DESIGN §D.3 */
   const leftoverBound: LeftoverBound = { retentionMs: config.drafts.retentionMs, perSessionBytes: config.drafts.perSessionBytes };
 
-  const store = createDraftStore(win, { session: config.session, retentionMs: config.drafts.retentionMs, perSessionBytes: config.drafts.perSessionBytes, now, onFallback: () => notice.notice(STORAGE_FALLBACK_LINE) });
+  // A new-session page holds what the reader has until its session starts: storage in memory, drafts for this tab, keyed by its opening. 02 R-K10
+  const fresh = config.newSession === true ? createNewSessionPage(win) : null;
+  let store = createDraftStore(win, { session: fresh ? `~opening:${fresh.opening}` : config.session, ...(fresh ? { tab: true } : {}), retentionMs: config.drafts.retentionMs, perSessionBytes: config.drafts.perSessionBytes, now, onFallback: () => notice.notice(STORAGE_FALLBACK_LINE) });
   const navigator = createNavigator(win);
   const gesture = createReaderGesture(win);
   let voice: Voice | null = null;
@@ -524,6 +528,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   function onFrameMessage(frame: Frame, data: unknown): void {
     if (frame.cancelled || !isKernelMessage(data)) return;
     if (!("kind" in data)) {
+      if (config.newSession && fresh && data.embed === undefined && beforeStart(frame, data)) return;
       relay.bridge(frameContext(frame), data);
       return;
     }
@@ -584,6 +589,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
         return;
       }
       case "thread-page:submit":
+        if (config.newSession && fresh && submitBeforeStart(frame, message)) return;
         frameContext(frame).whenShown(() => {
           frame.pending += 1;
           void relaySubmit({ config, token: () => frame.target.token, fetchImpl, voice, onAnswered: () => poller.expectChange() }, (reply) => {
@@ -657,7 +663,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       for (const [field, value] of Object.entries(handed.fields)) {
         const reported = message.fields[field];
         // The page filled the field over the reader's text: the text goes to storage for the home page, by id. DESIGN §D.3
-        if (JSON.stringify(reported) !== JSON.stringify(value) && typeof value === "string" && value !== "" && !config.builtinHome) {
+        if (JSON.stringify(reported) !== JSON.stringify(value) && typeof value === "string" && value !== "" && !config.builtinHome && !config.newSession) {
           for (const text of addLeftover(win, { session: config.session, documentPath: path, key: message.form.key, label: leftoverLabel(message.form.key), field, value, reason: "field-filled", atMs: now() }, leftoverBound)) postTo(frame, { kind: "thread-page:draft-notice", text });
         }
       }
@@ -682,12 +688,149 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
 
   /** Storage holds the list; this frame's document's entries are replaced, the rest kept (NS-3). The built-in home keeps none. */
   function reconcileLeftovers(frame: Frame): void {
-    if (config.builtinHome) return;
+    // A new-session page's drafts are its tab's alone, never on the home. 02 R-K10
+    if (config.builtinHome || config.newSession) return;
     for (const text of setDocumentLeftovers(win, config.session, frame.target.path, leftoversOf(frame), leftoverBound)) postTo(frame, { kind: "thread-page:draft-notice", text });
   }
 
   function tellLeftovers(): void {
     if (shown) postTo(shown, { kind: "thread-page:drafts", leftovers: readAllLeftovers(win, config.drafts.retentionMs, now()) });
+  }
+
+  // --- a new-session page: the start, once (02 R-K10, R-K11; 03 R-C12, R-C13; 05 R-S13) ---------
+
+  type StartError = { code: string; message: string; reason?: string };
+  /** What waits behind a start in flight, run once it started or failed with its error; null while no start is in flight. 02 R-K11 */
+  let starting: { run(): void; fail(error: StartError): void }[] | null = null;
+  /** The calls that write into the session: they wait for the start and then go to it. 02 R-K11 */
+  const WRITES: ReadonlySet<string> = new Set(["session.reply", "storage.set", "storage.setMany"]);
+
+  /**
+   * Whether the reader's own gesture in the page is behind this call: the shell's own transient activation, not within
+   * R3.32b's window after a press on its chrome or the cooldown after a dialog or bar closed. A browser that exposes no
+   * activation state says nothing, so the start is refused there too (fail closed). 03 R-C12; 05 R3.32a, R3.32b
+   */
+  function readerStarted(): boolean {
+    return gesture.decide().mode === "record";
+  }
+
+  function rememberStarts(): void {
+    try {
+      win.history.replaceState(historyState(), "", win.location.href);
+    } catch {
+      // Without the entry a retry after a reload needs the reader's press again.
+    }
+  }
+
+  function settleStart(error: StartError | null): void {
+    const waiting = starting ?? [];
+    starting = null;
+    for (const item of waiting) {
+      if (error) item.fail(error);
+      else item.run();
+    }
+  }
+
+  /** A call from a new-session page before its session started: held storage, the start, or a write waiting for it; false to relay it as on any page. */
+  function beforeStart(frame: Frame, request: BridgeRequestMessage): boolean {
+    const page = fresh!;
+    if (starting) {
+      // The held storage still answers reads; writes into the session wait for it. 02 R-K11
+      if (request.method === "storage.get") {
+        postTo(frame, page.storage(request)!);
+        return true;
+      }
+      if (!WRITES.has(request.method)) return false;
+      starting.push({ run: () => relay.bridge(frameContext(frame), request), fail: (error) => void postTo(frame, makeFailure(request.id, error.code as never, error.message, error.reason)) });
+      return true;
+    }
+    const local = page.storage(request);
+    if (local) {
+      postTo(frame, local);
+      return true;
+    }
+    if (request.method !== "session.reply") return false;
+    const gestured = readerStarted();
+    const key = isRecord(request.params) && typeof request.params.idempotencyKey === "string" ? `reply:${request.params.idempotencyKey}` : null;
+    // Without the reader's gesture only a repeat of a start this opening sent goes, marked so: the host answers that start or refuses. 03 R-C12
+    if (!gestured && !(key && page.sentBefore(key))) {
+      postTo(frame, makeFailure(request.id, "unavailable", PUBLIC_MESSAGES.startNeedsReader, "not_started"));
+      return true;
+    }
+    if (key && !page.sentBefore(key)) {
+      page.noteSent(key);
+      rememberStarts();
+    }
+    starting = [];
+    relay.bridge(frameContext(frame), request, { block: { opening: page.opening, gesture: gestured, held: page.held() }, onStarted: takeSession, onSettled: (response) => settleStart(response.ok ? null : response.error) });
+    return true;
+  }
+
+  /** A captured form on a new-session page: the start, on the reader's gesture and with no file, or a form waiting for one in flight. 02 R-K10, R-K11 */
+  function submitBeforeStart(frame: Frame, message: Extract<KernelMessage, { kind: "thread-page:submit" }>): boolean {
+    const page = fresh!;
+    const result = (ok: false, error: string, text: string) => void postTo(frame, { kind: "thread-page:submit-result", submissionId: message.submissionId, ok, error: error as never, message: text.slice(0, 512) });
+    if (starting) {
+      starting.push({ run: () => onFrameMessage(frame, message), fail: (error) => result(false, error.code, error.message) });
+      return true;
+    }
+    // The form's status line names why: an upload needs a page root; a start needs the reader. 02 R-K10; 03 R-C12
+    if (message.files.length > 0) {
+      result(false, "unavailable", `${PUBLIC_MESSAGES.notStartedFiles.replace(/\.$/, "")} (not_started).`);
+      return true;
+    }
+    if (!readerStarted()) {
+      result(false, "unavailable", `${PUBLIC_MESSAGES.startNeedsReader.replace(/\.$/, "")} (not_started).`);
+      return true;
+    }
+    starting = [];
+    const block = { opening: page.opening, gesture: true, held: page.held() };
+    frameContext(frame).whenShown(() => {
+      frame.pending += 1;
+      void relaySubmit({ config, token: () => frame.target.token, fetchImpl, voice, onAnswered: () => poller.expectChange(), start: { block, onStarted: takeSession } }, (reply) => {
+        if ("kind" in reply && reply.kind === "thread-page:submit-result") {
+          frame.pending = Math.max(0, frame.pending - 1);
+          postTo(frame, reply);
+          settleStart(reply.ok ? null : { code: reply.error ?? "unavailable", message: reply.message ?? "Could not send" });
+          if (frame === shown) reconsider();
+          return;
+        }
+        postTo(frame, reply);
+      }, message);
+    });
+    return true;
+  }
+
+  /**
+   * The start answered: the page is the session's. The shell takes its token and document address, moves the open
+   * document's drafts from the opening to the session's key, replaces the address (Back does not lead to a fresh
+   * new-session page), and tells the kernel, which fires `thread-page:session` once; nothing is reloaded. 02 R-K11
+   */
+  function takeSession(started: StartedTransport): void {
+    if (!config.newSession) return;
+    config.newSession = false;
+    config.session = started.session;
+    config.actionToken = started.actionToken;
+    config.expiresAt = started.expiresAt;
+    config.documentUrl = started.documentUrl;
+    config.filesUrl = started.filesUrl;
+    for (const frame of [shown, incoming]) {
+      if (!frame) continue;
+      frame.target.token = started.actionToken;
+      frame.target.documentUrl = started.documentUrl;
+      frame.target.expiresAt = started.expiresAt;
+    }
+    const next = createDraftStore(win, { session: started.session, retentionMs: config.drafts.retentionMs, perSessionBytes: config.drafts.perSessionBytes, now, onFallback: () => notice.notice(STORAGE_FALLBACK_LINE) });
+    for (const entry of store.list()) next.put(entry.documentPath, entry.record);
+    store.clearSession();
+    store = next;
+    try {
+      win.history.replaceState(historyState(), "", `${config.routes.page}?${new URLSearchParams({ session: started.session })}${fragment}`);
+    } catch {
+      // The address is a courtesy; the page is the session's all the same.
+    }
+    if (shown) postTo(shown, { kind: "thread-page:session", siteRoot: started.siteRoot, uploads: true });
+    poller.retarget();
   }
 
   // --- the home's grants --------------------------------------------------------------
@@ -785,22 +928,25 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
 
   function shellAddress(path: string, query: string): string {
     const url = new URL(win.location.href);
-    for (const name of [...url.searchParams.keys()]) if (name !== "session") url.searchParams.delete(name);
+    for (const name of [...url.searchParams.keys()]) if (name !== "session" && !(config.newSession && name === "workspace")) url.searchParams.delete(name);
     const value = path === ENTRY_DOCUMENT && !query ? "" : `${path}${query}`;
     if (value) url.searchParams.set("path", value);
     return `${url.pathname}${url.search}${fragment}`;
   }
 
   /** The entry for a document: named by the caller, since a document still loading is not yet `config`'s (B-0105). */
-  function historyState(path = heading.path, query = heading.query): Record<string, string> {
-    return { [HISTORY_KEY]: path, [HISTORY_FRAGMENT]: fragment, [HISTORY_QUERY]: query };
+  function historyState(path = heading.path, query = heading.query): Record<string, unknown> {
+    // A new-session page's opening, and the starts it sent, ride in its history entry: a reload keeps them. 02 R-K10
+    const opening = config.newSession && fresh ? { [HISTORY_OPENING]: fresh.opening, [HISTORY_STARTS]: fresh.starts() } : {};
+    return { [HISTORY_KEY]: path, [HISTORY_FRAGMENT]: fragment, [HISTORY_QUERY]: query, ...opening };
   }
 
   function onFragment(next: string, step: boolean): void {
     if (!config.navigable || next === fragment) return;
     fragment = next;
     try {
-      if (step) win.history.pushState(historyState(), "", shellAddress(heading.path, heading.query));
+      // A new-session page pushes no entry: at the start its one entry becomes the session's, so Back never reaches it again. 02 R-K11
+      if (step && !config.newSession) win.history.pushState(historyState(), "", shellAddress(heading.path, heading.query));
       else win.history.replaceState(historyState(), "", shellAddress(heading.path, heading.query));
     } catch {
       // The address is a courtesy.
@@ -869,7 +1015,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   win.addEventListener("storage", (event) => {
     if (event.key !== null && !event.key.startsWith(LEFTOVERS_PREFIX) && !event.key.startsWith("up:draft")) return;
     if (config.builtinHome) tellLeftovers();
-    else if (shown && shown.shown) pruneDocumentLeftovers(win, config.session, shown.target.path, leftoverBound);
+    else if (shown && shown.shown && !config.newSession) pruneDocumentLeftovers(win, config.session, shown.target.path, leftoverBound);
   });
 
   // --- start ---------------------------------------------------------------------
@@ -889,7 +1035,9 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     incomingFrame: () => incoming?.element ?? null,
     poller,
     notice,
-    store,
+    get store() {
+      return store;
+    },
     confirmer,
     voice,
     openDocument,

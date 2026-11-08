@@ -1,4 +1,4 @@
-// Validators: session id, request id, revision (sha256 hex), method name, storage key, opaque token; the built-in home's reserved identity.
+// Validators: session id, request id, revision (sha256 hex), method name, storage key, opaque token; the built-in home's reserved identity and a new-session page's.
 
 /**
  * The built-in home page's identity: outside the session id grammar, so no
@@ -7,7 +7,16 @@
  */
 export const HOME_IDENTITY = "~home";
 
+/**
+ * A new-session page's identity: its workspace's id behind this prefix, outside the session id grammar as the home's
+ * is, so no session can collide with it. Used for its tokens and its budget only; never for storage, grants or
+ * uploads. 05 R-S13; 02 R-K10
+ */
+export const NEW_SESSION_PREFIX = "~new:";
+
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/** A new-session page's opening: an id the shell makes for one tab's opening of the address. 05 R-S13; 02 R-K10 */
+const OPENING = /^[A-Za-z0-9_-]{16,64}$/;
 const ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
 // A contributed method's namespace is its contributor's id, which may carry hyphens. 07 R5.43
@@ -22,9 +31,29 @@ export function isSessionId(value: unknown): value is string {
   return typeof value === "string" && SESSION_ID.test(value);
 }
 
-/** A session id or the built-in home's identity: what a token may name. 05 R-S12 */
+/** A session id, the built-in home's identity or a new-session page's: what a token may name. 05 R-S12, R-S13 */
 export function isSessionIdentity(value: unknown): value is string {
-  return value === HOME_IDENTITY || isSessionId(value);
+  return value === HOME_IDENTITY || isSessionId(value) || isNewSessionIdentity(value);
+}
+
+/** The new-session page of a workspace, as its tokens and budget name it. 05 R-S13 */
+export function newSessionIdentity(workspaceId: string): string {
+  return `${NEW_SESSION_PREFIX}${workspaceId}`;
+}
+
+/** Whether a token names a new-session page. 05 R-S13 */
+export function isNewSessionIdentity(value: unknown): value is string {
+  return typeof value === "string" && value.startsWith(NEW_SESSION_PREFIX) && isEntityId(value.slice(NEW_SESSION_PREFIX.length));
+}
+
+/** The workspace a new-session identity names, or null for any other identity. 05 R-S13 */
+export function newSessionWorkspaceOf(value: unknown): string | null {
+  return isNewSessionIdentity(value) ? value.slice(NEW_SESSION_PREFIX.length) : null;
+}
+
+/** A new-session page's opening id. 05 R-S13 */
+export function isOpening(value: unknown): value is string {
+  return typeof value === "string" && OPENING.test(value);
 }
 
 /** A workspace, provider or model id as a page passes it. 03 R-C5 */

@@ -21,6 +21,34 @@ export async function readJsonBody(request: PagesRequest, maxBytes: number, limi
   return parsed.value;
 }
 
+/**
+ * A body that may carry, beside what it always carries within `maxBytes`, a new-session page's start block with the
+ * storage the page held (`extraBytes` more, deeper and wider by that storage): such a block is returned apart, and a
+ * body without one keeps `readJsonBody`'s bound and answers. 03 R-C13; 05 R-S13
+ */
+export async function readBodyWithStart(request: PagesRequest, maxBytes: number, extraBytes: number): Promise<{ value: JsonValue; start: JsonValue | null }> {
+  const most = maxBytes + extraBytes;
+  const tooLarge = (bound: number) => new PageError("request_too_large", `The request body is larger than ${bound} bytes`);
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > most) throw tooLarge(maxBytes);
+  const bytes = await request.body();
+  if (bytes.byteLength > most) throw tooLarge(maxBytes);
+  const text = Buffer.from(bytes).toString("utf8");
+  const parsed = parseStrictJson(text, { maxBytes: most, maxDepth: LIMITS.capabilityJsonDepth + 4, maxNodes: LIMITS.capabilityJsonNodes + extraBytes / 2 });
+  if (!parsed.ok) {
+    if (bytes.byteLength > maxBytes) throw tooLarge(maxBytes);
+    throw new PageError("invalid_json", PUBLIC_MESSAGES.invalidJson);
+  }
+  const value = parsed.value;
+  if (isJsonRecord(value) && value.newSession !== undefined && value.newSession !== null) {
+    const { newSession, ...rest } = value;
+    return { value: rest as JsonValue, start: newSession as JsonValue };
+  }
+  if (bytes.byteLength > maxBytes) throw tooLarge(maxBytes);
+  if (!parseStrictJson(text, { maxBytes, maxDepth: LIMITS.capabilityJsonDepth, maxNodes: LIMITS.capabilityJsonNodes }).ok) throw new PageError("invalid_json", PUBLIC_MESSAGES.invalidJson);
+  return { value, start: null };
+}
+
 export function isJsonRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -86,11 +86,16 @@ export function externalUrlProblem(value: unknown, ownOrigins: readonly string[]
  * its fragment; `<base>/home` the home; anything else is null. Whether the
  * document is one is `pages.open`'s parameters' to refuse. spec 03 R5.32b, R5.29b
  */
-export function hostPageTarget(value: unknown, ownOrigins: readonly string[], base: string): { sessionId: string; path?: string; fragment?: string } | { home: true } | null {
+export function hostPageTarget(value: unknown, ownOrigins: readonly string[], base: string): { sessionId: string; path?: string; fragment?: string } | { home: true } | { workspaceId: string; newSession: true } | null {
   const parsed = httpUrl(value);
   if (!parsed || !isOwnOrigin(parsed, ownOrigins)) return null;
   if (parsed.pathname === `${base}/home`) return { home: true };
   if (parsed.pathname !== `${base}/page`) return null;
+  // The new-session page of a workspace, by its address: `workspace` once, and no session. 03 R5.32b, R5.29c
+  if (!parsed.searchParams.has("session")) {
+    const workspaces = parsed.searchParams.getAll("workspace");
+    return workspaces.length === 1 && workspaces[0] ? { workspaceId: workspaces[0], newSession: true } : null;
+  }
   const sessions = parsed.searchParams.getAll("session");
   if (sessions.length !== 1 || !sessions[0]) return null;
   const path = addressDocumentUrl(parsed.searchParams);

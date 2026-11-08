@@ -56,6 +56,8 @@ export interface DraftStoreOptions {
   now?: () => number;
   /** Called once when storage throws. */
   onFallback?: () => void;
+  /** Kept for this tab alone (`sessionStorage`): a new-session page's opening, gone when the tab closes. 02 R-K10 */
+  tab?: boolean;
 }
 
 export function createDraftStore(win: Window, options: DraftStoreOptions): DraftStore {
@@ -64,7 +66,7 @@ export function createDraftStore(win: Window, options: DraftStoreOptions): Draft
   let backend: Backend;
   let fallback = false;
   try {
-    const storage = win.localStorage;
+    const storage = options.tab ? win.sessionStorage : win.localStorage;
     storage.getItem(indexKey);
     backend = storageBackend(storage);
   } catch {

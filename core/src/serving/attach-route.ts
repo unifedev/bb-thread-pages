@@ -1,6 +1,6 @@
 // `POST /attach`: challenge-bound file uploads to `provider.attachments` (05 R3.20a; 03 R5.75–R5.80; DESIGN §C.3, P29).
-import { PageError, PUBLIC_MESSAGES, mapProviderError } from "../domain/errors.ts";
-import { HOME_IDENTITY, isRequestId, isSessionId } from "../domain/ids.ts";
+import { PageError, PUBLIC_MESSAGES, mapProviderError, notStarted } from "../domain/errors.ts";
+import { HOME_IDENTITY, isNewSessionIdentity, isRequestId, isSessionId } from "../domain/ids.ts";
 import { LIMITS, mebibytes } from "../domain/limits.ts";
 import { EMPTY_REVISION } from "../domain/revision.ts";
 import { openChallenge } from "../domain/tokens/confirmation.ts";
@@ -43,6 +43,8 @@ export function attachRoute(ctx: ServingContext) {
       if (!ATTACH_METHODS.has(body.method)) throw new PageError("invalid_request", "Only sessions.start, sessions.send and session.reply carry files");
       if (!isRequestId(body.requestId)) throw new PageError("invalid_request", "Invalid request id");
       const attachments = ctx.provider.attachments;
+      // Before its session starts, a new-session page's files are native attachments or nothing: the paths fallback needs a page root. 03 R-C12
+      if (!attachments && isNewSessionIdentity(token.session) && body.method === "session.reply") throw notStarted(PUBLIC_MESSAGES.notStartedFiles);
       if (!attachments) throw new PageError("unavailable", "This host cannot attach files to a prompt; nothing was started or sent");
       const bytes = readBytesField(body, "bytes", LIMITS.promptFileBytes);
       if (bytes.byteLength === 0) throw new PageError("invalid_params", `"${body.name}" is empty`);
@@ -62,9 +64,13 @@ export function attachRoute(ctx: ServingContext) {
             if (token.session === HOME_IDENTITY) throw new PageError("forbidden", PUBLIC_MESSAGES.homeNoSession);
             bound.check();
             const access = await ctx.sessionFor(token.session);
-            requirePageSession(access);
-            if (access.archived) throw new PageError("unavailable", PUBLIC_MESSAGES.archived, { reason: "archived" });
-            workspaceId = access.record.workspaceId;
+            // A new-session page's first reply: its files go to the workspace the session will start in. 03 R-C12
+            if (access.kind === "new-session") workspaceId = access.workspace.id;
+            else {
+              requirePageSession(access);
+              if (access.archived) throw new PageError("unavailable", PUBLIC_MESSAGES.archived, { reason: "archived" });
+              workspaceId = access.record.workspaceId;
+            }
             call = { session: token.session, revision, requestId: body.requestId, method: body.method, paramsHash: UNBOUND_PARAMS_HASH };
           } else {
             const challenge = openChallenge(body.challenge, ctx.signingKey, ctx.now());
