@@ -106,7 +106,8 @@ export function eligibilityOf(ctx: ServingContext): (session: SessionRecord) => 
 
 /**
  * The one owner of injection: `mountPages` calls `inject()` at mount and on
- * a contributor change, `PagesServer.reinject()` after a settings change,
+ * a contributor change, `PagesServer.reinject()` after a settings change or
+ * a contributor change the host knows of,
  * and `status` to print what a session starting now receives. When a
  * fragment does not arrive whole the operator is told once per fragment and
  * version in the log; the fragment is neither refused nor shortened.

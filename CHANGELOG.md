@@ -1,10 +1,48 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` 17bda3d): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` b9e7d6a): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.14.12 (bb plugin) — 2026-11-09
+
+The bb plugin's release of the 0.6.31 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.12`): it carries pages-core 0.6.13, whose
+`reinject()` reads the contributors again first, so the instruction placed after a settings change holds the
+contributors bb lists now rather than those of the 10 s cache. Its pages work as in 1.14.11.
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.12.
+
+## 0.6.31 — 2026-11-09
+
+On Claude Code, `unife-pages open --address` gives a machine's operator a page's own address with no sign-in minted
+(unife-workspace-address-without-signin), and a contributor's instruction fragment reaches the next session at once
+after a page-server start (B-0094).
+
+`@unifedev/pages-core` 0.6.13, `@unifedev/claude-pages` 0.6.31, the bb plugin `@unifedev/thread-pages` 1.14.12. No
+agent text changed.
+
+### Fixed
+
+- **Claude Code: a contributor's instruction fragment reaches the next session at once** (B-0094). After a daemon
+  start the instruction was placed before the declared contributors registered, and the core read its contributors
+  again only when a page call or `unife-pages status` asked, so the first sessions after every start or upgrade got the
+  standing instruction without any fragment. Now every change of the daemon's contributor registry (a registration, an
+  unregistration, a mod's session gone, a declared process stopped for good, an endpoint cleared) calls
+  `PagesServer.reinject()`, which reads the contributors again whatever the 10 s cache's age; a registration is
+  answered once the new instruction is placed, and running sessions hear `instruction.changed` as before. On bb,
+  `reinject()` after a settings change now reads the contributors again too. Tests:
+  `packages/claude-pages/test/daemon/contributor-instruction.test.ts`, `packages/pages-core/test/serving/mount.test.ts`,
+  `test/serving/contributed.test.ts`.
+
+## 0.6.30 — 2026-11-09
+
+A patch for `@unifedev/claude-pages` 0.6.30 (B-0262): no behaviour changed, no agent text changed. pages-core stays
+0.6.12 and the bb plugin `@unifedev/thread-pages` 1.14.11.
 
 ## 1.14.11 (bb plugin) — 2026-11-08
 

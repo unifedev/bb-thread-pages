@@ -137,6 +137,8 @@ export interface Contributions {
   /** Re-read when older than `contributionsTtlMs`; never rejects. */
   current(): Promise<ContributionSet>;
   cached(): ContributionSet;
+  /** Read the host now, whatever the cache's age, after any read already under way; tells no `onChange` listener, the caller acts on what it returns. Never rejects. 04 R6.15; 06 R-P14 */
+  reread(): Promise<ContributionSet>;
   /** `workspace`: a new-session page's, given where there is no session to ask the host about (07 R5.84b). */
   invoke(spec: ContributedSpec, params: JsonValue, caller: { sessionId: string | null; scope: string | null; frame?: { scope: string | null; title: string | null }; workspace?: { id: string; path: string; machine: string | null } }, requestId: string): Promise<JsonValue>;
   /** The server reinjects the instruction on change (DR-33). */

@@ -305,6 +305,9 @@ export function createMemoryContributions(declarations: readonly { id: string; d
     cached() {
       return set;
     },
+    async reread() {
+      return set;
+    },
     async invoke(spec, params, caller, requestId) {
       if (!invoke) throw new PageError("unavailable", "No contributor answers here");
       return invoke(spec, params, caller, requestId);

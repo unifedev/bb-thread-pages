@@ -1,4 +1,4 @@
-// `createContributions(host, options)`: the contributors as the server sees them — declarations re-read every `contributionsTtlMs`, one call bounded at `contributedCallMs`, failures mapped onto the fixed codes with declared reasons kept, `onChange` for the instruction, `rosterOf`, `combinedLookup`, `instructionFragments` (07 §The call, §Discovery per host, R5.41b, R5.47–R5.55; DESIGN §E.1 step 6, DR-33).
+// `createContributions(host, options)`: the contributors as the server sees them — declarations re-read every `contributionsTtlMs` and on `reread()`, one call bounded at `contributedCallMs`, failures mapped onto the fixed codes with declared reasons kept, `onChange` for the instruction, `rosterOf`, `combinedLookup`, `instructionFragments` (07 §The call, §Discovery per host, R5.41b, R5.47–R5.55; DESIGN §E.1 step 6, DR-33).
 import type { AnyCapabilitySpec, CapabilityDescriptor } from "../domain/capabilities/contract.ts";
 import { parseContributor, type ContributedSpec, type Contributor } from "../domain/capabilities/contributed.ts";
 import { describe, type CapabilityLookup, type CapabilityRegistry } from "../domain/capabilities/registry.ts";
@@ -61,14 +61,14 @@ export function createContributions(host: ContributorHost | undefined, options: 
     return Object.freeze({ contributors: Object.freeze(contributors), get: (method: string) => byMethod.get(method) });
   }
 
-  function refresh(): Promise<ContributionSet> {
+  function refresh(notify: boolean): Promise<ContributionSet> {
     if (!inFlight) {
       inFlight = read()
         .then((next) => {
           const changed = signatureOf(next) !== signatureOf(set);
           set = next;
           readAt = now();
-          if (changed) for (const listener of listeners) listener(next);
+          if (changed && notify) for (const listener of listeners) listener(next);
           return next;
         })
         .finally(() => {
@@ -82,11 +82,17 @@ export function createContributions(host: ContributorHost | undefined, options: 
 
   return {
     async current() {
-      return fresh() ? set : refresh();
+      return fresh() ? set : refresh(true);
     },
     cached() {
-      if (!fresh()) void refresh().catch(() => undefined);
+      if (!fresh()) void refresh(true).catch(() => undefined);
       return set;
+    },
+    async reread() {
+      // A read under way may have listed before the change the caller knows of: it lands first, then the host is read
+      // again (or the read another caller started since is joined). Its caller injects what it finds. 04 R6.15; 06 R-P14
+      if (inFlight) await inFlight.catch(() => undefined);
+      return refresh(false);
     },
     async invoke(spec, params, caller, requestId) {
       if (!host) throw new PageError("unknown_method", `Unknown capability: ${spec.method}`);

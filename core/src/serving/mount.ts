@@ -54,7 +54,7 @@ export interface PagesServer {
   readonly commands: Record<CommandRole, CommandHandler>;
   /** The registry roster as a page would see it on a session page. 03 R5.9 */
   roster(): CapabilityDescriptor[];
-  /** Re-run instruction injection after a settings change. DR-33 */
+  /** Re-run instruction injection after a settings change, or a contributor change the host knows of: the contributors are read again first, whatever the cache's age. DR-33; 04 R6.15; 06 R-P14 */
   reinject(): Promise<Placement[]>;
   /** The home designation, kept in the server's `kv`. 05 R-S12; DR-3 */
   readonly home: HomeDesignation;
@@ -153,17 +153,18 @@ export async function mountPages(serving: ServingHost, provider: ProviderHost, o
   const commands = createCommands(ctx, { injector });
   for (const [role, handler] of Object.entries(commands) as [CommandRole, CommandHandler][]) provider.command.register(role, handler);
 
-  async function reinject(): Promise<Placement[]> {
+  async function inject(reread: boolean): Promise<Placement[]> {
     try {
+      if (reread) await contributions.reread();
       return [...(await injector.inject()).placements];
     } catch (error) {
       provider.log.warn(`instruction: could not inject: ${errorText(error)}`);
       return [];
     }
   }
-  await reinject();
+  await inject(false);
   const stopWatching = contributions.onChange(() => {
-    void reinject();
+    void inject(false);
   });
 
   return {
@@ -171,7 +172,7 @@ export async function mountPages(serving: ServingHost, provider: ProviderHost, o
     limits: LIMITS,
     commands,
     roster: () => [...registry.descriptors()],
-    reinject,
+    reinject: () => inject(true),
     home,
     async forgetSession(sessionId) {
       await pages.forget(sessionId);
