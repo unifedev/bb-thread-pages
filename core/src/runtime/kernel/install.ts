@@ -1,5 +1,6 @@
 // Wires everything: forms, dirty, typing, drafts, scroll, anchors, text areas, embeds, read-only, session state, the waiting-update mark, pong, fragment, restore handling; the home page's drafts and grants events (02 §The kernel; 05 R2.3a, R2.18d, R2.21, R2.24, R-S12; U49).
 import { directoryOf, RESERVED_QUERY_NAMES } from "../../domain/document-path.ts";
+import { LIMITS } from "../../domain/limits.ts";
 import { FORM_GONE_STATUS, HANDSHAKE_VERSION, isRecord, sentMessage, UPDATE_DEFERRED_STATUS, type BridgeRequestMessage, type KernelConfig, type KernelMessage, type ShellMessage } from "../shared/protocol.ts";
 import { installAnchorInterception } from "./anchors.ts";
 import { installApi } from "./api.ts";
@@ -283,7 +284,11 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
       });
     return kept.length > 0 ? `?${kept.join("&")}` : "";
   }
-  let moving: string | null = null;
+  /** How long a link's step waits for the shell's answer before the frame moves itself: a shell from before this kernel never answers. */
+  const STEP_ANSWER_MS = 500;
+  let stepWait: ReturnType<typeof setTimeout> | null = null;
+  /** A link's step: the shell adds its history entry first and then answers `move-fragment`, so the entry it leaves keeps
+   * the frame where it was (WebKit and Firefox keep the frame's place in each entry). 01 R1.12f */
   function moveToFragment(fragment: string): void {
     if (embedded) {
       const id = fragment.slice(1);
@@ -303,15 +308,23 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
     } catch {
       return;
     }
-    moving = target === win.location.hash ? null : target;
-    win.location.replace(here + fragment);
+    if (target === win.location.hash || target.length > LIMITS.fragmentChars) win.location.replace(here + fragment);
+    else {
+      send({ kind: "thread-page:fragment", fragment: target, step: true });
+      if (stepWait !== null) clearTimeout(stepWait);
+      stepWait = setTimeout(() => {
+        stepWait = null;
+        moveInPlace(target);
+      }, STEP_ANSWER_MS);
+    }
+  }
+  /** The shell's answer to a step, or Back or Forward to a step of this document: there in place; "#" for none, so it is no reload. */
+  function moveInPlace(fragment: string): void {
+    if (embedded || fragment === win.location.hash) return;
+    win.location.replace(`${win.location.href.split("#")[0] ?? ""}${fragment || "#"}`);
   }
   if (!embedded) {
-    prim.on(win, "hashchange", () => {
-      const step = moving !== null && moving === win.location.hash;
-      moving = null;
-      send({ kind: "thread-page:fragment", fragment: win.location.hash, ...(step ? { step: true as const } : {}) });
-    });
+    prim.on(win, "hashchange", () => send({ kind: "thread-page:fragment", fragment: win.location.hash }));
   }
 
   // --- submissions. 02 R4.5–R4.9, R-K6 ---
@@ -416,6 +429,11 @@ export function installKernel(win: Window & typeof globalThis, config: KernelCon
         if (message.leftovers) announce(DRAFTS_EVENT, { drafts: message.leftovers });
         return;
       case "thread-page:restore-now":
+        return;
+      case "thread-page:move-fragment":
+        if (stepWait !== null) clearTimeout(stepWait);
+        stepWait = null;
+        moveInPlace(message.fragment);
         return;
       case "thread-page:flush":
         drafts.flush();

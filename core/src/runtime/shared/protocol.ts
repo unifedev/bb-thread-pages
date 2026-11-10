@@ -79,6 +79,7 @@ export type KernelMessage =
   | { kind: "thread-page:open-document"; path: string; fragment?: string; query?: string }
   | { kind: "thread-page:open-file"; path: string; download: boolean; name: string | null }
   | { kind: "thread-page:file-request"; id: string; path: string; purpose: "media" | "fetch"; init?: { method: "GET" | "HEAD" } }
+  /** The document's `#` changed; with `step`, a link asks to step there: the shell adds the entry, then answers `move-fragment`. 01 R1.12f */
   | { kind: "thread-page:fragment"; fragment: string; step?: true }
   | { kind: "thread-page:scroll"; state: ScrollState }
   | { kind: "thread-page:draft"; form: DraftFormRef; fields: Record<string, DraftValue>; focus: { name: string; selectionStart: number; selectionEnd: number } | null; cleared: string[]; embed?: { sessionId: string; documentPath: string } }
@@ -125,6 +126,8 @@ export type ShellMessage =
   | { kind: "thread-page:restore-now"; nonce: number }
   | { kind: "thread-page:flush"; nonce: number }
   | { kind: "thread-page:shown" }
+  /** Where the document moves in place: its step's entry is there, or Back or Forward reached one of its places. 01 R1.12f */
+  | { kind: "thread-page:move-fragment"; fragment: string }
   /** A newer version waits for the reader to pause (`available: true`), or no longer does. 05 R2.21 (U49) */
   | { kind: "thread-page:update"; available: boolean }
   /** A new revision of the shown document, as served, for a document that registered `onPageUpdate`; the kernel leaves out the host's own scripts. 02 R4.66; 05 R2.18 */
@@ -445,6 +448,8 @@ export function isShellMessage(value: unknown): value is ShellMessage {
       return hasExactKeys(value, ["kind", "nonce"]) && isNonce(value.nonce);
     case "thread-page:shown":
       return hasExactKeys(value, ["kind"]);
+    case "thread-page:move-fragment":
+      return hasExactKeys(value, ["kind", "fragment"]) && isText(value.fragment, LIMITS.fragmentChars) && (value.fragment === "" || value.fragment.startsWith("#"));
     case "thread-page:update":
       return hasExactKeys(value, ["kind", "available"]) && typeof value.available === "boolean";
     case "thread-page:page-update":

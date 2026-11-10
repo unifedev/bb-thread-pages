@@ -38,13 +38,24 @@ export async function createPlugin(bb: BbPluginApi, options: PluginOptions = {})
     ...(options.now ? { now: options.now } : {}),
   });
   registerCli(bb, { handlers: provider.handlers, log: bb.log });
-  settings.onChange(() => {
+  const reinject = () => {
     server.reinject().catch((error: unknown) => bb.log.warn(`instruction: reinject failed: ${error instanceof Error ? error.message : String(error)}`));
-  });
+  };
+  settings.onChange(reinject);
   bb.events.on("thread.deleted", async ({ thread }) => {
     provider.forget(thread.id);
     await server.forgetSession(thread.id); // DR-8: storage, grants, offline copy go with the session
   });
   bb.onDispose(() => server.close());
+  // bb says `plugins-changed` after its startup load pass and every plugin install, update, enable, disable, reload and
+  // remove: a contributor that starts, stops or changes after the mount reaches the instruction at once. Released
+  // before the server closes (dispose hooks run last-in first-out).
+  const unsubscribe = bb.sdk.subscribe({
+    event: "system:changed",
+    callback: (event) => {
+      if (event.changes.includes("plugins-changed")) reinject();
+    },
+  });
+  bb.onDispose(unsubscribe);
   return { server, provider, settings };
 }

@@ -10,7 +10,7 @@ import { type BridgeContext, boundTitle, excerpt, existingSession, handler, quot
 import { checkFiles, checkFilesFit, fitSummary } from "./files.ts";
 import { providerCursor, readTranscript } from "./messages.ts";
 import { decisionRequest, executeRespond, refuseRespond } from "./respond.ts";
-import { knownSettings } from "./settings.ts";
+import { knownSettings, permissionModeName, reasoningLevelsOf } from "./settings.ts";
 
 // --- reads -------------------------------------------------------------------
 
@@ -85,6 +85,8 @@ interface ResolvedStart {
   provider: string;
   model: string;
   environment: string;
+  /** The permission mode's `displayName` in `providers.list`, when the call names a listed mode. */
+  permissionModeLabel: string | null;
 }
 
 async function providerChoices(context: BridgeContext): Promise<ProviderChoice[] | null> {
@@ -97,7 +99,7 @@ async function providerChoices(context: BridgeContext): Promise<ProviderChoice[]
   }
 }
 
-/** The workspace, environment, provider and model a start resolves to, each refused before any dialog. 03 R5.20–R5.25 */
+/** The workspace, environment, provider, model, reasoning level and permission mode a start resolves to, each refused before any dialog. 03 R5.20–R5.25 */
 async function resolveStart(params: SessionsStartParams, context: BridgeContext): Promise<ResolvedStart> {
   let workspaces;
   try {
@@ -119,24 +121,33 @@ async function resolveStart(params: SessionsStartParams, context: BridgeContext)
   }
   let provider = params.providerId ?? "the host's default";
   let model = params.model ?? "the host's default";
+  let permissionModeLabel: string | null = null;
   const choices = await providerChoices(context);
   if (choices) {
     const chosen = params.providerId !== undefined ? choices.find((candidate) => candidate.id === params.providerId) : (choices.find((candidate) => candidate.default) ?? choices[0]);
     if (!chosen) throw new PageError("invalid_params", "providerId is not one of providers.list");
     provider = chosen.id;
+    let modelId = params.model;
     if (params.model !== undefined) {
       if (!chosen.models.some((candidate) => candidate.id === params.model)) throw new PageError("invalid_params", "model is not one of the provider's models");
     } else {
-      model = chosen.models.find((candidate) => candidate.default)?.id ?? model;
+      modelId = chosen.models.find((candidate) => candidate.default)?.id;
+      model = modelId ?? model;
     }
-    if (params.permissionMode !== undefined && chosen.permissionModes && !chosen.permissionModes.some((candidate) => candidate.id === params.permissionMode)) throw new PageError("invalid_params", "permissionMode is not one of the provider's permission modes");
+    // R-C9's list: the chosen model's own levels where it lists them (the default model when the call names none), else the provider's; none listed accepts none. 03 §`sessions.start`
+    if (params.reasoningLevel !== undefined && !reasoningLevelsOf(chosen, modelId).some((candidate) => candidate.id === params.reasoningLevel)) throw new PageError("invalid_params", "reasoningLevel is not one of the levels providers.list gives for this provider and model");
+    if (params.permissionMode !== undefined && chosen.permissionModes) {
+      const mode = chosen.permissionModes.find((candidate) => candidate.id === params.permissionMode);
+      if (!mode) throw new PageError("invalid_params", "permissionMode is not one of the provider's permission modes");
+      permissionModeLabel = mode.displayName;
+    }
   }
-  return { workspace, ambiguous, provider, model, environment };
+  return { workspace, ambiguous, provider, model, environment, permissionModeLabel };
 }
 
 function startHead(resolved: ResolvedStart, params: SessionsStartParams): (length: number) => string {
   const where = `${quotable(resolved.workspace.name, 60)}${resolved.ambiguous ? ` (id ${resolved.workspace.id})` : ""}`;
-  return (length) => `Start a session in ${where}: ${quoted(params.prompt, length)} — provider ${excerpt(resolved.provider, 40)}, model ${excerpt(resolved.model, 40)}, environment ${resolved.environment}`;
+  return (length) => `Start a session in ${where}: ${quoted(params.prompt, length)} — provider ${excerpt(resolved.provider, 40)}, model ${excerpt(resolved.model, 40)}${params.reasoningLevel !== undefined ? `, reasoning ${quotable(params.reasoningLevel, 40)}` : ""}${params.permissionMode !== undefined ? `, permission mode ${permissionModeName(params.permissionMode, resolved.permissionModeLabel)}` : ""}, environment ${resolved.environment}`;
 }
 
 function quotable(text: string, max: number): string {

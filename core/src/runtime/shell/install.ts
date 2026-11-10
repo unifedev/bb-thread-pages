@@ -50,6 +50,8 @@ export interface ShellOptions {
 const HISTORY_KEY = "pagesDocument";
 const HISTORY_FRAGMENT = "pagesFragment";
 const HISTORY_QUERY = "pagesQuery";
+/** The frame whose own places the entry holds: Back or Forward to it moves that frame in place. 01 R1.12f */
+const HISTORY_FRAME = "pagesFrame";
 
 type LoadReason = "revision" | "document" | "reload" | "history";
 
@@ -70,6 +72,12 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   /** The never-drafted fields the old document reported non-empty, by key, for the next restore of the same path. 02 R-K4a */
   const cleared = new Map<string, string[]>();
   let generation = 0;
+  /** A load waits on the shown frame's flush: on its way, though not yet `incoming`. */
+  let flushing = false;
+  /** Each frame's name in history entries; this shell's own, so no entry from before a reload names a frame of it. */
+  const frameNames = new WeakMap<Frame, string>();
+  const shellName = Math.random().toString(36).slice(2);
+  let framesNamed = 0;
   /** The document the shell is heading to: `config`'s once shown, the newest requested one while its exchange or flush runs (B-0105). */
   let heading = { path: config.documentPath, query: config.documentQuery };
   /** The newest document exchange; an older one's late answer is dropped. */
@@ -443,7 +451,9 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     if (incoming) cancelIncoming();
     const previous = shown;
     const turn = ++generation;
+    flushing = true;
     const begin = () => {
+      if (turn === generation) flushing = false;
       if (turn !== generation || state === "DELETED") return;
       // A hold that began during the flush defers the revision instead of loading it under the reader (NS-2).
       if (reason === "revision" && shown && held(shown)) {
@@ -507,6 +517,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
     if (previous) drop(previous);
     shown = frame;
     applyTarget(frame.target);
+    nameEntry(frame);
     if (latest && latest.revision === frame.target.revision) latest = null;
     // Hidden, the frames never ran and the reader is not looking: nothing to say (NS-11).
     if (byTimeout && !frame.restored && doc.visibilityState !== "hidden") notice.set(STILL_LOADING);
@@ -622,6 +633,8 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       case "thread-page:fragment":
         // While another document is on its way, the one being left no longer writes the address. B-0105
         if (frame === shown && frame.target.path === heading.path && frame.target.query === heading.query) onFragment(documentFragment(message.fragment), message.step === true);
+        // A link's step: the frame moves once its entry is there. 01 R1.12f
+        if (message.step === true) postTo(frame, { kind: "thread-page:move-fragment", fragment: message.fragment });
         return;
       case "thread-page:record":
         relay.record(frameContext(frame), message);
@@ -938,7 +951,34 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   function historyState(path = heading.path, query = heading.query): Record<string, unknown> {
     // A new-session page's opening, and the starts it sent, ride in its history entry: a reload keeps them. 02 R-K10
     const opening = config.newSession && fresh ? { [HISTORY_OPENING]: fresh.opening, [HISTORY_STARTS]: fresh.starts() } : {};
-    return { [HISTORY_KEY]: path, [HISTORY_FRAGMENT]: fragment, [HISTORY_QUERY]: query, ...opening };
+    return { [HISTORY_KEY]: path, [HISTORY_FRAGMENT]: fragment, [HISTORY_QUERY]: query, [HISTORY_FRAME]: shown ? frameName(shown) : null, ...opening };
+  }
+
+  function frameName(frame: Frame): string {
+    let name = frameNames.get(frame);
+    if (!name) frameNames.set(frame, (name = `${shellName}.${(framesNamed += 1)}`));
+    return name;
+  }
+
+  /** A frame put in holds its places in the entry that is current: the entry names it. */
+  function nameEntry(frame: Frame): void {
+    const entry = win.history.state as unknown;
+    if (!config.navigable || !isRecord(entry) || typeof entry[HISTORY_KEY] !== "string") return;
+    try {
+      win.history.replaceState({ ...entry, [HISTORY_FRAME]: frameName(frame) }, "", win.location.href);
+    } catch {
+      // The address is a courtesy.
+    }
+  }
+
+  /** Back or Forward to an entry of the shown frame's own places: it moves there in place, not loaded again. 01 R1.12f */
+  function moveShown(entry: Record<string, unknown>, path: string, query: string, next: string): boolean {
+    if (!shown?.shown || incoming || flushing || entry[HISTORY_FRAME] !== frameName(shown)) return false;
+    if (path !== heading.path || query !== heading.query || path !== shown.target.path || query !== shown.target.query) return false;
+    if (!postTo(shown, { kind: "thread-page:move-fragment", fragment: next })) return false;
+    exchange += 1;
+    fragment = next;
+    return true;
   }
 
   function onFragment(next: string, step: boolean): void {
@@ -1001,6 +1041,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
       const entry = event.state as unknown;
       if (!isRecord(entry) || typeof entry[HISTORY_KEY] !== "string") return;
       const query = checkDocumentQuery(entry[HISTORY_QUERY]);
+      if (moveShown(entry, entry[HISTORY_KEY], query.ok ? query.query : "", documentFragment(entry[HISTORY_FRAGMENT]))) return;
       void openDocument(entry[HISTORY_KEY], false, documentFragment(entry[HISTORY_FRAGMENT]), query.ok ? query.query : "");
     });
   }
@@ -1023,6 +1064,7 @@ export function installShell(win: Window & typeof globalThis, config: ShellConfi
   const first = createFrame(doc, { documentUrl: config.documentUrl, path: config.documentPath, query: config.documentQuery, fragment, token: config.actionToken, revision: config.pageRevision, expiresAt: config.expiresAt, source: config.source, empty: config.empty, deferredFiles: config.deferredFiles }, false);
   shown = first;
   elements.frameHost.appendChild(first.element);
+  nameEntry(first);
   schedule(first, config.reload.waitMs, () => {
     if (!first.connected) void reloadShown();
   });

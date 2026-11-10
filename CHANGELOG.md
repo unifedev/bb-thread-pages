@@ -1,10 +1,82 @@
 # Changelog
 
-Derived from the private monorepo's CHANGELOG (`unifedev/unife` b9e7d6a): the parts that
+Derived from the private monorepo's CHANGELOG (`unifedev/unife` 9081404): the parts that
 concern the bb plugin and the server vendored into it. References to `reviews/`, `NOTES.md`, `DESIGN.md`,
 `RELEASE-*.md` and branch names are to that monorepo; `packages/bb-pages` is this plugin's directory there.
 Versions 1.9.0 and earlier were a different implementation of the same plugin; their changelog is in the
 `v1.9.0` tag of this repository.
+
+## 1.14.13 (bb plugin) — 2026-11-10
+
+The bb plugin's release of the 0.6.33 tree below under the released identity (`@unifedev/thread-pages`, plugin id
+`thread-pages`, repository `unifedev/bb-thread-pages`, tag `v1.14.13`): it carries pages-core 0.6.14 (a page's
+`sessions.start` checks and names the reasoning level and names the permission mode; Back and Forward between a
+document's fragment steps move it in place), and a contributor that starts after Thread Pages mounts reaches fresh
+threads' instruction at once (unife-bb-contributor-cold-start).
+
+### `@unifedev/thread-pages`
+
+- `package.json` version 1.14.13.
+
+## 0.6.33 — 2026-11-10
+
+Four fixes for `@unifedev/claude-pages` (unife-claude-home-start-folder-realpath,
+unife-claude-start-without-mode-runs-unlisted-default, unife-claude-default-model-from-settings,
+unife-daemon-stop-returns-before-exit), one for
+the bb plugin `@unifedev/thread-pages` (unife-bb-contributor-cold-start), three for `@unifedev/pages-core`
+(unife-sessions-start-reasoning-level-unchecked, unife-sessions-start-dialog-omits-permission-mode,
+unife-shell-back-after-reload), and one to the test and release tooling (unife-instruction-check-spec-source).
+
+`@unifedev/pages-core` 0.6.14, `@unifedev/claude-pages` 0.6.33, the bb plugin `@unifedev/thread-pages` 1.14.13. No
+agent text changed.
+
+### Fixed
+
+- **A page's `sessions.start` confirmation names the permission mode it starts the session with.** A page could pass
+  `permissionMode` (for example `bypassPermissions`) and the reader approved the start without being told the posture
+  it grants. The confirmation now names it as a running session's permission-mode challenge does: its display name
+  with the id where they differ (`…, reasoning high, permission mode “Bypass permissions” (bypassPermissions),
+  environment …`), else the quoted id, also on a host without `providers.list`. A start that names no mode reads as
+  before. Test: `packages/pages-core/test/serving/start-settings.test.ts`.
+- **A page's `sessions.start` with a reasoning level the provider does not list is refused.** `sessions.start`
+  checked `model` and `permissionMode` against `providers.list` but passed `reasoningLevel` to the host unchecked, and
+  its confirmation did not name it; on Claude Code an unlisted value reached `claude --bg` as `--effort`. The level
+  must now be one the chosen model lists (the default model's when the call names none), else one of the provider's;
+  anything else, or any level from a provider that lists none, is `invalid_params` before any dialog, as an unlisted
+  `model` is. The confirmation names the level (`…, model X, reasoning high, environment …`). A host without
+  `providers.list` passes it on as before. Test: `packages/pages-core/test/serving/start-settings.test.ts`.
+- **Back and Forward between a document's fragment steps move it in place, and a link's step survives a reload.**
+  A step made by a `#…` link (a script's click on such a link too) now survives a reload, a new version and another
+  document, and Back or Forward between the steps the shown document made since it loaded moves it in place instead of
+  loading it again. The shell adds the step's history entry first and the kernel moves on the shell's
+  `thread-page:move-fragment` answer (by itself after 500 ms with an older shell), so `location.hash` read right after
+  a link's `click()` is still the old one. A document's own `location` fragment change is a step only while that
+  document stays loaded: after a reload, a new version or another document, Back does not return to it (spec 01
+  R1.12f, 08 A144c). Tests: `packages/pages-core/test/browser/history.mjs`,
+  `packages/pages-core/test/runtime/shell/install.test.ts`, `packages/pages-core/test/runtime/kernel/anchors.test.ts`.
+- **bb: a contributor plugin that starts after Thread Pages reaches fresh threads' instruction at once.** Thread
+  Pages read the contributors when it mounted and then only when a page call or `bb pages status` asked, so a
+  contributor that started, stopped or changed after the mount (enabled, installed, updated, removed, or loaded after
+  `thread-pages`) was missing from, or still in, the instruction fresh threads got until such a read; a fresh thread
+  2 s after the mount got no syns fragment. Thread Pages now reads the contributors again and places the instruction
+  whenever bb says its plugins changed (`system:changed` with `plugins-changed`). Test:
+  `packages/bb-pages/test/plugin.test.ts`.
+
+### Tests
+
+- **The instruction check and the fixtures read the protocol from where it lives now.**
+  `packages/pages-core/scripts/check-instruction-spec.mjs` with no argument read spec 04 from a retired repository
+  and failed `repository not found` whatever the code held; it now reads it from the protocol's current tree, and with
+  no folder named and `PAGES_FIXTURES` unset the fixtures are read from that tree's placed copy, so `pnpm check` passes
+  with the tree placed and no variable; with none placed, the error names the folder and the command that places it.
+  Nothing a page or a reader sees changes. Tests: `packages/pages-core/test/agent/instruction-spec.test.ts`,
+  `packages/pages-core/test/fixtures-dir.test.ts`.
+
+## 0.6.32 — 2026-11-09
+
+Fixes for `@unifedev/claude-pages` 0.6.32 (unife-claude-session-titles, unife-claude-slash-first-message-lost,
+unife-claude-bg-env-from-service-starter, unife-open-empty-origin, unife-claude-resume-stopped-agent-on-send). No agent
+text changed. pages-core stays 0.6.13 and the bb plugin `@unifedev/thread-pages` 1.14.12.
 
 ## 1.14.12 (bb plugin) — 2026-11-09
 

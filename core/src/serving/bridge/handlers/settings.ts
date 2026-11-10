@@ -46,6 +46,12 @@ export function providerOf(record: SessionRecord, choices: readonly ProviderChoi
   return choices.find((choice) => choice.default) ?? choices[0] ?? null;
 }
 
+/** The reasoning levels a provider accepts with a model: that model's own `reasoningLevels` where it lists them, else the provider's flat list; none where neither lists any. 03 R-C9 */
+export function reasoningLevelsOf(provider: ProviderChoice, modelId: string | undefined): { id: string; displayName: string }[] {
+  const model = modelId !== undefined ? provider.models.find((candidate) => candidate.id === modelId) : undefined;
+  return model?.reasoningLevels ?? provider.reasoningLevels ?? [];
+}
+
 /**
  * Every named field must be one the provider's `settings` lists for running
  * sessions, and every value one it lists: `model` among `models[].id`,
@@ -81,9 +87,7 @@ export async function checkReplySettings(ctx: ServingContext, record: SessionRec
         listed = mode !== undefined;
         permissionModeLabel = mode?.displayName ?? null;
       } else {
-        const chosen = settings.model !== undefined ? provider.models.find((model) => model.id === settings.model) : undefined;
-        const levels = chosen?.reasoningLevels ?? provider.reasoningLevels ?? [];
-        listed = levels.some((level) => level.id === value);
+        listed = reasoningLevelsOf(provider, settings.model).some((level) => level.id === value);
       }
     }
     if (scope === undefined || !listed) unsupported.push(field);
@@ -93,12 +97,17 @@ export async function checkReplySettings(ctx: ServingContext, record: SessionRec
   return { provider, scopes, permissionModeLabel };
 }
 
+/** A permission mode as a confirmation names it: its `displayName` with the id where they differ, else the quoted id. 03 R-C9, R5.24 */
+export function permissionModeName(mode: string, label: string | null): string {
+  return label && label !== mode ? `${quoted(label, 64)} (${quotable(mode, 64)})` : `“${quotable(mode, 64)}”`;
+}
+
 /** The decision challenge's words for `settings.permissionMode`: the session, the mode and how long it holds. 03 R-C7, U29, U47 */
 export function permissionModeSummary(record: SessionRecord, settings: ReplySettings, checked: CheckedSettings): string {
   const mode = settings.permissionMode;
   if (mode === undefined || checked.scopes.permissionMode === undefined) throw new PageError("invalid_params", "No permission mode to confirm");
   // The mode id is shown whole (it is at most 64 characters, `safeName`); the title at the bound `decisionSummary` uses. RS-11
-  const label = checked.permissionModeLabel && checked.permissionModeLabel !== mode ? `${quoted(checked.permissionModeLabel, 64)} (${quotable(mode, 64)})` : `“${quotable(mode, 64)}”`;
+  const label = permissionModeName(mode, checked.permissionModeLabel);
   const holds = checked.scopes.permissionMode === "turn" ? "for this one answer" : "from now on, for the rest of the session";
   return `Set the permission mode of “${quotable(boundTitle(record.title)) || "untitled"}” (${record.id}) to ${label} ${holds}?`;
 }
@@ -133,8 +142,7 @@ export async function checkStartSettings(ctx: ServingContext, settings: ReplySet
       listed = mode !== undefined;
       permissionModeLabel = mode?.displayName ?? null;
     } else {
-      const chosen = settings.model !== undefined ? provider.models.find((model) => model.id === settings.model) : undefined;
-      listed = (chosen?.reasoningLevels ?? provider.reasoningLevels ?? []).some((level) => level.id === value);
+      listed = reasoningLevelsOf(provider, settings.model).some((level) => level.id === value);
     }
     if (!listed) unsupported.push(field);
   }
@@ -144,6 +152,5 @@ export async function checkStartSettings(ctx: ServingContext, settings: ReplySet
 
 /** The decision challenge's words for the permission mode a new-session page's first message starts its session with. 03 R-C12, R-C9 */
 export function startPermissionSummary(workspaceName: string, mode: string, label: string | null): string {
-  const named = label && label !== mode ? `${quoted(label, 64)} (${quotable(mode, 64)})` : `“${quotable(mode, 64)}”`;
-  return `Start the new session in “${quotable(boundTitle(workspaceName)) || "untitled"}” with the permission mode ${named}, from now on, for the rest of the session?`;
+  return `Start the new session in “${quotable(boundTitle(workspaceName)) || "untitled"}” with the permission mode ${permissionModeName(mode, label)}, from now on, for the rest of the session?`;
 }
